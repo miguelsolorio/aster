@@ -11,6 +11,8 @@
 //   city far (murmur, bell, drum) ─ cityFarBus ──┴─ mostly → reverb
 //   ambience (water, leaves, mill, fire, birds) ─ ambBus ─┬─ dry ──── preMaster
 //                                                          └─ a little → reverb
+//   Two player-facing levels are applied at the buses, ahead of the sends: music (pads, plucks)
+//   and effects (everything else, the chime included).
 //   preMaster → high-shelf cut → pause low-pass → pause duck → limiter
 //             → start fade → volume → visibility gain → speakers
 
@@ -161,6 +163,10 @@ interface Graph {
   pluckRev: GainNode;
   chimeBus: GainNode;
   sfxBus: GainNode;
+  // The two player-facing levels. Each is applied at the buses, ahead of the shared reverb and
+  // delay sends, so turning one down takes its tails with it and leaves the other's alone.
+  musicBuses: GainNode[]; // pads, plucks, drone
+  fxBuses: GainNode[]; // everything else: player sounds, ambience, city, chime
   windSrc: AudioBufferSourceNode;
   windBP: BiquadFilterNode;
   windGain: GainNode;
@@ -227,6 +233,9 @@ export class AudioEngine {
   private disposed = false;
   private paused = false;
   private vol = 0.8;
+  private musicVol = 1;
+  private fxVol = 0.7;
+  private previewing = false;
 
   // Smoothed mood weights (sum to 1) and whether they have been seeded.
   private w: MoodWeights = { day: 1, dusk: 0, night: 0 };
@@ -312,12 +321,45 @@ export class AudioEngine {
     if (this.ctx && this.g) this.g.volume.gain.setTargetAtTime(this.vol, this.ctx.currentTime, 0.12);
   }
 
+  /** Level of the score alone, 0..1. 1 is the mix as tuned. */
+  setMusicVolume(v: number): void {
+    this.musicVol = clamp01(v);
+    this.applyBusLevel(this.g?.musicBuses, this.musicVol);
+  }
+
+  /** Level of everything that is not the score, 0..1. 1 is the mix as tuned. */
+  setEffectsVolume(v: number): void {
+    this.fxVol = clamp01(v);
+    this.applyBusLevel(this.g?.fxBuses, this.fxVol);
+  }
+
+  private applyBusLevel(buses: GainNode[] | undefined, v: number): void {
+    if (!this.ctx || !buses) return;
+    for (const b of buses) b.gain.setTargetAtTime(v, this.ctx.currentTime, 0.06);
+  }
+
   setPaused(p: boolean): void {
     this.paused = p;
+    this.applyDuck();
+  }
+
+  /**
+   * While a level is being adjusted in the pause menu, lift the pause duck so the mix is heard
+   * as it will sound in play.
+   */
+  setPreview(on: boolean): void {
+    if (this.previewing === on) return;
+    this.previewing = on;
+    this.applyDuck();
+  }
+
+  private applyDuck(): void {
     if (!this.ctx || !this.g) return;
+    const ducked = this.paused && !this.previewing;
     const now = this.ctx.currentTime;
-    this.g.pauseGain.gain.setTargetAtTime(p ? 0.35 : 1, now, 0.25);
-    this.g.pauseLP.frequency.setTargetAtTime(p ? 750 : 18000, now, 0.25);
+    const tc = this.previewing ? 0.08 : 0.25;
+    this.g.pauseGain.gain.setTargetAtTime(ducked ? 0.35 : 1, now, tc);
+    this.g.pauseLP.frequency.setTargetAtTime(ducked ? 750 : 18000, now, tc);
   }
 
   /**
@@ -394,14 +436,14 @@ export class AudioEngine {
     this.schedule(ctx.currentTime);
   }
 
-  footstep(strength: number, onRock: boolean): void {
+  footstep(strength: number, onRock: boolean, paved = this.cityPaved): void {
     const ctx = this.ctx;
     const g = this.g;
     if (!ctx || !g || ctx.state !== 'running') return;
     const s = clamp01(strength);
     if (s <= 0.01) return;
     const t = ctx.currentTime + 0.005;
-    if (this.cityPaved) {
+    if (paved) {
       // Stone or packed earth: a short bright tick with a small resonant body.
       this.stoneStep(t, s, 1, null, g.sfxBus);
       return;
@@ -795,13 +837,13 @@ export class AudioEngine {
     delayOut.connect(gain(0.5)).connect(reverbIn);
 
     // Pads.
-    const padBus = gain(1);
+    const padBus = gain(this.musicVol);
     const padRev = gain(0.45);
     padBus.connect(music);
     padBus.connect(padRev).connect(reverbIn);
 
     // Plucks.
-    const pluckBus = gain(1);
+    const pluckBus = gain(this.musicVol);
     const pluckDry = gain(0.7);
     const pluckRev = gain(0.5);
     const pluckDelay = gain(0.35);
@@ -809,22 +851,23 @@ export class AudioEngine {
     pluckBus.connect(pluckRev).connect(reverbIn);
     pluckBus.connect(pluckDelay).connect(delayIn);
 
-    // Chime: mostly reverb.
-    const chimeBus = gain(1);
+    // Chime: mostly reverb. Voiced like the score but it answers the player, so it follows the
+    // effects level.
+    const chimeBus = gain(this.fxVol);
     chimeBus.connect(gain(0.55)).connect(music);
     chimeBus.connect(gain(0.95)).connect(reverbIn);
     chimeBus.connect(gain(0.3)).connect(delayIn);
 
     // Footsteps and landings: mostly dry, a touch of space.
-    const sfxBus = gain(1);
+    const sfxBus = gain(this.fxVol);
     sfxBus.connect(preMaster);
     sfxBus.connect(gain(0.08)).connect(reverbIn);
 
     // City: near sounds partly dry; distant sounds mostly reverb (heard across rooftops).
-    const cityBus = gain(1);
+    const cityBus = gain(this.fxVol);
     cityBus.connect(gain(0.6)).connect(preMaster);
     cityBus.connect(gain(0.4)).connect(reverbIn);
-    const cityFarBus = gain(1);
+    const cityFarBus = gain(this.fxVol);
     cityFarBus.connect(gain(0.3)).connect(preMaster);
     cityFarBus.connect(gain(0.7)).connect(reverbIn);
 
@@ -843,8 +886,11 @@ export class AudioEngine {
     whistleBP.frequency.value = 900;
     whistleBP.Q.value = 5;
     const whistleGain = gain(0);
-    windSrc.connect(windBP).connect(windGain).connect(preMaster);
-    windSrc.connect(whistleBP).connect(whistleGain).connect(preMaster);
+    // Wind and sand hiss have no sends; this bus exists only to carry the effects level.
+    const bedBus = gain(this.fxVol);
+    bedBus.connect(preMaster);
+    windSrc.connect(windBP).connect(windGain).connect(bedBus);
+    windSrc.connect(whistleBP).connect(whistleGain).connect(bedBus);
     windSrc.start(0, Math.random() * 6);
 
     // Sand hiss: a higher band, separate loop offset for decorrelation.
@@ -860,11 +906,11 @@ export class AudioEngine {
     hissBP.frequency.value = 6000;
     hissBP.Q.value = 0.4;
     const hissGain = gain(0);
-    hissSrc.connect(hissHP).connect(hissBP).connect(hissGain).connect(preMaster);
+    hissSrc.connect(hissHP).connect(hissBP).connect(hissGain).connect(bedBus);
     hissSrc.start(0, 3 + Math.random() * 3);
 
     // Ambience: beds are always running (silent at level 0) and only their gains move.
-    const ambBus = gain(1);
+    const ambBus = gain(this.fxVol);
     ambBus.connect(gain(0.85)).connect(preMaster);
     ambBus.connect(gain(0.22)).connect(reverbIn);
     const ambSources: AudioScheduledSourceNode[] = [];
@@ -971,6 +1017,8 @@ export class AudioEngine {
       pluckRev,
       chimeBus,
       sfxBus,
+      musicBuses: [padBus, pluckBus],
+      fxBuses: [chimeBus, sfxBus, bedBus, cityBus, cityFarBus, ambBus],
       windSrc,
       windBP,
       windGain,
