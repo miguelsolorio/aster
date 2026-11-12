@@ -64,11 +64,20 @@ export class Player {
   private side: -1 | 1 = 1;
   private pull = 0;
 
+  /** Optional: absolute height of a roof over (x, z), or -Infinity where the ground is open. */
+  roof: ((x: number, z: number) => number) | null = null;
+
   constructor(private world: World) {}
+
+  /** The surface you can stand on: the terrain, or a roof above it. */
+  private top(x: number, z: number): number {
+    const h = this.world.height(x, z);
+    return this.roof ? Math.max(h, this.roof(x, z)) : h;
+  }
 
   place(x: number, z: number) {
     const st = this.state;
-    st.pos.set(x, this.world.height(x, z), z);
+    st.pos.set(x, this.top(x, z), z);
     st.vel.set(0, 0, 0);
     st.grounded = true;
     st.sliding = false;
@@ -197,9 +206,29 @@ export class Player {
         st.grounded = false;
         ev.jump();
       } else {
-        const nx = pos.x + vel.x * dt;
-        const nz = pos.z + vel.z * dt;
-        const nh = w.height(nx, nz);
+        let nx = pos.x + vel.x * dt;
+        let nz = pos.z + vel.z * dt;
+        let nh = this.top(nx, nz);
+        // A wall: anything more than a step higher than where you stand. Slide along it.
+        if (nh > pos.y + 0.55) {
+          const hx = this.top(nx, pos.z);
+          const hz = this.top(pos.x, nz);
+          if (hx <= pos.y + 0.55) {
+            nz = pos.z;
+            vel.z = 0;
+            nh = hx;
+          } else if (hz <= pos.y + 0.55) {
+            nx = pos.x;
+            vel.x = 0;
+            nh = hz;
+          } else {
+            nx = pos.x;
+            nz = pos.z;
+            vel.x = 0;
+            vel.z = 0;
+            nh = pos.y;
+          }
+        }
         const follow = (nh - pos.y) / dt;
         // If the ground falls away faster than we can follow, we are airborne.
         if (vel.y - follow > GRAVITY * dt * 2 + 1.7) {
@@ -243,7 +272,7 @@ export class Player {
       dz = -dx * sa + dz * ca;
       dx = ndx;
 
-      const gh = w.height(pos.x, pos.z);
+      const gh = this.top(pos.x, pos.z);
       this.alt = Math.max(0, pos.y - gh);
 
       if (this.gliding) {
@@ -279,8 +308,22 @@ export class Player {
 
       vel.set(dx * hs, vy, dz * hs);
       this.climb = Math.atan2(vy, Math.max(hs, 0.01));
+      // Flying into the side of a building: stop against the wall instead of popping onto its roof.
+      {
+        const ax = pos.x + vel.x * dt;
+        const az = pos.z + vel.z * dt;
+        const ay = pos.y + vel.y * dt;
+        if (this.top(ax, az) > ay + 0.5 && this.top(ax, az) > gh + 0.6) {
+          if (this.top(ax, pos.z) <= ay + 0.5) vel.z = 0;
+          else if (this.top(pos.x, az) <= ay + 0.5) vel.x = 0;
+          else {
+            vel.x = 0;
+            vel.z = 0;
+          }
+        }
+      }
       pos.addScaledVector(vel, dt);
-      const h = w.height(pos.x, pos.z);
+      const h = this.top(pos.x, pos.z);
       if (pos.y <= h) {
         w.normal(pos.x, pos.z, this.n);
         const into = -(vel.x * this.n.x + vel.y * this.n.y + vel.z * this.n.z);

@@ -9,6 +9,7 @@ import { TrailField } from '../world/trailField';
 import { Dust } from '../world/dust';
 import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
+import { Cities } from '../city/cities';
 import { Figure } from './figure';
 import { AudioEngine } from '../audio/audio';
 import { UI } from '../ui/ui';
@@ -59,9 +60,15 @@ function start() {
     const n = new THREE.Vector3();
     let x = 0;
     let z = 0;
-    for (let i = 0; i < 60; i++) {
-      x = (Math.random() * 2 - 1) * SPAWN_RANGE;
-      z = (Math.random() * 2 - 1) * SPAWN_RANGE;
+    // Somewhere in the open desert, with a city in sight a few kilometres off.
+    const ax = (Math.random() * 2 - 1) * SPAWN_RANGE;
+    const az = (Math.random() * 2 - 1) * SPAWN_RANGE;
+    const city = world.cities.near(ax, az)[0];
+    for (let i = 0; i < 80; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const d = city.radius + 2000 + Math.random() * 2500;
+      x = city.cx + Math.cos(a) * d;
+      z = city.cz + Math.sin(a) * d;
       world.sample(x, z, s);
       world.normal(x, z, n);
       if (s.rock < 0.1 && n.y > 0.95) break;
@@ -78,13 +85,15 @@ function start() {
   // ---- scene
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 14000);
+  const cities = new Cities(world, u); // first: it creates the uniforms that tell the terrain where to flatten
+  cities.setFocus(player.state.pos.x, player.state.pos.z);
   const bake = new HeightBake(renderer, u);
   const trail = new TrailField(renderer, u);
   const clipmap = new Clipmap(u);
   const dust = new Dust(world, u);
   const discoveries = new Discoveries(world, u);
   const wildlife = new Wildlife(world, u);
-  scene.add(clipmap.group, discoveries.group, wildlife.group, dust.group);
+  scene.add(clipmap.group, cities.group, discoveries.group, wildlife.group, dust.group);
 
   const figure = new Figure(u);
   scene.add(figure.group);
@@ -195,6 +204,10 @@ function start() {
   );
   applyTier();
   discoveries.onReach = () => audio.chime();
+  cities.onReach = () => audio.chime();
+  player.roof = (x, z) => cities.roofAt(x, z);
+  // What the camera must stay above: sand, or a roof.
+  const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z));
 
   // ---- input
   const keys = new Set<string>();
@@ -452,14 +465,14 @@ function start() {
       const d = (reach * i) / 6;
       const x = camTarget.x + tmp2.x * d;
       const z = camTarget.z + tmp2.z * d;
-      const clear = camTarget.y + tmp2.y * d - (world.height(x, z) + 0.45);
+      const clear = camTarget.y + tmp2.y * d - (topAt(x, z) + 0.45);
       if (clear < 0) {
         dist = Math.min(dist, Math.max(1.2, d + clear / Math.max(0.2, tmp2.y + 0.6)));
         break;
       }
     }
     camera.position.copy(camTarget).addScaledVector(tmp2, dist);
-    camera.position.y = Math.max(camera.position.y, world.height(camera.position.x, camera.position.z) + 0.7);
+    camera.position.y = Math.max(camera.position.y, topAt(camera.position.x, camera.position.z) + 0.7);
     camera.lookAt(camTarget);
     const fov = 50 + Math.min(14, st.speed * 0.55);
     if (Math.abs(camera.fov - fov) > 0.05) {
@@ -469,6 +482,7 @@ function start() {
     camera.updateMatrixWorld();
     sky.position.copy(camera.position);
 
+    cities.update(dt, st.pos);
     bake.update(st.pos);
     clipmap.update(camera.position);
     trail.update(dt, st.pos.x, st.pos.z);
@@ -502,7 +516,7 @@ function start() {
           render();
         },
         freeze: (f: boolean) => (frozen = f),
-        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let frozen = false;

@@ -71,6 +71,7 @@ export class HeightBake {
       vertexShader: heightBakeVert,
       fragmentShader: heightBakeFrag,
       uniforms: {
+        ...uniforms, // includes the city sites that reshape the ground
         uSeed: seedU,
         uBakeOrigin: { value: new THREE.Vector2() },
         uBakeTexel: { value: this.texel },

@@ -1188,6 +1188,12 @@ export class Discoveries {
     if (hash4(cx, cz, s, 1) >= SITE_P) return false;
     this.cellPos.x = cx * CELL + MARGIN + hash4(cx, cz, s, 2) * (CELL - 2 * MARGIN);
     this.cellPos.z = cz * CELL + MARGIN + hash4(cx, cz, s, 3) * (CELL - 2 * MARGIN);
+    // The wilderness finds keep clear of cities.
+    const cities = (this.world as Partial<{ cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>).cities;
+    if (cities) {
+      const c = cities.at(this.cellPos.x, this.cellPos.z);
+      if (Math.hypot(c.cx - this.cellPos.x, c.cz - this.cellPos.z) < c.radius + 1500) return false;
+    }
     return true;
   }
 

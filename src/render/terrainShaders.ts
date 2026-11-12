@@ -12,6 +12,7 @@
 //   float uShadowSteps  heightmap ray-march steps, 1..32 (30 = full quality)
 //   float uDetail       0..1 scale on optional fragment work (1 = full quality)
 import { SURFACE_GLSL } from '../world/surface';
+import { CITY_SHADOW_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 
 // '35 mm' style, baked in.
 const LOOK = /* glsl */ `
@@ -122,6 +123,9 @@ uniform vec3 uSaltShade;
 uniform vec3 uSunCol;
 uniform vec3 uFogCol;
 
+${CITY_SITES_GLSL}
+${CITY_SHADOW_GLSL}
+
 uniform vec2 uInnerCenter; // centre of the next finer level
 uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
 
@@ -204,9 +208,13 @@ void main() {
   vec3 p = vW;
   vec3 toCam = cameraPosition - p;
   float dist = length(toCam);
-  float rock = clamp(vMask.x, 0.0, 1.0);
-  float salt = clamp(vMask.y, 0.0, 1.0) * (1.0 - rock);
-  float sandW = (1.0 - rock) * (1.0 - salt);
+  // Built ground: packed earth and paving. It is hard ground for the player (rock = 1 in the
+  // surface function), but it must not look like mountain rock.
+  float cityGround;
+  float pave = cityBlend(p.xz, cityGround).y;
+  float rock = clamp(vMask.x, 0.0, 1.0) * (1.0 - pave);
+  float salt = clamp(vMask.y, 0.0, 1.0) * (1.0 - rock) * (1.0 - pave);
+  float sandW = (1.0 - rock) * (1.0 - salt) * (1.0 - pave);
 
   // ---- every screen-space derivative up front, in uniform control flow
   // Ripples are set in the sand by the prevailing wind, so their direction is
@@ -301,7 +309,7 @@ void main() {
   float wF;
   float dN = trailTap(uTrailNear, uTrailNearRect, p.xz, gN, wN);
   float dF = trailTap(uTrailFar, uTrailFarRect, p.xz, gF, wF);
-  float soft = 1.0 - rock;
+  float soft = (1.0 - rock) * (1.0 - pave);
   float tr = mix(dF, dN, wN) * soft;
   vec2 tg = mix(gF, gN, wN) * soft;
   vec3 tp = vec3(tg.x, 0.0, tg.y) * TRAIL_NORMAL;
@@ -345,6 +353,7 @@ void main() {
   // ---- light
   float l = mix(clamp(ndl * 1.25, 0.0, 1.0), smoothstep(-0.02, 0.12, ndl), TERM_SHARP);
   l *= shadow;
+  l *= cityShadow(p, uSunDir);
   l *= 1.0 - fs * 0.85;
   l *= 1.0 - tr * 0.22;
   float amb = 0.5 + 0.5 * n.y;
@@ -388,6 +397,20 @@ void main() {
   }
 
   vec3 col = mix(mix(sandCol, saltCol, salt), rockCol, rock);
+
+  // ---- city ground: pale packed earth with a faint, worn paving pattern
+  if (pave > 0.001) {
+    vec3 paveCol = mix(uShade * (0.86 + 0.14 * amb), uLit, l) * vec3(0.95, 0.93, 0.9);
+    float worn = fbm(p.xz * 0.07 + vec2(4.1, -2.7));
+    paveCol *= 0.93 + 0.12 * worn;
+    float pf = 1.0 - smoothstep(30.0, 110.0, dist);
+    if (pf > 0.001) {
+      vec2 pc = cells(p.xz / 1.5);
+      float joint = 1.0 - smoothstep(0.03, 0.09, pc.x);
+      paveCol *= 1.0 - (0.06 * joint + 0.04 * (pc.y - 0.5)) * pf * smoothstep(0.35, 0.6, worn);
+    }
+    col = mix(col, paveCol, pave);
+  }
 
   // ---- sparkle on sand only
   float spk = sandW * (1.0 - smoothstep(25.0 * dk, 60.0 * dk, dist));

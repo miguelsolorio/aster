@@ -7,6 +7,8 @@
 // Every constant below is emitted into the GLSL source, so tune them here.
 import type * as THREE from 'three';
 import type { SurfaceSample, World } from '../game/contract';
+import { CITY_SITES_GLSL } from '../city/cityGlsl';
+import { CityIndex, cityBlendAt, type CityBlend } from '../city/placement';
 
 // ---------------------------------------------------------------- tuning
 
@@ -152,8 +154,8 @@ float sfNoise(vec2 p, uint key) {
   return (ab + u.y * (cd - ab)) * ${F(NSCALE)};
 }
 
-// (height m, rock 0..1, salt 0..1). About 13 noise evaluations.
-vec3 surface(vec2 p) {
+// The raw desert: (height m, rock 0..1, salt 0..1). About 13 noise evaluations.
+vec3 surfaceBase(vec2 p) {
   uint sk = sfMix(uint(int(uSeed)) ^ ${SEED_SALT >>> 0}u);
   vec2 q = p * 0.001; // kilometres
 
@@ -215,6 +217,20 @@ vec3 surface(vec2 p) {
   return vec3(base + da * (big + mid) + mt, rock, salt);
 }
 
+${CITY_SITES_GLSL}
+
+// The desert with cities: the ground is levelled into a plateau under each city,
+// and the built area counts as hard ground (rock = 1, no salt).
+vec3 surface(vec2 p) {
+  vec3 s = surfaceBase(p);
+  float ground;
+  vec2 cb = cityBlend(p, ground);
+  s.x = mix(s.x, ground, cb.x);
+  s.y = max(s.y, cb.y);
+  s.z *= 1.0 - cb.x;
+  return s;
+}
+
 float surfaceH(vec2 p) {
   return surface(p).x;
 }
@@ -222,7 +238,14 @@ float surfaceH(vec2 p) {
 
 // ---------------------------------------------------------------- TypeScript
 
-export function createWorld(seed: number): World {
+/** The terrain plus where its cities are. */
+export interface DesertWorld extends World {
+  readonly cities: CityIndex;
+  /** The desert as it would be with no cities. */
+  base(x: number, z: number, out: SurfaceSample): SurfaceSample;
+}
+
+export function createWorld(seed: number): DesertWorld {
   const sk = mix32((Math.trunc(Math.fround(seed)) | 0) ^ SEED_SALT);
   const key = (k: number): number => (sk + KOFF(k)) >>> 0;
   const kM = key(K_MTN);
@@ -244,7 +267,7 @@ export function createWorld(seed: number): World {
   const fSw = Math.fround(1 / T.swellKm);
   const wM = Math.fround(T.warpM * 0.001);
 
-  function surface(x: number, z: number, out: SurfaceSample): SurfaceSample {
+  function base(x: number, z: number, out: SurfaceSample): SurfaceSample {
     const qx = Math.fround(x * 0.001);
     const qz = Math.fround(z * 0.001);
 
@@ -310,11 +333,27 @@ export function createWorld(seed: number): World {
     return out;
   }
 
+  const cities = new CityIndex(Math.trunc(seed) | 0, base);
+  const blend: CityBlend = { flatten: 0, paved: 0, ground: 0 };
+  // Mirrors surface() in the GLSL: level the ground under the city of this cell.
+  function surface(x: number, z: number, out: SurfaceSample): SurfaceSample {
+    base(x, z, out);
+    const cb = cityBlendAt(cities.at(x, z), x, z, blend);
+    if (cb.flatten > 0) {
+      out.h += (cb.ground - out.h) * cb.flatten;
+      out.rock = Math.max(out.rock, cb.paved);
+      out.salt *= 1 - cb.flatten;
+    }
+    return out;
+  }
+
   const tmp: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   const height = (x: number, z: number): number => surface(x, z, tmp).h;
 
   return {
     seed,
+    cities,
+    base,
     height,
     sample: surface,
     normal(x: number, z: number, out: THREE.Vector3): THREE.Vector3 {
