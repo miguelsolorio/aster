@@ -9,6 +9,8 @@
 //   footsteps / landings ─────────────────────────────────────────── ┘
 //   city near (murmur, voices, steps) ─ cityBus ─┬─ dry ───────────── preMaster
 //   city far (murmur, bell, drum) ─ cityFarBus ──┴─ mostly → reverb
+//   ambience (water, leaves, mill, fire, birds) ─ ambBus ─┬─ dry ──── preMaster
+//                                                          └─ a little → reverb
 //   preMaster → high-shelf cut → pause low-pass → pause duck → limiter
 //             → start fade → volume → visibility gain → speakers
 
@@ -21,6 +23,15 @@ export interface AudioFrame {
   grounded: boolean;
   gust: number; // 0..1 slow-varying wind strength
   altitude: number; // metres above the local base level, roughly 0..400
+}
+
+/** How close/loud each ambient source is for the listener right now, each 0..1. */
+export interface AmbienceLevels {
+  water: number;
+  leaves: number;
+  mill: number;
+  fire: number;
+  birds: number;
 }
 
 // ---------------------------------------------------------------- helpers
@@ -161,6 +172,12 @@ interface Graph {
   noise: AudioBuffer; // short mono noise for one-shots
   cityBus: GainNode; // close city sounds: some dry, some space
   cityFarBus: GainNode; // distant city sounds: mostly reverb
+  ambBus: GainNode; // ambience one-shots and beds
+  ambWater: GainNode;
+  ambLeaves: GainNode;
+  ambWhoosh: GainNode;
+  ambRumble: GainNode;
+  ambSources: AudioScheduledSourceNode[];
 }
 
 type MoodWeights = Record<MoodName, number>;
@@ -238,6 +255,15 @@ export class AudioEngine {
   private nextCityBell = 0;
   private duskBellDone = false;
 
+  // Ambience: raw targets from setAmbience(), smoothed values used by the engine.
+  private ambT: AmbienceLevels = { water: 0, leaves: 0, mill: 0, fire: 0, birds: 0 };
+  private amb: AmbienceLevels = { water: 0, leaves: 0, mill: 0, fire: 0, birds: 0 };
+  private ambGust = 0;
+  private ambNight = 0;
+  private nextAmbTick = 0;
+  private nextBird = 0;
+  private nextCreak = 0;
+
   private paramTimer = 0;
   private clock = 0;
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
@@ -306,6 +332,16 @@ export class AudioEngine {
     this.cityPaved = !!paved;
   }
 
+  /**
+   * Quiet background sources, each 0..1 (already distance-weighted by the game).
+   * water: trickling stream. leaves: rustling foliage (follows the wind gust). mill: creaking
+   * wooden mill. fire: crackling camp fire. birds: sparse daytime calls (fade out at night).
+   */
+  setAmbience(a: AmbienceLevels): void {
+    const v = (x: number): number => (Number.isFinite(x) ? clamp01(x) : 0);
+    this.ambT = { water: v(a.water), leaves: v(a.leaves), mill: v(a.mill), fire: v(a.fire), birds: v(a.birds) };
+  }
+
   /** Once per frame. Cheap: smoothing in JS, AudioParams touched at ~10 Hz. */
   update(f: AudioFrame): void {
     const ctx = this.ctx;
@@ -331,6 +367,23 @@ export class AudioEngine {
     if (this.cityBustleT === 0 && this.cityBustle < 1e-4) this.cityBustle = 0;
     this.cityNight = clamp01(f.night);
     this.cityDay = f.day;
+
+    // Ambience levels, smoothed over about half a second.
+    const ka = 1 - Math.exp(-dt / 0.5);
+    const at = this.ambT;
+    const am = this.amb;
+    am.water += (at.water - am.water) * ka;
+    am.leaves += (at.leaves - am.leaves) * ka;
+    am.mill += (at.mill - am.mill) * ka;
+    am.fire += (at.fire - am.fire) * ka;
+    am.birds += (at.birds - am.birds) * ka;
+    if (at.water === 0 && am.water < 1e-4) am.water = 0;
+    if (at.leaves === 0 && am.leaves < 1e-4) am.leaves = 0;
+    if (at.mill === 0 && am.mill < 1e-4) am.mill = 0;
+    if (at.fire === 0 && am.fire < 1e-4) am.fire = 0;
+    if (at.birds === 0 && am.birds < 1e-4) am.birds = 0;
+    this.ambGust = clamp01(f.gust);
+    this.ambNight = clamp01(f.night);
 
     this.paramTimer += dt;
     if (this.paramTimer >= 0.1) {
@@ -464,6 +517,7 @@ export class AudioEngine {
       try {
         g.windSrc.stop();
         g.hissSrc.stop();
+        for (const s of g.ambSources) s.stop();
       } catch {
         /* already stopped */
       }
@@ -598,6 +652,98 @@ export class AudioEngine {
     hissSrc.connect(hissHP).connect(hissBP).connect(hissGain).connect(preMaster);
     hissSrc.start(0, 3 + Math.random() * 3);
 
+    // Ambience: beds are always running (silent at level 0) and only their gains move.
+    const ambBus = gain(1);
+    ambBus.connect(gain(0.85)).connect(preMaster);
+    ambBus.connect(gain(0.22)).connect(reverbIn);
+    const ambSources: AudioScheduledSourceNode[] = [];
+    const ambNoise = makePinkNoise(ctx, 8, 2);
+    const noiseSrc = (): AudioBufferSourceNode => {
+      const s = ctx.createBufferSource();
+      s.buffer = ambNoise;
+      s.loop = true;
+      s.start(0, Math.random() * 7);
+      ambSources.push(s);
+      return s;
+    };
+    const lfo = (hz: number, depth: number, target: AudioParam): void => {
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.value = hz;
+      const d = gain(depth);
+      o.connect(d).connect(target);
+      o.start(0);
+      ambSources.push(o);
+    };
+    // Water: two band-passed noise bands (body and sparkle); incommensurate LFOs on the
+    // centre frequency and level make it burble instead of hiss. Level node is ambWater.
+    const ambWater = gain(0);
+    {
+      const body = ctx.createBiquadFilter();
+      body.type = 'bandpass';
+      body.frequency.value = 1500;
+      body.Q.value = 1;
+      const bodyAmp = gain(0.6);
+      const spark = ctx.createBiquadFilter();
+      spark.type = 'bandpass';
+      spark.frequency.value = 3300;
+      spark.Q.value = 3;
+      const sparkAmp = gain(0.3);
+      const src = noiseSrc();
+      src.connect(body).connect(bodyAmp).connect(ambWater);
+      src.connect(spark).connect(sparkAmp).connect(ambWater);
+      lfo(0.37, 450, body.frequency);
+      lfo(1.31, 250, body.frequency);
+      lfo(0.83, 700, spark.frequency);
+      lfo(2.3, 0.22, bodyAmp.gain);
+      lfo(5.1, 0.12, bodyAmp.gain);
+      lfo(3.7, 0.12, sparkAmp.gain);
+      ambWater.connect(ambBus);
+    }
+    // Leaves: high-passed noise with a quick flutter.
+    const ambLeaves = gain(0);
+    {
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 2000;
+      hp.Q.value = 0.5;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 7000;
+      lp.Q.value = 0.4;
+      const flutter = gain(0.7);
+      noiseSrc().connect(hp).connect(lp).connect(flutter).connect(ambLeaves);
+      lfo(0.9, 0.2, flutter.gain);
+      lfo(3.1, 0.1, flutter.gain);
+      ambLeaves.connect(ambBus);
+    }
+    // Mill whoosh: slow low-passed noise swell (the creaks are scheduled one-shots).
+    const ambWhoosh = gain(0);
+    {
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 320;
+      lp.Q.value = 0.6;
+      const swell = gain(0.65);
+      noiseSrc().connect(lp).connect(swell).connect(ambWhoosh);
+      lfo(0.23, 0.3, swell.gain);
+      lfo(0.31, 90, lp.frequency);
+      ambWhoosh.connect(ambBus);
+    }
+    // Fire rumble: low noise under the scheduled crackles.
+    const ambRumble = gain(0);
+    {
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 150;
+      lp.Q.value = 0.5;
+      const flick = gain(0.75);
+      noiseSrc().connect(lp).connect(flick).connect(ambRumble);
+      lfo(0.6, 0.15, flick.gain);
+      lfo(1.7, 0.1, flick.gain);
+      ambRumble.connect(ambBus);
+    }
+
     return {
       preMaster,
       pauseLP,
@@ -625,6 +771,12 @@ export class AudioEngine {
       noise: makeWhiteNoise(ctx, 2),
       cityBus,
       cityFarBus,
+      ambBus,
+      ambWater,
+      ambLeaves,
+      ambWhoosh,
+      ambRumble,
+      ambSources,
     };
   }
 
@@ -661,6 +813,14 @@ export class AudioEngine {
     g.pluckDry.gain.setTargetAtTime(0.7 - 0.32 * wn, now, 3);
 
     this.applyCity(now, 0.1);
+
+    // Ambience beds. Peak gains are conservative: at level 1 each sits well below the pads/plucks
+    // (music bus 0.75 x ~0.04..0.07 per voice) and the city murmur (0.24).
+    const am = this.amb;
+    g.ambWater.gain.setTargetAtTime(0.05 * am.water, now, 0.25);
+    g.ambLeaves.gain.setTargetAtTime(0.05 * am.leaves * (0.25 + 0.75 * this.ambGust), now, 0.3);
+    g.ambWhoosh.gain.setTargetAtTime(0.03 * am.mill, now, 0.3);
+    g.ambRumble.gain.setTargetAtTime(0.03 * am.fire, now, 0.3);
   }
 
   /** Murmur bed levels and the slow wander of its formant bands. */
@@ -831,12 +991,237 @@ export class AudioEngine {
       const t = Math.max(this.nextDrone, now + 0.02);
       this.nextDrone = t + this.playDrone(t);
     }
+    if (this.nextAmbTick < now - 1) this.nextAmbTick = now + 0.05;
+    while (this.nextAmbTick < horizon) {
+      const t = Math.max(this.nextAmbTick, now + 0.02);
+      this.ambienceTick(t);
+      this.nextAmbTick = t + CITY_TICK;
+    }
     if (this.nextCityTick < now - 1) this.nextCityTick = now + 0.05;
     while (this.nextCityTick < horizon) {
       const t = Math.max(this.nextCityTick, now + 0.02);
       this.cityTick(t);
       this.nextCityTick = t + CITY_TICK;
     }
+  }
+
+  // ------------------------------------------------------------- ambience
+
+  /** One ambience scheduler tick: random sparse one-shots for water, fire, mill and birds. */
+  private ambienceTick(t: number): void {
+    const am = this.amb;
+    const jit = (): number => t + rand(0, CITY_TICK);
+    // Expected count over one tick (rate in events per second), Bernoulli on the remainder.
+    const count = (rate: number): number => {
+      const e = rate * CITY_TICK;
+      return Math.floor(e) + (Math.random() < e - Math.floor(e) ? 1 : 0);
+    };
+
+    if (am.water > 0.04) {
+      for (let i = count(3.5 * am.water); i > 0; i--) this.waterBloop(jit(), am.water);
+    }
+    if (am.fire > 0.04) {
+      for (let i = count(2 + 9 * am.fire); i > 0; i--) this.fireCrackle(jit(), am.fire);
+    }
+    if (am.mill > 0.04) {
+      if (this.nextCreak < t - 1) this.nextCreak = t + rand(0.5, 2);
+      if (this.nextCreak <= t + CITY_TICK) {
+        this.millCreak(Math.max(this.nextCreak, t), am.mill);
+        this.nextCreak = Math.max(this.nextCreak, t) + rand(2.6, 6.5);
+      }
+    } else {
+      this.nextCreak = 0;
+    }
+    const day = 1 - this.ambNight;
+    if (am.birds > 0.03 && day > 0.05) {
+      if (this.nextBird < t - 1) this.nextBird = t + rand(1, 4);
+      if (this.nextBird <= t + CITY_TICK) {
+        const at = Math.max(this.nextBird, t);
+        const lvl = am.birds * day;
+        this.birdCall(at, lvl, rand(-0.85, 0.85));
+        // Now and then a second bird answers from elsewhere.
+        if (Math.random() < 0.3) this.birdCall(at + rand(0.8, 2), lvl * 0.7, rand(-0.85, 0.85));
+        this.nextBird = at + rand(2.5, 8) / (0.35 + 0.65 * am.birds);
+      }
+    } else {
+      this.nextBird = 0;
+    }
+  }
+
+  /** A small water bubble: a short rising sine blip. */
+  private waterBloop(t: number, level: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    const f = rand(600, 1500);
+    o.frequency.setValueAtTime(f, t);
+    o.frequency.exponentialRampToValueAtTime(f * rand(1.4, 1.9), t + 0.07);
+    const env = ctx.createGain();
+    const peak = Math.max(0.005 * level * rand(0.4, 1), 2 * EPS);
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(peak, t + 0.008);
+    env.gain.exponentialRampToValueAtTime(EPS, t + 0.09);
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.4, 0.4);
+    o.connect(env).connect(pan).connect(g.ambBus);
+    o.start(t);
+    o.stop(t + 0.12);
+    o.onended = () => disconnectAll(o, env, pan);
+  }
+
+  /** One fire crackle: a very short noise tick through a low-pass; sometimes a tiny double. */
+  private fireCrackle(t: number, level: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.25, 0.25);
+    pan.connect(g.ambBus);
+    const hits = Math.random() < 0.25 ? 2 : 1;
+    let last: AudioBufferSourceNode | null = null;
+    const nodes: AudioNode[] = [pan];
+    for (let i = 0; i < hits; i++) {
+      const at = t + i * rand(0.02, 0.06);
+      const src = ctx.createBufferSource();
+      src.buffer = g.noise;
+      src.playbackRate.value = rand(0.8, 1.3);
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = rand(1500, 4500);
+      bp.Q.value = 0.8;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 4200;
+      lp.Q.value = 0.5;
+      const env = ctx.createGain();
+      const dec = rand(0.008, 0.03);
+      const peak = Math.max(0.03 * level * rand(0.2, 1) * (i ? 0.6 : 1), 2 * EPS);
+      env.gain.setValueAtTime(0, at);
+      env.gain.linearRampToValueAtTime(peak, at + 0.001);
+      env.gain.exponentialRampToValueAtTime(EPS, at + 0.001 + dec);
+      src.connect(bp).connect(lp).connect(env).connect(pan);
+      src.start(at, Math.random() * (g.noise.duration - 0.2));
+      src.stop(at + dec + 0.02);
+      nodes.push(src, bp, lp, env);
+      last = src;
+    }
+    if (last) last.onended = () => disconnectAll(...nodes);
+  }
+
+  /** A slow wooden creak: a gliding sawtooth with stick-slip tremolo through a narrow band-pass. */
+  private millCreak(t: number, level: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const dur = rand(0.55, 1.1);
+    const f0 = rand(140, 260);
+    const f1 = f0 * rand(0.78, 1.3);
+    const o = ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(f0, t);
+    o.frequency.linearRampToValueAtTime(f1, t + dur);
+    const o2 = ctx.createOscillator();
+    o2.type = 'sawtooth';
+    o2.frequency.setValueAtTime(f0 * 1.51, t);
+    o2.frequency.linearRampToValueAtTime(f1 * 1.51, t + dur);
+    const o2g = ctx.createGain();
+    o2g.gain.value = 0.4;
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.setValueAtTime(rand(600, 900), t);
+    bp.frequency.linearRampToValueAtTime(rand(500, 1100), t + dur);
+    bp.Q.value = 4;
+    // Stick-slip: fast irregular tremolo on its own node.
+    const trem = ctx.createGain();
+    trem.gain.value = 0.6;
+    const lfo = ctx.createOscillator();
+    lfo.type = 'sine';
+    lfo.frequency.value = rand(18, 38);
+    const lfoD = ctx.createGain();
+    lfoD.gain.value = 0.4;
+    lfo.connect(lfoD).connect(trem.gain);
+    const env = ctx.createGain();
+    const peak = Math.max(0.014 * level * rand(0.7, 1), 2 * EPS);
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(peak, t + dur * 0.3);
+    env.gain.linearRampToValueAtTime(peak * 0.7, t + dur * 0.7);
+    env.gain.linearRampToValueAtTime(0, t + dur);
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.3, 0.3);
+    o.connect(bp);
+    o2.connect(o2g).connect(bp);
+    bp.connect(trem).connect(env).connect(pan).connect(g.ambBus);
+    const end = t + dur + 0.05;
+    for (const n of [o, o2, lfo]) {
+      n.start(t);
+      n.stop(end);
+    }
+    o.onended = () => disconnectAll(o, o2, o2g, bp, trem, lfo, lfoD, env, pan);
+  }
+
+  /** A short soft bird call, one of four invented kinds, panned somewhere in the stereo field. */
+  private birdCall(t: number, level: number, panV: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = panV;
+    pan.connect(g.ambBus);
+    const nodes: AudioNode[] = [pan];
+    let lastOsc: OscillatorNode | null = null;
+    const peakBase = 0.014 * level;
+    const note = (at: number, f0: number, f1: number, dur: number, peak: number, vibHz = 0, vibDepth = 0): void => {
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(f0, at);
+      o.frequency.exponentialRampToValueAtTime(f1, at + dur);
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0, at);
+      env.gain.linearRampToValueAtTime(Math.max(peak, 2 * EPS), at + Math.min(0.012, dur * 0.3));
+      env.gain.exponentialRampToValueAtTime(EPS, at + dur);
+      o.connect(env).connect(pan);
+      nodes.push(o, env);
+      o.start(at);
+      o.stop(at + dur + 0.02);
+      if (vibHz > 0) {
+        const l = ctx.createOscillator();
+        l.frequency.value = vibHz;
+        const d = ctx.createGain();
+        d.gain.value = vibDepth;
+        l.connect(d).connect(o.frequency);
+        nodes.push(l, d);
+        l.start(at);
+        l.stop(at + dur + 0.02);
+      }
+      lastOsc = o;
+    };
+    const kind = Math.floor(Math.random() * 4);
+    if (kind === 0) {
+      // "tsi-tsi-tsit": two or three short rising tweets.
+      const n = Math.random() < 0.5 ? 2 : 3;
+      let f = rand(3200, 4200);
+      for (let i = 0; i < n; i++) {
+        note(t + i * 0.11, f, f * rand(1.1, 1.25), rand(0.06, 0.09), peakBase * (1 - i * 0.12));
+        f *= rand(0.95, 1.05);
+      }
+    } else if (kind === 1) {
+      // A soft trill: one tone wobbling quickly.
+      const f = rand(2800, 3600);
+      note(t, f, f * rand(0.9, 1.1), rand(0.35, 0.55), peakBase * 0.8, rand(24, 36), rand(300, 450));
+    } else if (kind === 2) {
+      // A falling whistle with a lower after-note.
+      const f = rand(3800, 4300);
+      note(t, f, f * 0.72, rand(0.2, 0.28), peakBase);
+      note(t + 0.3, f * 0.7, f * 0.62, rand(0.1, 0.15), peakBase * 0.7);
+    } else {
+      // "pee-oo": a gentle two-note call, lower and rounder.
+      const f = rand(1800, 2400);
+      note(t, f, f * 1.28, rand(0.12, 0.16), peakBase);
+      note(t + 0.19, f * 1.28, f * 0.9, rand(0.16, 0.22), peakBase * 0.85);
+    }
+    if (lastOsc) (lastOsc as OscillatorNode).onended = () => disconnectAll(...nodes);
   }
 
   // ---------------------------------------------------------------- city
