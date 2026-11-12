@@ -9,6 +9,10 @@ export interface TouchHooks {
   onJump(): void;
   /** Reserved; not called by the touch layer. */
   onPause(): void;
+  /** Talk button pressed. */
+  onTalk(): void;
+  /** Board button pressed: step on or off. */
+  onBoard(): void;
 }
 
 export type TouchMode = 'off' | 'play' | 'photo';
@@ -28,6 +32,12 @@ interface Slot {
 const FLY_SVG =
   '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
   '<path d="M6 17.5 14 9.5l8 8"/><path d="M9.5 22 14 17.5l4.5 4.5"/></svg>';
+const TALK_SVG =
+  '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
+  '<path d="M7 8.5h14a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5h-7l-4 3.5v-3.5H7A1.5 1.5 0 0 1 5.5 17v-7A1.5 1.5 0 0 1 7 8.5z"/></svg>';
+const BOARD_SVG =
+  '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
+  '<path d="M5 19.5c0-1.2 4-2 9-2s9 .8 9 2-4 2-9 2-9-.8-9-2z"/><path d="M11 17V9.5M17 17V9.5"/></svg>';
 const DROP_SVG =
   '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
   '<path d="M7 11.5l7 7 7-7"/></svg>';
@@ -48,6 +58,8 @@ export class TouchControls {
   private readonly dot: HTMLDivElement;
   private readonly fly: HTMLButtonElement;
   private readonly drop: HTMLButtonElement;
+  private readonly talk: HTMLButtonElement;
+  private readonly boardBtn: HTMLButtonElement;
 
   private mode: TouchMode = 'off';
   private mouseActive = false;
@@ -96,7 +108,25 @@ export class TouchControls {
     drop.innerHTML = DROP_SVG;
     this.drop = drop;
 
-    layer.append(this.ring, this.dot, fly, drop);
+    // Talk: appears only while someone is in reach.
+    const talk = document.createElement('button');
+    talk.type = 'button';
+    talk.className = 'aster-touch__talk';
+    talk.setAttribute('aria-label', 'Talk');
+    talk.tabIndex = -1;
+    talk.innerHTML = TALK_SVG;
+    this.talk = talk;
+
+    // Board: appears once there is a board to step on or off.
+    const board = document.createElement('button');
+    board.type = 'button';
+    board.className = 'aster-touch__talk aster-touch__board';
+    board.setAttribute('aria-label', 'Step on or off the board');
+    board.tabIndex = -1;
+    board.innerHTML = BOARD_SVG;
+    this.boardBtn = board;
+
+    layer.append(this.ring, this.dot, fly, drop, talk, board);
     root.appendChild(layer);
 
     layer.addEventListener('pointerdown', this.onDown);
@@ -127,6 +157,17 @@ export class TouchControls {
     this.airborne = air;
     this.layer.classList.toggle('aster-touch--air', air);
     if (!air) this.endDrop();
+  }
+
+  /** Show the talk button while there is someone to talk to. */
+  setTalk(on: boolean): void {
+    this.layer.classList.toggle('aster-touch--talk', on);
+  }
+
+  /** Show the board button once there is a board; it reads as pressed while riding. */
+  setBoard(has: boolean, on: boolean): void {
+    this.layer.classList.toggle('aster-touch--board', has);
+    this.boardBtn.classList.toggle('is-held', on);
   }
 
   private syncPointerEvents(): void {
@@ -190,6 +231,14 @@ export class TouchControls {
           this.capture(id);
           this.hooks.onJump();
         }
+        return;
+      }
+      if (t && (t === this.talk || this.talk.contains(t))) {
+        if (this.layer.classList.contains('aster-touch--talk')) this.hooks.onTalk();
+        return;
+      }
+      if (t && (t === this.boardBtn || this.boardBtn.contains(t))) {
+        if (this.layer.classList.contains('aster-touch--board')) this.hooks.onBoard();
         return;
       }
       if (t && (t === this.drop || this.drop.contains(t))) {

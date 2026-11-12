@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { PlayerState, Uniforms } from './contract';
 import { strideLength } from './player';
 import { STYLE_GLSL } from '../render/styleGlsl';
+import { CHOSEN, boardGeometry, carpetGeometry, pickGeometry, rollGeometry, rugMaterial, solidMaterial } from './equipment';
 
 // The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
 // legs, a plain white face and a round hood.
@@ -25,6 +26,9 @@ uniform float uFlow;      // 0 hanging .. 1+ streaming straight back
 uniform vec2 uLocalWind;  // wind in the figure's local x, z
 uniform float uSpread;    // 0 hanging .. 1 flared wide
 uniform float uStep;      // signed stride, swings the hem with the legs
+uniform float uBack;      // 0..1 a board is slung on the back: the cloth lies against it
+uniform float uRoll;      // 0..1 a rolled carpet is strapped low on the back
+uniform float uPick;      // 0..1 a pick is tucked slantwise across the back
 attribute vec2 aUV;       // x: -1..1 around the body (0 = front), y: 0 collar .. 1 hem
 varying vec3 vW;
 varying vec3 vN;
@@ -55,6 +59,19 @@ void main() {
   float ph = v * 6.0 - t + ang * 2.0;
   p += radial * sin(ph) * 0.03 * w * (0.5 + uFlow * 1.8);
   p.y += sin(v * 9.0 - t * 1.3 + ang * 3.0) * 0.02 * w * uFlow;
+
+  // A board on the back: the cloth cannot pass through it. Across the board's width it is
+  // held in front of the wood and lies flat there; to either side it hangs and streams as before.
+  float bx = abs(p.x + (p.y - 0.25) * 0.203);
+  float held = (1.0 - smoothstep(0.17, 0.3, bx)) * uBack;
+  p.z = mix(p.z, max(p.z, -0.235 + 0.02 * sin(ph) * w), held);
+  // A rolled carpet strapped across the small of the back holds the cloth in the same way.
+  float band = (1.0 - smoothstep(0.1, 0.2, abs(p.y - 0.14))) * (1.0 - smoothstep(0.3, 0.42, abs(p.x))) * uRoll;
+  p.z = mix(p.z, max(p.z, -0.225), band);
+  // And a pick tucked across the back, from the left hip up to the right shoulder.
+  float px = abs(p.x - (-0.135 + (p.y - 0.1) * 0.685));
+  float tuck = (1.0 - smoothstep(0.05, 0.13, px)) * smoothstep(0.0, 0.06, p.y) * (1.0 - smoothstep(0.56, 0.62, p.y)) * uPick;
+  p.z = mix(p.z, max(p.z, -0.225), tuck);
 
   vec4 wp = modelMatrix * vec4(p, 1.0);
   vW = wp.xyz;
@@ -195,6 +212,29 @@ export class Figure {
   private lean = 0;
   private bank = 0;
   private time = 0;
+  /** The board, twice: slung on the back when walking, under the feet when riding. */
+  private boardBack: THREE.Mesh;
+  private boardFoot: THREE.Mesh;
+  /** Carries a board. */
+  board = false;
+  /** Standing on it, rather than carrying it on the back. */
+  boardOn = true;
+  private boardTilt = 0;
+  private backU = { value: 0 };
+  /** Has a carpet: rolled on the back, it unrolls under the feet whenever the figure flies. */
+  carpet = false;
+  private rug: THREE.Mesh;
+  private roll: THREE.Mesh;
+  private rollU = { value: 0 };
+  private rugU = { value: 0 };
+  private rugLen = { value: 2.4 };
+  private rugOut = 0;
+  /** Carries a pick, tucked slantwise across the back. */
+  pick = false;
+  /** 0..1 through a swing of the pick, or -1 when it hangs at rest. */
+  swing = -1;
+  private pickMesh: THREE.Mesh;
+  private pickU = { value: 0 };
 
   constructor(u: Uniforms) {
     this.group.rotation.order = 'YXZ';
@@ -232,7 +272,7 @@ export class Figure {
     const t = this.torso;
     t.position.y = HIP;
     this.group.add(t);
-    const cloth2 = { uFlow: this.flow, uLocalWind: this.localWind, uSpread: this.spreadU, uStep: this.stepU };
+    const cloth2 = { uFlow: this.flow, uLocalWind: this.localWind, uSpread: this.spreadU, uStep: this.stepU, uBack: this.backU, uRoll: this.rollU, uPick: this.pickU };
     add(t, drapeGeometry(DRESS).translate(0, -HIP, 0), mat(0, 0, cloth2, robeVert, THREE.DoubleSide));
     add(t, drapeGeometry(CLOAK).translate(0, -HIP, 0), mat(0, 1, cloth2, robeVert, THREE.DoubleSide));
     add(t, new THREE.SphereGeometry(HEAD_R, 24, 16).translate(0, HEAD_Y - HIP, 0.035), mat(1));
@@ -246,6 +286,43 @@ export class Figure {
       t.add(arm);
       this.arms.push(arm);
     }
+
+    // What it has been given. The designs live in equipment.ts.
+    const solid = solidMaterial(u);
+    const empty = new THREE.BufferGeometry();
+    // the board on the back: stood on end between the shoulders, nose up, leaning a little
+    this.boardBack = add(t, empty, solid);
+    this.boardBack.rotation.set(-Math.PI / 2, 0, 0.2, 'ZYX');
+    this.boardBack.position.set(0, 0.25, -0.265);
+    this.boardFoot = add(this.group, empty, solid);
+    this.boardFoot.position.set(0, 0.03, 0.05);
+    // the carpet, flying and rolled
+    this.rug = add(this.group, empty, rugMaterial(u, this.rugU, this.rugLen));
+    this.roll = add(t, empty, solid);
+    // the pick, tucked across the back
+    this.pickMesh = add(t, empty, solid);
+    this.boardBack.visible = this.boardFoot.visible = this.rug.visible = this.roll.visible = this.pickMesh.visible = false;
+    this.setBoard(CHOSEN.board);
+    this.setCarpet(CHOSEN.carpet);
+    this.setPick(CHOSEN.pick);
+  }
+
+  /** Wear a different design (an index into BOARDS, CARPETS or PICKS in equipment.ts). */
+  setBoard(i: number) {
+    const g = boardGeometry(i);
+    this.boardBack.geometry = g;
+    this.boardFoot.geometry = g;
+  }
+
+  setCarpet(i: number) {
+    const c = carpetGeometry(i);
+    this.rug.geometry = c.geo;
+    this.rugLen.value = c.len;
+    this.roll.geometry = rollGeometry(i);
+  }
+
+  setPick(i: number) {
+    this.pickMesh.geometry = pickGeometry(i);
   }
 
   /** Stretch an arm from its shoulder to a point in torso space. */
@@ -326,8 +403,10 @@ export class Figure {
       let aKnee = 0.2 + rise * (lead ? 0.75 : 0.15) + glide * 0.1;
       aThigh += (-0.5 - 0.1 * sg - aThigh) * flare;
       aKnee += (0.45 - aKnee) * flare;
-      thigh += (aThigh - thigh) * air;
-      knee += (aKnee - knee) * air;
+      // With a board the feet stay planted on it through a jump or a flight.
+      const loose = (this.board && this.boardOn) || this.rugOut > 0.5 ? 0.12 : 1;
+      thigh += ((fThigh - thigh) * (1 - loose) + (aThigh - thigh) * loose) * air;
+      knee += ((fKnee + 0.18 * rise - knee) * (1 - loose) + (aKnee - knee) * loose) * air;
       this.hips[i].rotation.x = thigh;
       this.knees[i].rotation.x = knee;
 
@@ -351,6 +430,55 @@ export class Figure {
     this.torso.rotation.x = Math.sin(a * 2) * 0.02 * this.amp - this.air * 0.1;
     this.torso.rotation.y = s * 0.09 * this.amp;
     this.torso.rotation.z = c * 0.03 * this.amp;
+
+    // The board lies along the sand under the feet while riding, whatever the body's lean.
+    // It stays there in the air too, nose lifting with a climb and dipping with a fall.
+    // The carpet unrolls for a flight (a climb or a glide, not a plain jump) and takes the board's place.
+    const rugT = this.carpet && !st.grounded && (m.lifting || m.gliding) ? 1 : 0;
+    this.rugOut += (rugT - this.rugOut) * k(rugT ? 7 : 12);
+    this.rug.visible = this.rugOut > 0.03;
+    if (this.rug.visible) {
+      this.rugU.value += (Math.min(1, st.speed / 30) - this.rugU.value) * k(3);
+      const climb = -0.4 * Math.atan2(st.vel.y, Math.max(st.speed, 6));
+      this.rug.rotation.x = -this.pitch + climb;
+      this.rug.rotation.z = this.bank * 0.4;
+      this.rug.position.set(0, 0.02, -0.15);
+      this.rug.scale.set(0.3 + 0.7 * this.rugOut, 1, this.rugOut);
+    }
+    const riding = this.board && this.boardOn && this.rugOut < 0.5 && (st.grounded ? this.slide > 0.2 : true);
+    this.boardFoot.visible = riding;
+    this.boardBack.visible = this.board && !riding;
+    this.backU.value = this.boardBack.visible ? 1 : 0;
+    // Rolled, the carpet rides across the small of the back: outside the board when that is there too.
+    this.roll.visible = this.carpet && this.rugOut < 0.5;
+    this.rollU.value = this.roll.visible ? 1 : 0;
+    this.roll.position.set(0, 0.14, this.boardBack.visible ? -0.385 : -0.31);
+
+    // The pick is tucked slantwise across the back, head up by the shoulder and its edge turned
+    // outward (outside the board when that is there too), or it is in the hand through a swing:
+    // up over the shoulder, then down in front.
+    this.pickMesh.visible = this.pick;
+    this.pickU.value = this.pick && this.swing < 0 ? 1 : 0;
+    if (this.pick && this.swing >= 0) {
+      const a = this.swing * Math.PI * 2;
+      const up = 0.5 + 0.5 * Math.cos(a); // 1 raised .. 0 struck
+      const hx = -0.16;
+      const hy = -0.12 + 0.5 * up;
+      const hz = 0.34 - 0.2 * up;
+      this.reach(this.arms[0], hx, hy, hz, 1);
+      this.pickMesh.position.set(hx, hy, hz);
+      this.pickMesh.rotation.set(1.75 - 2.1 * up, 0, 0);
+    } else if (this.pick) {
+      this.pickMesh.position.set(-0.135, 0.1, this.boardBack.visible ? -0.335 : -0.255);
+      this.pickMesh.rotation.set(0, Math.PI, 0.6);
+    }
+    if (riding) {
+      const tiltT = st.grounded ? -Math.atan(m.slopeAlong) : -0.45 * Math.atan2(st.vel.y, Math.max(st.speed, 4));
+      this.boardTilt += (tiltT - this.boardTilt) * k(st.grounded ? 14 : 6);
+      this.boardFoot.rotation.x = -this.pitch + this.boardTilt;
+      this.boardFoot.rotation.z = st.grounded ? 0 : this.bank * 0.5;
+      this.boardFoot.position.y = 0.03;
+    }
 
     const g = this.group;
     g.rotation.set(this.pitch, facing, -this.bank * Math.max(this.slide, air * 0.5) + sway * fly);

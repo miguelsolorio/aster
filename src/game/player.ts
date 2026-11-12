@@ -1,10 +1,11 @@
 import * as THREE from 'three';
 import type { PlayerState, SurfaceSample, World } from './contract';
 
-const CRUISE = 11; // glide speed you can hold on the flat
-const BOOST = 32; // with Shift
+const CRUISE = 16.5; // glide speed you can hold on the flat
+const BOOST = 48; // with Shift
 const WALK = 5.2; // on rock
 const RUN = 19; // on rock with Shift
+const RUN_SAND = 9.5; // on foot in sand with Shift: soft ground, hard going
 const GRAVITY = 20;
 const LIFT_TIME = 3.5; // seconds of climbing in the reserve; refilled on landing
 const LIFT_SPEED = 8; // climb rate while jump is held
@@ -13,9 +14,10 @@ const GLIDE_SINK = 2; // steady sink in a glide
 const GLIDE_SPEED = 16; // forward speed in flight
 const GLIDE_BOOST = 45; // in flight with Shift
 const HOVER_SINK = 4.5; // sink with no direction held: he stops and settles down
-const MAX_SPEED = 48;
+const MAX_SPEED = 60;
 const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
 const REACH = 0.38; // how far ahead of the feet a wall is felt
+const CARPET = 1.6; // a carpet flies this much faster, and climbs for twice as long
 const TAP_GRACE = 0.12; // in flight a press waits this long before climbing, so a double tap can drop instead
 const DOUBLE_TAP = 0.3; // two presses this close together in flight drop you
 
@@ -43,8 +45,10 @@ export interface PlayerEvents {
 const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
 /**
- * The wanderer surfs the sand: momentum carries, turns are carved, and dune
- * faces give or take speed. On bare rock there is nothing to glide on, so it walks.
+ * The wanderer starts on foot. A board, once given, surfs the sand: momentum carries,
+ * turns are carved, and dune faces give or take speed. On bare rock there is nothing
+ * to glide on, so it walks. A held jump climbs and letting go glides; a carpet, once
+ * given, does both faster.
  */
 export class Player {
   readonly state: PlayerState = {
@@ -75,6 +79,10 @@ export class Player {
   alt = 0;
   /** 0..1 walk-cycle phase on rock. */
   stride = 0;
+  /** Standing on a board: sand is ridden instead of walked. */
+  board = false;
+  /** Has a carpet: flying is faster and the climb lasts longer. */
+  carpet = false;
 
   private n = new THREE.Vector3();
   private s: SurfaceSample = { h: 0, rock: 0, salt: 0 };
@@ -157,7 +165,7 @@ export class Player {
       this.climb = 0;
       this.gliding = false;
       this.lifting = false;
-      this.reserve = LIFT_TIME;
+      this.reserve = LIFT_TIME * (this.carpet ? 2 : 1);
       this.holdT = 0;
       this.armed = true;
       this.flew = false;
@@ -165,12 +173,13 @@ export class Player {
       this.dropping = false;
       let hs = Math.hypot(vel.x, vel.z);
 
-      if (rock) {
-        // ---- walking on rock
+      if (rock || !this.board) {
+        // ---- walking: on rock, and on sand until there is a board to ride
         st.sliding = false;
         const climb = this.wish.x * gx + this.wish.y * gz;
-        const factor = Math.min(1.2, Math.max(0.35, 1 - climb * 0.9));
-        const target = (input.run ? RUN : WALK) * factor;
+        // Sand gives underfoot: a dune face is slower going up than rock of the same pitch.
+        const factor = rock ? Math.min(1.2, Math.max(0.35, 1 - climb * 0.9)) : Math.min(1.12, Math.max(0.3, 1 - climb * 1.3));
+        const target = (input.run ? (rock ? RUN : RUN_SAND) : WALK) * factor;
         const rate = 1 - Math.exp(-dt * 6);
         vel.x += (this.wish.x * target - vel.x) * rate;
         vel.z += (this.wish.y * target - vel.z) * rate;
@@ -327,7 +336,7 @@ export class Player {
       }
 
       // Footsteps only where you walk.
-      if (st.grounded && rock) {
+      if (st.grounded && (rock || !this.board)) {
         const sp = Math.hypot(vel.x, vel.z);
         const strideLen = strideLength(sp, st.running);
         this.stepDist += sp * dt;
@@ -407,9 +416,10 @@ export class Player {
         // stick is pushed. Let go and he eases to a stop in the air and settles straight
         // down, so you can come to rest over a roof. Extra speed from a fast launch bleeds off.
         // Shift raises the glide speed and gets there in about a second.
-        const want = wishing ? (input.run ? GLIDE_BOOST : GLIDE_SPEED) * Math.min(1, wl) : 0;
+        const fast = this.carpet ? CARPET : 1;
+        const want = wishing ? (input.run ? GLIDE_BOOST : GLIDE_SPEED) * fast * Math.min(1, wl) : 0;
         if (hs > want) hs += (want - hs) * (1 - Math.exp(-dt * (wishing ? 0.8 : 2.2)));
-        else hs = Math.min(want, hs + (input.run ? 30 : 14) * dt);
+        else hs = Math.min(want, hs + (input.run ? 30 : 14) * fast * dt);
       } else {
         hs *= 1 - 0.03 * dt;
       }
@@ -469,9 +479,10 @@ export class Player {
           vel.z *= keep;
         }
         st.onRock = this.hard?.(pos.x, pos.z, pos.y) ? 1 : w.sample(pos.x, pos.z, this.s).rock;
-        if (st.onRock > 0.5) {
+        const onRock = st.onRock > 0.5;
+        if (onRock || !this.board) {
           const sp = Math.hypot(vel.x, vel.z);
-          const cap = input.run ? RUN : WALK;
+          const cap = input.run ? (onRock ? RUN : RUN_SAND) : WALK;
           if (sp > cap) {
             vel.x *= cap / sp;
             vel.z *= cap / sp;

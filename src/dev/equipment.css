@@ -1,0 +1,211 @@
+/* Dev-only: the equipment sheet. One canvas sits behind the page and draws into each tile. */
+:root {
+  --bg: #14100d;
+  --ink: #efe6d8;
+  --muted: #b5a998;
+  --line: rgba(239, 230, 216, 0.16);
+  --accent: #e9c98f;
+  --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+html,
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 14px/1.45 var(--sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+canvas.eq-canvas {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100vh;
+  display: block;
+  pointer-events: none;
+}
+
+.eq {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  gap: 28px;
+  max-width: 1500px;
+  margin: 0 auto;
+  padding: 0 24px 80px;
+}
+
+.eq-bar {
+  grid-column: 1 / -1;
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 22px;
+  padding: 14px 0;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+
+.eq-bar h1 {
+  margin: 0 8px 0 0;
+  font: 400 22px/1 var(--serif);
+}
+
+.eq-bar label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.eq-bar input[type="range"] {
+  width: 150px;
+  accent-color: var(--accent);
+}
+
+.eq-bar select,
+.eq-bar button {
+  font: inherit;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 10px;
+}
+
+.eq-bar button {
+  cursor: pointer;
+}
+
+.eq-bar button:hover {
+  border-color: var(--accent);
+}
+
+.eq-pick {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.eq-pick code {
+  font: 13px ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--accent);
+  padding: 5px 10px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+}
+
+.eq-main h2 {
+  margin: 30px 0 4px;
+  font: 400 20px/1.2 var(--serif);
+}
+
+.eq-main p.eq-lede {
+  margin: 0 0 14px;
+  color: var(--muted);
+  max-width: 60ch;
+}
+
+.eq-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 14px;
+}
+
+.eq-tile {
+  display: block;
+  padding: 0;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.eq-tile:hover {
+  border-color: rgba(239, 230, 216, 0.4);
+}
+
+.eq-tile:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.eq-tile[aria-pressed="true"] {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+/* the window the canvas shows through */
+.eq-stage {
+  aspect-ratio: 4 / 3;
+}
+
+.eq-cap {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px 10px;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+.eq-cap b {
+  font: 600 12px ui-monospace, "SF Mono", Menlo, monospace;
+  color: var(--accent);
+}
+
+.eq-cap span {
+  font: 15px var(--serif);
+}
+
+.eq-side {
+  position: sticky;
+  top: 74px;
+  align-self: start;
+  margin-top: 30px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.eq-side .eq-stage {
+  aspect-ratio: 1 / 0.95;
+}
+
+.eq-side .eq-info {
+  padding: 12px 14px 14px;
+  background: var(--bg);
+  border-top: 1px solid var(--line);
+}
+
+.eq-side h3 {
+  margin: 0 0 4px;
+  font: 400 19px/1.2 var(--serif);
+}
+
+.eq-side p {
+  margin: 0;
+  color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  .eq {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .eq-side {
+    display: none;
+  }
+}
