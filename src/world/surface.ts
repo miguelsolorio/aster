@@ -107,6 +107,7 @@ export const TERRAIN = {
   springLip: 0.5,
   springBack: 0.2,
   springHalf: 8, // half-width of the notch (m)
+  springHeight: 9, // floor to ceiling under the rock that caps the notch (m)
 } as const;
 
 /** Tallest ground the terrain can produce (m); shadows stop marching above it. */
@@ -568,8 +569,10 @@ export interface DesertWorld extends World {
   cave(gi: number, gj: number): Cave | null;
   /** The height of the cave ceiling over (x, z), or Infinity where there is no cave roof. */
   caveCeil(x: number, z: number): number;
-  /** The ground as it would be with no cave cut into it: the top of a cave's roof. */
+  /** The ground as it would be with no cave or spring notch cut into it: the top of the rock over one. */
   uncarved(x: number, z: number): number;
+  /** uncarved, with the rock and salt of that ground. */
+  uncarvedSample(x: number, z: number, out: SurfaceSample): SurfaceSample;
   /** Distance to the centre line of the nearest river (m). Rivers fade out near cities and on massifs. */
   river(x: number, z: number): number;
   /** The massif at the corner (gi, gj) of the city grid, at world (gi, gj) * CITY_CELL, if any. */
@@ -679,7 +682,7 @@ export function createWorld(seed: number): DesertWorld {
     return pk;
   }
   const mScratch = { x: 0, z: 0, r: 0, h: 0, jx: 0, jz: 0, ux: 0, uz: 0 };
-  let caveOn = true; // false while sampling the mountain as it would be with no cave cut into it
+  let caveOn = true; // false while sampling the mountain with no cave or spring notch cut into it
   const cvS = { x: 0, z: 0, along: 0, lat: 0, ex: 0, ez: 0 };
   /** Where a point (dx, dz from the massif's centre) lies in the frame of its cave. Mirrors the GLSL. */
   function caveFrame(ms: typeof mScratch, dx: number, dz: number): void {
@@ -853,7 +856,7 @@ export function createWorld(seed: number): DesertWorld {
           rkc = Math.max(rkc, sm);
         }
         // the spring's notch (mirrors the GLSL)
-        const nk = (1 - smoothstep(T.springHalf - 1, T.springHalf + 1, rd)) * smoothstep(T.springBack - 0.04, T.springBack, rs) * (1 - smoothstep(T.springLip, T.springLip + 0.04, rs)) * (mfo >= 0.0001 ? 1 : 0);
+        const nk = (1 - smoothstep(T.springHalf - 1, T.springHalf + 1, rd)) * smoothstep(T.springBack - 0.04, T.springBack, rs) * (1 - smoothstep(T.springLip, T.springLip + 0.04, rs)) * (mfo >= 0.0001 && caveOn ? 1 : 0);
         h = h + (carved - h) * (rs + (T.springLip + 0.02 - rs) * nk);
         rock = rock + (rkc - rock) * rs;
         salt *= 1 + (w - 1) * rs;
@@ -916,6 +919,12 @@ export function createWorld(seed: number): DesertWorld {
       const h = height(x, z);
       caveOn = true;
       return h;
+    },
+    uncarvedSample(x: number, z: number, out: SurfaceSample): SurfaceSample {
+      caveOn = false;
+      surface(x, z, out);
+      caveOn = true;
+      return out;
     },
     massif(gi: number, gj: number): Massif | null {
       return massifAt(gi, gj, mScratch) ? { x: mScratch.x, z: mScratch.z, r: mScratch.r, h: mScratch.h } : null;

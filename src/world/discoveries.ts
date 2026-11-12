@@ -7,6 +7,7 @@ import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contrac
 import { WORLD_SCALE } from './scale';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import { TERRAIN, type Cave, type Massif } from './surface';
+import { rockCapVert, terrainFrag } from '../render/terrainShaders';
 import { CITY_CELL } from '../city/placement';
 
 const CELL = 900 * WORLD_SCALE;
@@ -349,8 +350,45 @@ class FrondBuilder {
   }
 }
 
+/** Triangles drawn with the ground's own shader: the rock over a hollow. */
+class RockBuilder {
+  pos: number[] = [];
+  nrm: number[] = [];
+  mask: number[] = [];
+  cave: number[] = [];
+
+  vert(x: number, y: number, z: number, nx: number, ny: number, nz: number, rock: number, salt: number, cave: number): void {
+    this.pos.push(x, y, z);
+    this.nrm.push(nx, ny, nz);
+    this.mask.push(rock, salt);
+    this.cave.push(cave);
+  }
+
+  build(): THREE.BufferGeometry | null {
+    if (this.pos.length === 0) return null;
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
+    g.setAttribute('aMask', new THREE.Float32BufferAttribute(this.mask, 2));
+    g.setAttribute('aCave', new THREE.Float32BufferAttribute(this.cave, 1));
+    g.computeBoundingSphere();
+    return g;
+  }
+}
+
+/** The uncut rock face at a point of a roof: height (relative to the site's base), normal, rock and salt. */
+interface Face {
+  y: number;
+  nx: number;
+  ny: number;
+  nz: number;
+  rock: number;
+  salt: number;
+}
+
 /** Builds a site in a rotated (u along, v across) frame; y is relative to the site's base height. */
 class Ctx {
+  readonly rock = new RockBuilder();
   readonly stone = new StoneBuilder();
   readonly fronds = new FrondBuilder();
   readonly pools: { y: number; r: number }[] = [];
@@ -819,53 +857,72 @@ function buildCairn(c: Ctx, u: number, v: number): void {
   c.glow(u, y + 0.38, v, 6);
 }
 
+/** Where a roof goes, in its site's frame: u runs into the rock from the opening. */
+interface RoofDims {
+  half: number; // half-width of the hollow (m)
+  from: number; // the nearest to the opening the roof may start
+  len: number; // u of the back wall
+  height: number; // floor to ceiling (m)
+}
+
 /**
- * The rock over a cave. The terrain cuts the cave as an open slot; this caps it, from where the
- * mountain stands a ceiling's height above the floor to the back wall. The frame's u axis runs
- * into the mountain from the mouth. top gives the mountainside as it would be uncut, and floor
- * the cave floor, both relative to the site's base.
+ * The rock over a hollow. The terrain cuts caves and spring notches as open slots; this caps
+ * one, from where the rock stands a ceiling's height above the floor to the back wall. face
+ * gives the rock as it would be uncut, and floor the hollow's floor (relative to the site's base).
+ * It is drawn with the ground's shader, so the cliff carries on across it.
  */
-function buildCaveRoof(c: Ctx, top: (u: number, v: number) => number, floor: (u: number) => number): void {
-  const st = c.stone;
-  const HALF = TERRAIN.caveHalf + 2.6;
-  const NV = 6;
-  const STEP = 2.5;
-  const u0 = TERRAIN.caveRoofFrom - 2;
-  const NU = Math.ceil((TERRAIN.caveLen + 4 - u0) / STEP);
-  c.foot = TERRAIN.caveLen;
-  const P = new THREE.Vector3();
-  const put = (u: number, v: number, y: number) => {
+function buildRoof(c: Ctx, face: (u: number, v: number, out: Face) => Face, floor: (u: number) => number, dm: RoofDims): void {
+  const rk = c.rock;
+  const HALF = dm.half + 1.4;
+  const NV = 10;
+  const STEP = 1;
+  c.foot = dm.len;
+  const F: Face = { y: 0, nx: 0, ny: 1, nz: 0, rock: 1, salt: 0 };
+  // The roof starts where the rock first stands a full ceiling's height over the floor, so
+  // the opening under its brow is that tall.
+  let u0 = dm.from;
+  while (u0 < dm.len - 2 && face(u0, 0, F).y - floor(u0) < dm.height + 0.3) u0 += 0.25;
+  const NU = Math.ceil((dm.len + 3 - u0) / STEP);
+  // the mountainside itself, lifted a hand's width so it never fights the ground under it
+  const top = (u: number, v: number) => {
+    face(u, v, F);
     c.at(u, v);
-    P.set(c.lx, y, c.lz);
-    st.vert(P.x, P.y, P.z);
+    rk.vert(c.lx, F.y + 0.05, c.lz, F.nx, F.ny, F.nz, F.rock, F.salt, 0);
   };
-  const topY = (u: number, v: number) => top(u, v) + 0.35;
-  // the underside is level across the cave, and never above the mountainside
-  const lowY = (u: number, v: number) => Math.min(floor(u) + TERRAIN.caveHeight, topY(u, v) - 0.5);
+  // the underside is level across the hollow, and never above the rock face
+  const lowY = (u: number, v: number) => Math.min(floor(u) + dm.height, face(u, v, F).y - 0.4);
+  const low = (u: number, v: number) => {
+    const y = lowY(u, v);
+    c.at(u, v);
+    rk.vert(c.lx, y, c.lz, 0, -1, 0, 1, 0, 1);
+  };
+  // the brow faces out of the opening, back along u
+  c.at(-1, 0);
+  const bl = Math.hypot(c.lx, c.lz) || 1;
+  const bnx = c.lx / bl;
+  const bnz = c.lz / bl;
+  const brow = (u: number, v: number, y: number) => {
+    c.at(u, v);
+    rk.vert(c.lx, y, c.lz, bnx, 0, bnz, 1, 0, 0.75);
+  };
   for (let i = 0; i < NU; i++) {
     const ua = u0 + i * STEP;
     const ub = ua + STEP;
     for (let j = 0; j < NV; j++) {
       const va = -HALF + (j / NV) * 2 * HALF;
       const vb = -HALF + ((j + 1) / NV) * 2 * HALF;
-      const k = c.r(0.9, 1.06);
-      // the mountainside over the cave
-      st.set(0.84 * k, 0.72 * k, 0.58 * k, 0, 0.12);
-      put(ua, va, topY(ua, va)); put(ua, vb, topY(ua, vb)); put(ub, va, topY(ub, va));
-      put(ub, va, topY(ub, va)); put(ua, vb, topY(ua, vb)); put(ub, vb, topY(ub, vb));
-      // the ceiling
-      st.set(0.5 * k, 0.38 * k, 0.3 * k, 0, 0.3);
-      put(ua, va, lowY(ua, va)); put(ub, va, lowY(ub, va)); put(ua, vb, lowY(ua, vb));
-      put(ub, va, lowY(ub, va)); put(ub, vb, lowY(ub, vb)); put(ua, vb, lowY(ua, vb));
-      // the brow over the mouth
+      top(ua, va); top(ua, vb); top(ub, va);
+      top(ub, va); top(ua, vb); top(ub, vb);
+      low(ua, va); low(ub, va); low(ua, vb);
+      low(ub, va); low(ub, vb); low(ua, vb);
       if (i === 0) {
-        st.set(0.62 * k, 0.47 * k, 0.37 * k, 0, 0.1);
-        put(ua, va, lowY(ua, va)); put(ua, vb, lowY(ua, vb)); put(ua, va, topY(ua, va));
-        put(ua, va, topY(ua, va)); put(ua, vb, lowY(ua, vb)); put(ua, vb, topY(ua, vb));
+        const ya = face(ua, va, F).y + 0.05;
+        const yb = face(ua, vb, F).y + 0.05;
+        brow(ua, va, lowY(ua, va)); brow(ua, vb, lowY(ua, vb)); brow(ua, va, ya);
+        brow(ua, va, ya); brow(ua, vb, lowY(ua, vb)); brow(ua, vb, yb);
       }
     }
   }
-  buildCairn(c, TERRAIN.caveLen - 7, 0);
 }
 
 function buildArch(c: Ctx): void {
@@ -1246,6 +1303,16 @@ function buildShell(c: Ctx): void {
 
 // ------------------------------------------------------------------ the system
 
+/** A spring: the middle of the lip, the unit direction square into the cliff there, and the notch's depth (m). */
+interface Spring {
+  x: number;
+  z: number;
+  dx: number;
+  dz: number;
+  len: number;
+  half: number; // half-width of the rock over it (m)
+}
+
 interface Site {
   key: number;
   x: number;
@@ -1262,6 +1329,7 @@ export class Discoveries {
 
   private readonly world: World;
   private readonly stoneMat: THREE.ShaderMaterial;
+  private readonly rockMat: THREE.ShaderMaterial;
   private readonly waterMat: THREE.ShaderMaterial;
   private readonly frondMat: THREE.ShaderMaterial;
   private readonly glowMat: THREE.ShaderMaterial;
@@ -1270,6 +1338,9 @@ export class Discoveries {
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private readonly cellPos = { x: 0, z: 0 };
   private readonly bankSample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
+  private readonly springCache = new Map<number, Spring[]>();
+  /** The rock caps over springs that are built now, by site key. */
+  private readonly caps = new Map<number, Spring>();
   private scanT = 0;
 
   constructor(world: World, uniforms: Uniforms) {
@@ -1279,6 +1350,13 @@ export class Discoveries {
       uniforms: { ...uniforms },
       vertexShader: stoneVert,
       fragmentShader: stoneFrag,
+      side: THREE.DoubleSide,
+    });
+    this.rockMat = new THREE.ShaderMaterial({
+      // the ground's own shader; no clipmap level to cut out of it
+      uniforms: { ...uniforms, uInnerCenter: { value: new THREE.Vector2() }, uInnerHalf: { value: -1 } },
+      vertexShader: rockCapVert,
+      fragmentShader: terrainFrag,
       side: THREE.DoubleSide,
     });
     this.waterMat = new THREE.ShaderMaterial({
@@ -1404,7 +1482,7 @@ export class Discoveries {
         if (!m) continue;
         const id = (gi + 32768) * 65536 + (gj + 32768);
         const seed = Math.floor(hash4(gi, gj, this.world.seed | 0, 11) * 4294967296);
-        const summitKey = -(id * 2 + 1);
+        const summitKey = -(id * 16 + 1);
         // (inside the build radius only: anything further is dropped again on the next scan)
         if (!this.isBuilt(summitKey) && Math.hypot(m.x - px, m.z - pz) < BUILD_R) {
           const ctx = new Ctx(this.world, m.x, m.z, this.world.height(m.x, m.z), mulberry32(seed), 0);
@@ -1413,27 +1491,184 @@ export class Discoveries {
           this.finishSite(summitKey, 'summit', m.x, m.z, ctx.baseY, ctx);
           return true;
         }
-        const caveKey = -(id * 2 + 2);
+        const caveKey = -(id * 16 + 2);
         const cv = w.cave(gi, gj)!;
         if (!this.isBuilt(caveKey) && Math.hypot(cv.x - px, cv.z - pz) < BUILD_R) {
           // the frame's u axis runs into the mountain
           const ctx = new Ctx(this.world, cv.x, cv.z, this.world.height(cv.x, cv.z), mulberry32(seed ^ 0x5f3a), Math.atan2(-cv.dz, cv.dx));
           ctx.stone.salt = (id * 7) & 1023;
-          const uncarved = w.uncarved;
-          buildCaveRoof(
+          buildRoof(
             ctx,
-            (u, v) => {
-              ctx.at(u, v);
-              return uncarved(cv.x + ctx.lx, cv.z + ctx.lz) - ctx.baseY;
-            },
+            this.faceOf(ctx),
             (u) => ctx.g(u, 0),
+            { half: TERRAIN.caveHalf, from: TERRAIN.caveRoofFrom - 2, len: TERRAIN.caveLen, height: TERRAIN.caveHeight },
           );
+          buildCairn(ctx, TERRAIN.caveLen - 7, 0);
           this.finishSite(caveKey, 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6, ctx.baseY, ctx);
+          return true;
+        }
+        // the rock over each spring: the notch a river pours from becomes a cave mouth
+        let springs = this.springCache.get(id);
+        if (!springs) this.springCache.set(id, (springs = this.findSprings(m)));
+        for (let k = 0; k < springs.length && k < 12; k++) {
+          const sp = springs[k];
+          const key = -(id * 16 + 3 + k);
+          if (this.isBuilt(key) || Math.hypot(sp.x - px, sp.z - pz) >= BUILD_R) continue;
+          const ctx = new Ctx(this.world, sp.x, sp.z, this.world.height(sp.x, sp.z), mulberry32(seed ^ (0x9a1 + k)), Math.atan2(-sp.dz, sp.dx));
+          ctx.stone.salt = (id * 13 + k) & 1023;
+          buildRoof(
+            ctx,
+            this.faceOf(ctx),
+            (u) => ctx.g(u, 0),
+            { half: sp.half, from: 0, len: sp.len, height: TERRAIN.springHeight },
+          );
+          this.caps.set(key, sp);
+          this.finishSite(key, 'spring', sp.x, sp.z, ctx.baseY, ctx);
           return true;
         }
       }
     }
     return false;
+  }
+
+  /** The uncut rock at a point of a site's frame, for buildRoof: height, normal, rock and salt. */
+  private faceOf(ctx: Ctx): (u: number, v: number, out: Face) => Face {
+    const w = this.world as Partial<{ uncarved(x: number, z: number): number; uncarvedSample(x: number, z: number, out: SurfaceSample): SurfaceSample }>;
+    const s: SurfaceSample = { h: 0, rock: 0, salt: 0 };
+    return (u, v, out) => {
+      ctx.at(u, v);
+      const x = ctx.x + ctx.lx;
+      const z = ctx.z + ctx.lz;
+      w.uncarvedSample!(x, z, s);
+      // The ground lights itself from normals taken across several metres (its heightmap), so
+      // take the same broad slope here, or the cap would catch the light differently.
+      const dx = (w.uncarved!(x + 4, z) - w.uncarved!(x - 4, z)) / 8;
+      const dz = (w.uncarved!(x, z + 4) - w.uncarved!(x, z - 4)) / 8;
+      const inv = 1 / Math.sqrt(dx * dx + 1 + dz * dz);
+      out.y = s.h - ctx.baseY;
+      out.nx = -dx * inv;
+      out.ny = inv;
+      out.nz = -dz * inv;
+      out.rock = s.rock;
+      out.salt = s.salt;
+      return out;
+    };
+  }
+
+  /**
+   * The springs at a massif's foot: for each place a river runs into the mountain, the middle
+   * of the lip its water pours from, the direction the notch runs back into the rock, and how
+   * far back the notch goes. The terrain makes these from noise, so they are found by walking
+   * each river in from outside the mountain until it gives out.
+   */
+  private findSprings(m: Massif): Spring[] {
+    const out: Spring[] = [];
+    const w = this.world;
+    const s = this.bankSample;
+    const R = m.r * 1.3;
+    const n = Math.ceil((2 * Math.PI * R) / 6);
+    let prev = this.riverAt(m.x + R, m.z) < 10;
+    for (let i = 1; i <= n; i++) {
+      const a = (i / n) * Math.PI * 2;
+      let x = m.x + Math.cos(a) * R;
+      let z = m.z + Math.sin(a) * R;
+      const inRiver = this.riverAt(x, z) < 10;
+      const enter = inRiver && !prev;
+      prev = inRiver;
+      if (!enter) continue;
+      // walk up the river toward the mountain, keeping to its centre line
+      let dx = (m.x - x) / R;
+      let dz = (m.z - z) / R;
+      // A river can cross the ring at any angle: of the two ways along it, start on the one
+      // that heads more toward the mountain.
+      {
+        let bestIn = -Infinity;
+        const ix = dx;
+        const iz = dz;
+        for (let k = 0; k < 24; k++) {
+          const t = (k / 24) * Math.PI * 2;
+          const ex = Math.cos(t);
+          const ez = Math.sin(t);
+          if (this.riverAt(x + ex * 6, z + ez * 6) > 3) continue;
+          const inward = ex * ix + ez * iz;
+          if (inward > bestIn) {
+            bestIn = inward;
+            dx = ex;
+            dz = ez;
+          }
+        }
+      }
+      for (let step = 0; step < 500; step++) {
+        let best = Infinity;
+        let bx = dx;
+        let bz = dz;
+        for (let k = -4; k <= 4; k++) {
+          const t = k * 0.3;
+          const ex = dx * Math.cos(t) - dz * Math.sin(t);
+          const ez = dx * Math.sin(t) + dz * Math.cos(t);
+          const rd = this.riverAt(x + ex * 4, z + ez * 4);
+          if (rd < best) {
+            best = rd;
+            bx = ex;
+            bz = ez;
+          }
+        }
+        if (best > 12) break; // lost the river
+        dx = bx;
+        dz = bz;
+        x += dx * 2;
+        z += dz * 2;
+        if (Math.hypot(x - m.x, z - m.z) > R * 1.2) break; // it turned away from the mountain
+        // on the water the damp-ground value is how present the river still is
+        if ((w.sample(x, z, s).green ?? 0) > TERRAIN.springLip) continue;
+        let skew = 0;
+        // The lip. The notch runs back into the rock square to the cliff, which is the way the
+        // river thins out fastest, and that is not always the way the river was heading.
+        {
+          const g = (ax: number, az: number) => w.sample(x + ax, z + az, s).green ?? 0;
+          const gx = g(3, 0) - g(-3, 0);
+          const gz = g(0, 3) - g(0, -3);
+          const gl = Math.hypot(gx, gz);
+          if (gl > 0.01 && -(gx * dx + gz * dz) / gl > 0.3) {
+            // the notch follows the river, so where the river meets the cliff at a slant the
+            // rock over it has to reach further to each side
+            const cos = -(gx * dx + gz * dz) / gl;
+            skew = Math.sqrt(1 - cos * cos) / cos;
+            dx = -gx / gl;
+            dz = -gz / gl;
+          }
+        }
+        let len = 6;
+        let h0 = w.height(x + dx * len, z + dz * len);
+        for (; len < 30; len++) {
+          const h1 = w.height(x + dx * (len + 1), z + dz * (len + 1));
+          if (h1 - h0 > 4) break;
+          h0 = h1;
+        }
+        const half = TERRAIN.springHalf + Math.min(10, skew * len);
+        if (!out.some((o) => Math.hypot(o.x - x, o.z - z) < 40)) out.push({ x, z, dx, dz, len, half });
+        break;
+      }
+    }
+    return out;
+  }
+
+  /**
+   * The height of the rock ceiling over (x, z) where a spring's notch is capped, or Infinity.
+   * Near the lip the rock face is lower than a ceiling's height above the floor, so it is open.
+   */
+  capCeil(x: number, z: number): number {
+    for (const sp of this.caps.values()) {
+      const ox = x - sp.x;
+      const oz = z - sp.z;
+      const u = ox * sp.dx + oz * sp.dz;
+      if (u < 0 || u > sp.len + 1.5) continue;
+      if (Math.abs(ox * -sp.dz + oz * sp.dx) > sp.half + 0.8) continue;
+      const ceil = this.world.height(sp.x + sp.dx * u, sp.z + sp.dz * u) + TERRAIN.springHeight;
+      const top = (this.world as Partial<{ uncarved(x: number, z: number): number }>).uncarved?.(x, z) ?? -Infinity;
+      return top > ceil + 0.5 ? ceil : Infinity;
+    }
+    return Infinity;
   }
 
   /** Distance to the nearest river, if this world has rivers. */
@@ -1567,6 +1802,8 @@ export class Discoveries {
     group.position.set(ctx.x, baseY, ctx.z); // (x, z) is where the site counts as reached, which a cave puts inside it
     const sg = ctx.stone.build();
     if (sg) group.add(new THREE.Mesh(sg, this.stoneMat));
+    const rg = ctx.rock.build();
+    if (rg) group.add(new THREE.Mesh(rg, this.rockMat));
     const fg = ctx.fronds.build();
     if (fg) group.add(new THREE.Mesh(fg, this.frondMat));
     for (const p of ctx.pools) {
@@ -1615,6 +1852,7 @@ export class Discoveries {
 
   private disposeSite(s: Site): void {
     this.group.remove(s.group);
+    this.caps.delete(s.key);
     s.group.traverse((o) => {
       if (o instanceof THREE.Mesh) (o.geometry as THREE.BufferGeometry).dispose();
     });
@@ -1625,6 +1863,7 @@ export class Discoveries {
     for (const s of this.sites) this.disposeSite(s);
     this.sites.length = 0;
     this.stoneMat.dispose();
+    this.rockMat.dispose();
     this.waterMat.dispose();
     this.frondMat.dispose();
     this.glowMat.dispose();

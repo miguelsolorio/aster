@@ -643,6 +643,32 @@ void main() {
 }
 `;
 
+// ---------------------------------------------------------------- ROCK CAPS
+
+// The rock over a cave or a spring's notch is a small mesh of its own (the ground cannot
+// overhang). It is drawn with terrainFrag, fed the same values the ground would give it, so the
+// cliff carries on across it unbroken.
+export const rockCapVert = /* glsl */ `
+precision highp float;
+
+attribute vec2 aMask; // rock, salt
+attribute float aCave; // 1 on faces inside the hollow
+
+varying vec3 vW;
+varying vec3 vN;
+varying vec4 vMask;
+varying float vCave;
+
+void main() {
+  vec3 wp = (modelMatrix * vec4(position, 1.0)).xyz;
+  vW = wp;
+  vN = normal;
+  vMask = vec4(aMask, 300.0, 0.0); // far from any river
+  vCave = aCave;
+  gl_Position = projectionMatrix * vec4(mat3(viewMatrix) * (wp - cameraPosition), 1.0);
+}
+`;
+
 // ---------------------------------------------------------------- FAR MASSIFS
 
 // A coarse mesh of each massif, drawn only beyond the reach of the clipmap.
