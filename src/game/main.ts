@@ -11,6 +11,7 @@ import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
 import { Cities } from '../city/cities';
 import { Caravans } from '../city/caravans';
+import { Waymarks } from '../city/waymarks';
 import { People } from '../city/people';
 import { Figure } from './figure';
 import { AudioEngine } from '../audio/audio';
@@ -110,8 +111,9 @@ function start() {
   const discoveries = new Discoveries(world, u);
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, u);
+  const waymarks = new Waymarks(world, world.cities, u);
   const people = new People(u);
-  scene.add(clipmap.group, cities.group, people.group, caravans.group, discoveries.group, wildlife.group, dust.group);
+  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, dust.group);
 
   const figure = new Figure(u);
   scene.add(figure.group);
@@ -146,6 +148,7 @@ function start() {
   function applyTier() {
     applyQuality(QUALITY[auto.tier], { uniforms: u, clipmap, bake, dust });
     people.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
+    cities.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     resize();
   }
   function resize() {
@@ -224,10 +227,10 @@ function start() {
   applyTier();
   discoveries.onReach = () => audio.chime();
   cities.onReach = () => audio.chime();
-  player.roof = (x, z) => cities.roofAt(x, z);
+  player.roof = (x, z, y) => cities.roofAt(x, z, y);
   player.dip = (x, z) => cities.poolDepthAt(x, z);
   // What the camera must stay above: sand, or a roof.
-  const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z));
+  const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z, camera.position.y));
 
   // ---- input
   const keys = new Set<string>();
@@ -511,7 +514,10 @@ function start() {
     dust.update(frame);
     discoveries.update(frame);
     wildlife.update(frame);
+    const ambience = cities.frame(frame);
+    audio.setAmbience(ambience);
     caravans.update(frame);
+    waymarks.update(frame);
     people.setCity(cities.active);
     people.update(frame);
     bustle = people.bustle;
@@ -550,7 +556,7 @@ function start() {
           render();
         },
         freeze: (f: boolean) => (frozen = f),
-        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let frozen = false;
