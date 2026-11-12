@@ -55,13 +55,21 @@ interface Tune {
   stelae: number;
   /** Walls of mud (plaster) rather than stone. */
   mud: boolean;
+  /** Rock country: camps and pens may stand on dry-stone platforms; ledge gardens, cairns, wells, racks. */
+  level: boolean;
+  /** Stepped ledge gardens wanted, and the least garden pieces (plots plus ledges) to make sure of. */
+  ledges: number;
+  minGardens: number;
+  cairnLines: number;
+  wells: number;
+  racks: number;
 }
 
 const TUNE: Record<CityKind, Tune> = {
-  oasis: { plots: 26, orchardP: 0.55, palmP: 0.65, reedP: 0.7, clusterP: 0.7, plotFar: 230, fieldWalls: 6, camps: 2, pens: 1, mills: 2, towers: 2, prom: 5, tombs: 0, stelae: 36, mud: true },
-  trade: { plots: 8, orchardP: 0.25, palmP: 0.4, reedP: 0.15, clusterP: 0.5, plotFar: 240, fieldWalls: 8, camps: 4, pens: 4, mills: 5, towers: 1, prom: 2.5, tombs: 0, stelae: 34, mud: true },
-  hill: { plots: 16, orchardP: 0.35, palmP: 0.2, reedP: 0, clusterP: 0.6, plotFar: 300, fieldWalls: 6, camps: 2, pens: 2, mills: 2, towers: 4, prom: 2.5, tombs: 0, stelae: 34, mud: false },
-  canyon: { plots: 4, orchardP: 0.4, palmP: 0.5, reedP: 0, clusterP: 0.5, plotFar: 260, fieldWalls: 2, camps: 2, pens: 1, mills: 1, towers: 4, prom: 6, tombs: 7, stelae: 60, mud: false },
+  oasis: { plots: 26, orchardP: 0.55, palmP: 0.65, reedP: 0.7, clusterP: 0.7, plotFar: 230, fieldWalls: 6, camps: 2, pens: 1, mills: 2, towers: 2, prom: 5, tombs: 0, stelae: 36, mud: true, level: false, ledges: 0, minGardens: 0, cairnLines: 0, wells: 0, racks: 0 },
+  trade: { plots: 8, orchardP: 0.25, palmP: 0.4, reedP: 0.15, clusterP: 0.5, plotFar: 240, fieldWalls: 8, camps: 4, pens: 4, mills: 5, towers: 1, prom: 2.5, tombs: 0, stelae: 34, mud: true, level: false, ledges: 0, minGardens: 0, cairnLines: 0, wells: 0, racks: 0 },
+  hill: { plots: 16, orchardP: 0.35, palmP: 0.2, reedP: 0, clusterP: 0.6, plotFar: 300, fieldWalls: 6, camps: 2, pens: 2, mills: 2, towers: 4, prom: 2.5, tombs: 0, stelae: 34, mud: false, level: false, ledges: 0, minGardens: 0, cairnLines: 0, wells: 0, racks: 0 },
+  canyon: { plots: 4, orchardP: 0.4, palmP: 0.5, reedP: 0, clusterP: 0.5, plotFar: 260, fieldWalls: 2, camps: 2, pens: 1, mills: 1, towers: 4, prom: 6, tombs: 10, stelae: 60, mud: false, level: true, ledges: 4, minGardens: 3, cairnLines: 3, wells: 2, racks: 4 },
 };
 
 // ------------------------------------------------------------------ ground
@@ -542,9 +550,10 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const counts = {
     towers: 0, mills: 0, camps: 0, tents: 0, pens: 0, animals: 0, plots: 0, orchards: 0, gardens: 0,
     trees: 0, tufts: 0, fieldWalls: 0, wallPieces: 0, burials: 0, stelae: 0, tombs: 0,
+    platforms: 0, ledges: 0, cairns: 0, wells: 0, racks: 0,
   };
   /** What was placed, for checks: kind, centre, half sizes, ground fall and steepest step under it. */
-  const items: Array<{ kind: string; x: number; z: number; hw: number; hd: number; drop: number; step: number }> = [];
+  const items: Array<{ kind: string; x: number; z: number; hw: number; hd: number; drop: number; step: number; allow?: number }> = [];
 
   const edgeAt = (a: number): number => {
     const w = a + site.rot;
@@ -1031,7 +1040,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     farBase = Math.min(farBase, gb);
   }
 
-  // ---------------------------------------------------------------- camps for travellers
+  // ---------------------------------------------------------------- levelling on rough ground
 
   /** A spot beside a way out (lateral off from the corridor), t0..t1 beyond the edge. */
   const besideWay = (rng: () => number, wy: Way, ta: number, tb: number, lat0: number, lat1: number, out: number[]): number[] => {
@@ -1043,11 +1052,106 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     return out;
   };
   const tracks = ways.filter((wy) => wy.track);
+
+  /** While a camp or pen is built on a platform this is its top; otherwise NaN and gat reads the ground. */
+  let level = NaN;
+  const gat = (x: number, z: number): number => (level === level ? level : G.at(x, z));
+
+  /**
+   * A low dry-stone platform levelling a rectangle, with a flight of steps down on its low side.
+   * Returns the top. Solids for the platform and each step.
+   */
+  const platform = (x0: number, z0: number, x1: number, z1: number, s: Span, rng: () => number): number => {
+    const top = s.hi + 0.2;
+    const bot = s.lo - 0.4;
+    const w = cellAt((x0 + x1) / 2, (z0 + z1) / 2, s.lo);
+    w.mat = MAT.stone;
+    w.tint = 70 + Math.floor(rng() * 50);
+    w.extra = 0;
+    w.box(x0, bot, z0, x1, top - 0.12, z1, 1 | 2 | 16 | 32);
+    // a paved top with a slightly proud course of edge stones
+    w.box(x0 - 0.08, top - 0.12, z0 - 0.08, x1 + 0.08, top, z1 + 0.08, 63);
+    solids.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, hw: (x1 - x0) / 2 + 0.08, hd: (z1 - z0) / 2 + 0.08, y0: bot, y1: top });
+    // steps on the side where the ground is lowest
+    const xm = (x0 + x1) / 2, zm = (z0 + z1) / 2;
+    const sides: number[][] = [[x1, zm, 1, 0], [x0, zm, -1, 0], [xm, z1, 0, 1], [xm, z0, 0, -1]];
+    let best = sides[0], bg = Infinity;
+    for (const q of sides) {
+      const g = G.at(q[0] + q[2] * 1.5, q[1] + q[3] * 1.5);
+      if (g < bg) {
+        bg = g;
+        best = q;
+      }
+    }
+    const rise = top - bg;
+    if (rise > 0.45) {
+      const n = Math.min(10, Math.ceil(rise / 0.32));
+      const [ex, ez, dx, dz] = best;
+      const px = -dz, pz = dx;
+      for (let k = 1; k <= n; k++) {
+        const hk = top - (k * rise) / (n + 1);
+        const u0 = (k - 1) * 0.42 + 0.08, u1 = k * 0.42 + 0.08;
+        const ax = ex + dx * u0 - px * 0.8, bx = ex + dx * u1 + px * 0.8;
+        const az = ez + dz * u0 - pz * 0.8, bz = ez + dz * u1 + pz * 0.8;
+        const sx0 = Math.min(ax, bx), sx1 = Math.max(ax, bx), sz0 = Math.min(az, bz), sz1 = Math.max(az, bz);
+        const gk = G.at((sx0 + sx1) / 2, (sz0 + sz1) / 2);
+        if (gk >= hk - 0.05) break;
+        w.box(sx0, gk - 0.3, sz0, sx1, hk, sz1, 63 ^ 8);
+        solids.push({ x: (sx0 + sx1) / 2, z: (sz0 + sz1) / 2, hw: (sx1 - sx0) / 2, hd: (sz1 - sz0) / 2, y0: gk - 0.3, y1: hk });
+      }
+    }
+    counts.platforms++;
+    return top;
+  };
+
+  /**
+   * Takes a rectangle for a camp or pen in the canyon if its ground is flat enough as it is, or
+   * modest enough to level on a platform (set as `level`). The second pass allows rougher ground.
+   */
+  const levelled = (kind: string, x0: number, z0: number, x1: number, z1: number, pass: number, rng: () => number): boolean => {
+    G.span(x0, z0, x1, z1, sp);
+    const drop = sp.hi - sp.lo;
+    if (drop <= 0.6 && sp.step <= 0.4) {
+      take(kind, x0, z0, x1, z1, sp);
+      return true;
+    }
+    if (drop > (pass ? 4.5 : 3) || sp.step > (pass ? 1.8 : 1.3)) return false;
+    take(kind, x0, z0, x1, z1, sp);
+    items[items.length - 1].allow = drop + 0.3;
+    level = platform(x0, z0, x1, z1, sp, rng);
+    return true;
+  };
+
+  /** A spot in the canyon: in the gaps where the ways leave, or out on the open ground beyond the buttes. */
+  const rockSpot = (rng: () => number, pass: number, out: number[]): number[] => {
+    if (ways.length > 0 && rng() < 0.65) {
+      const pool = tracks.length > 0 && rng() < 0.5 ? tracks : ways;
+      return besideWay(rng, pool[Math.floor(rng() * pool.length)], 12, pass ? 520 : 340, 3, pass ? 70 : 40, out);
+    }
+    return ringPoint(rng, pass ? 120 : 280, pass ? 640 : 560, 1, out);
+  };
+
+  // ---------------------------------------------------------------- camps for travellers
+
   const campSpots: number[] = [];
   {
     const rng = ctx.rng(0xca39);
     const want = T.camps;
-    for (let it = 0; it < want * 80 && counts.camps < want; it++) {
+    if (T.level) {
+      // the canyon: small camps in the gaps and out beyond the buttes, levelled where they must be
+      for (let pass = 0; pass < 2 && counts.camps < want; pass++)
+        for (let it = 0; it < 500 && counts.camps < want; it++) {
+          rockSpot(rng, pass, pt);
+          const x = pt[0], z = pt[1];
+          const e = 7.5;
+          if (!open(x - e, z - e, x + e, z + e, pass ? 3 : 6, pass ? 1 : 3)) continue;
+          if (!levelled('camp', x - e, z - e, x + e, z + e, pass, rng)) continue;
+          camp(x, z, rng, true);
+          level = NaN;
+          campSpots.push(x, z);
+          counts.camps++;
+        }
+    } else for (let it = 0; it < want * 80 && counts.camps < want; it++) {
       const pool = tracks.length > 0 && rng() < 0.7 ? tracks : ways;
       if (pool.length > 0) besideWay(rng, pool[Math.floor(rng() * pool.length)], 30, 170, 12, 30, pt);
       else ringPoint(rng, 30, 170, 1, pt);
@@ -1063,9 +1167,9 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     }
   }
 
-  function camp(x: number, z: number, rng: () => number): void {
+  function camp(x: number, z: number, rng: () => number, small = false): void {
     const F = new Frame();
-    const gf = G.at(x, z);
+    const gf = gat(x, z);
     const w = cellAt(x, z, gf - 0.2);
     // the fire: a ring of stones, a bed of ash, crossed logs
     w.mat = MAT.soil;
@@ -1090,32 +1194,33 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     farGlow.add(x, gf + 0.8, z, 1.4, GLOW.lamp, rng(), 1.1);
     emitters.push({ x, z, kind: 'fire', gain: 0.7, reach: 25 });
     // tents round the fire, doors toward it
-    const n = 3 + Math.floor(rng() * 3);
+    const n = small ? 2 + Math.floor(rng() * 2) : 3 + Math.floor(rng() * 3);
     const a0 = rng() * TAU;
     let lanterns = 0;
     for (let k = 0; k < n; k++) {
       const a = a0 + (k / n) * TAU + (rng() - 0.5) * 0.5;
-      const d = 6 + rng() * 2;
+      const d = small ? 4.3 + rng() * 0.9 : 6 + rng() * 2;
       const tx = x + Math.cos(a) * d, tz = z + Math.sin(a) * d;
       const yaw = Math.atan2(x - tx, z - tz);
-      const g = G.at(tx, tz);
+      const g = gat(tx, tz);
       const tw = cellAt(tx, tz, g - 0.3);
-      if (rng() < 0.55) ridgeTent(tw, F.set(tx, g, tz, yaw), 3.4 + rng() * 1.4, 2.6 + rng() * 0.8, 1.9 + rng() * 0.5, rng);
-      else bellTent(tw, tx, tz, g, yaw, 1.9 + rng() * 0.6, 2.4 + rng() * 0.6, rng);
+      if (rng() < 0.55) ridgeTent(tw, F.set(tx, g, tz, yaw), (small ? 3.0 : 3.4) + rng() * (small ? 0.6 : 1.4), 2.6 + rng() * 0.6, 1.9 + rng() * 0.5, rng);
+      else bellTent(tw, tx, tz, g, yaw, (small ? 1.7 : 1.9) + rng() * (small ? 0.3 : 0.6), 2.4 + rng() * 0.6, rng);
       counts.tents++;
       // a lantern on a pole by some of the doors
       if (lanterns < 2 && rng() < 0.6) {
-        const lx = tx + Math.sin(yaw) * 2.4 + Math.cos(yaw) * 1.2, lz = tz + Math.cos(yaw) * 2.4 - Math.sin(yaw) * 1.2;
-        lanternPost(tw, lx, lz, G.at(lx, lz), rng);
+        const lo = small ? 1.9 : 2.4;
+        const lx = tx + Math.sin(yaw) * lo + Math.cos(yaw) * 1.2, lz = tz + Math.cos(yaw) * lo - Math.sin(yaw) * 1.2;
+        lanternPost(tw, lx, lz, gat(lx, lz), rng);
         lanterns++;
       }
     }
     // bales and sacks between the tents
     w.mat = MAT.cloth;
     for (let k = 0; k < 3 + Math.floor(rng() * 4); k++) {
-      const a = rng() * TAU, d = 3 + rng() * 2;
+      const a = rng() * TAU, d = small ? 2.3 + rng() * 0.8 : 3 + rng() * 2;
       const bx = x + Math.cos(a) * d, bz = z + Math.sin(a) * d;
-      const g = G.at(bx, bz);
+      const g = gat(bx, bz);
       const c = Math.cos(a), s = Math.sin(a);
       w.tint = Math.floor(rng() * 255);
       w.extra = rng() < 0.4 ? 5 : 0;
@@ -1196,7 +1301,24 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   {
     const rng = ctx.rng(0x9e45);
     const want = T.pens;
-    for (let it = 0; it < want * 80 && counts.pens < want; it++) {
+    if (T.level) {
+      for (let pass = 0; pass < 2 && counts.pens < want; pass++)
+        for (let it = 0; it < 500 && counts.pens < want; it++) {
+          if (campSpots.length > 0 && rng() < 0.5) {
+            const k = Math.floor(rng() * (campSpots.length / 2)) * 2;
+            const a = rng() * TAU;
+            pt[0] = campSpots[k] + Math.cos(a) * 16;
+            pt[1] = campSpots[k + 1] + Math.sin(a) * 16;
+          } else rockSpot(rng, pass, pt);
+          const hw = 5 + Math.floor(rng() * 2), hd = 4 + Math.floor(rng() * 1.5);
+          const x = pt[0], z = pt[1];
+          if (!open(x - hw, z - hd, x + hw, z + hd, pass ? 2 : 3, pass ? 1 : 3)) continue;
+          if (!levelled('pen', x - hw, z - hd, x + hw, z + hd, pass, rng)) continue;
+          pen(x, z, hw, hd, rng);
+          level = NaN;
+          counts.pens++;
+        }
+    } else for (let it = 0; it < want * 80 && counts.pens < want; it++) {
       // trade towns keep their pens by the camps; elsewhere they stand near the edge
       if (campSpots.length > 0 && rng() < 0.7) {
         const k = Math.floor(rng() * (campSpots.length / 2)) * 2;
@@ -1226,10 +1348,10 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       const L = Math.hypot(bx - ax, bz - az);
       const n = Math.round(L / 2);
       const gate = si === gateSide ? Math.floor(n / 2) : -1;
-      let px = x + ax, pz = z + az, pg = G.at(px, pz);
+      let px = x + ax, pz = z + az, pg = gat(px, pz);
       for (let k = 1; k <= n; k++) {
         const qx = x + ax + ((bx - ax) * k) / n, qz = z + az + ((bz - az) * k) / n;
-        const qg = G.at(qx, qz);
+        const qg = gat(qx, qz);
         w.tint = 60 + Math.floor(rng() * 50);
         bar(w, px, pg - 0.3, pz, px, pg + 1.25, pz, 0.12, true);
         if (k - 1 !== gate) {
@@ -1243,7 +1365,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     });
     // a trough and a heap of fodder
     const tx = x + (rng() - 0.5) * (hw - 2), tz = z + hd - 0.9;
-    const tg = G.at(tx, tz);
+    const tg = gat(tx, tz);
     w.tint = 90;
     w.box(tx - 1.1, tg - 0.2, tz - 0.3, tx + 1.1, tg + 0.5, tz + 0.3, 1 | 2 | 16 | 32);
     w.mat = MAT.opening;
@@ -1251,7 +1373,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     w.mat = MAT.cloth;
     w.tint = 12;
     const hx = x - hw + 1.6, hz = z - hd + 1.6;
-    taper(w, hx, hz, 1.1, 0.25, G.at(hx, hz) - 0.1, G.at(hx, hz) + 0.9, 7, rng());
+    taper(w, hx, hz, 1.1, 0.25, gat(hx, hz) - 0.1, gat(hx, hz) + 0.9, 7, rng());
     // the animals, mostly resting
     const F = new Frame();
     const na = Math.max(2, Math.round((2 + rng() * 4) * Math.max(0.6, dens)));
@@ -1263,7 +1385,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       if (Math.hypot(ax - hx, az - hz) < 2.4 || Math.hypot(ax - tx, az - tz) < 2) continue;
       spots.push(ax, az);
       const coat = rng() < 0.7 ? herd : Math.floor(rng() * 3);
-      animal(w, F.set(ax, G.at(ax, az) - 0.05, az, rng() * TAU), rng() < 0.7, coat, rng);
+      animal(w, F.set(ax, gat(ax, az) - 0.05, az, rng() * TAU), rng() < 0.7, coat, rng);
       counts.animals++;
       k++;
     }
@@ -1536,6 +1658,349 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
             counts.tufts++;
           }
         }
+      }
+    }
+  }
+
+
+  // ---------------------------------------------------------------- rock country: ledges, cairns, wells, racks
+
+  if (T.level) {
+    const rng = ctx.rng(0x1ed9);
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    const gardens = () => counts.plots + counts.ledges;
+    const wantL = Math.max(T.ledges, T.minGardens);
+    // stepped ledge gardens against a slope: two or three narrow walled terraces, one above the other
+    for (let pass = 0; pass < 2; pass++)
+      for (let it = 0; it < 700 && (pass === 0 ? counts.ledges < wantL : gardens() < T.minGardens); it++) {
+        rockSpot(rng, pass, pt);
+        const d = dirs[Math.floor(rng() * 4)];
+        if (ledge(pt[0], pt[1], d[0], d[1], pass, rng)) counts.ledges++;
+      }
+    // last resort: a small walled garden raised on a platform
+    for (let it = 0; it < 600 && gardens() < T.minGardens; it++) {
+      rockSpot(rng, 1, pt);
+      const hw = 5 + Math.floor(rng() * 3), hd = 4 + Math.floor(rng() * 2);
+      const x = Math.round(pt[0]), z = Math.round(pt[1]);
+      if (!open(x - hw, z - hd, x + hw, z + hd, 2, 1)) continue;
+      if (!levelled('garden', x - hw, z - hd, x + hw, z + hd, 1, rng)) continue;
+      const top = level;
+      level = NaN;
+      raisedGarden(x, z, hw, hd, top, rng);
+      counts.plots++;
+      counts.gardens++;
+    }
+
+    // lines of cairns marking the way out along the gaps
+    for (let it = 0; it < T.cairnLines * 30 && counts.cairns < T.cairnLines * 8 && ways.length > 0; it++) {
+      const wy = ways[Math.floor(rng() * ways.length)];
+      besideWay(rng, wy, 10, 200, 2, 14, pt);
+      const n = 6 + Math.floor(rng() * 5);
+      const step = 9 + rng() * 4;
+      let x = pt[0], z = pt[1];
+      const drift = (rng() - 0.5) * 0.15;
+      let made = 0;
+      for (let k = 0; k < n; k++) {
+        const ux = wy.ux - wy.uz * drift, uz = wy.uz + wy.ux * drift;
+        x += ux * step;
+        z += uz * step;
+        if (!open(x - 0.8, z - 0.8, x + 0.8, z + 0.8, 1, 0.5)) continue;
+        G.span(x - 1, z - 1, x + 1, z + 1, sp);
+        if (sp.hi - sp.lo > 1.4) continue;
+        take('cairn', x - 0.8, z - 0.8, x + 0.8, z + 0.8, sp);
+        cairn(x, z, sp.lo, rng);
+        made++;
+      }
+      counts.cairns += made;
+    }
+
+    // a stone cistern or a well head by the camps or a way
+    for (let it = 0; it < 300 && counts.wells < T.wells; it++) {
+      if (campSpots.length > 0 && rng() < 0.6) {
+        const k = Math.floor(rng() * (campSpots.length / 2)) * 2;
+        const a = rng() * TAU;
+        pt[0] = campSpots[k] + Math.cos(a) * 13;
+        pt[1] = campSpots[k + 1] + Math.sin(a) * 13;
+      } else rockSpot(rng, 0, pt);
+      const cistern = rng() < 0.5;
+      const hw = cistern ? 3.6 : 2.6, hd = cistern ? 2.8 : 2.6;
+      const x = pt[0], z = pt[1];
+      if (!open(x - hw, z - hd, x + hw, z + hd, 2, 2)) continue;
+      G.span(x - hw, z - hd, x + hw, z + hd, sp);
+      if (sp.hi - sp.lo > 1.6 || sp.step > 1) continue;
+      take(cistern ? 'cistern' : 'well', x - hw, z - hd, x + hw, z + hd, sp);
+      items[items.length - 1].allow = sp.hi - sp.lo + 0.3;
+      if (cistern) cisternAt(x, z, hw, hd, { ...sp }, rng);
+      else wellAt(x, z, { ...sp }, rng);
+      counts.wells++;
+    }
+
+    // drying racks: dates, herbs and hides on wooden frames near the camps and ledges
+    const near0 = [...campSpots];
+    for (let i = 0; i < items.length; i++) if (items[i].kind === 'ledge') near0.push(items[i].x, items[i].z);
+    for (let it = 0; it < 200 && counts.racks < T.racks; it++) {
+      if (near0.length > 0 && rng() < 0.8) {
+        const k = Math.floor(rng() * (near0.length / 2)) * 2;
+        const a = rng() * TAU, d = 11 + rng() * 8;
+        pt[0] = near0[k] + Math.cos(a) * d;
+        pt[1] = near0[k + 1] + Math.sin(a) * d;
+      } else rockSpot(rng, 0, pt);
+      const x = pt[0], z = pt[1];
+      if (!open(x - 2.2, z - 2.2, x + 2.2, z + 2.2, 1, 1)) continue;
+      G.span(x - 2, z - 2, x + 2, z + 2, sp);
+      if (sp.hi - sp.lo > 1.2) continue;
+      take('rack', x - 2.2, z - 2.2, x + 2.2, z + 2.2, sp);
+      items[items.length - 1].allow = 1.5;
+      rack(x, z, rng() * Math.PI, rng);
+      counts.racks++;
+    }
+  }
+
+  /**
+   * Narrow walled terraces climbing a slope that rises along (dx, dz) from (x, z). Each terrace is
+   * filled level with the highest ground under it, held by a dry-stone wall at its foot.
+   */
+  function ledge(x: number, z: number, dx: number, dz: number, pass: number, rng: () => number): boolean {
+    const n = 2 + (rng() < 0.5 ? 1 : 0);
+    const D = 3 + rng() * 1.2;
+    const W = 7 + Math.floor(rng() * 6);
+    const px = -dz, pz = dx;
+    const P = (u: number, v: number): number => G.at(x + dx * u + px * v, z + dz * u + pz * v);
+    // quick test: does the ground rise along d?
+    const rise = P(n * D, 0) - P(0, 0);
+    if (rise < 1.2 || rise > n * 3.2) return false;
+    const L: number[] = [], F: number[] = [];
+    for (let k = 0; k < n; k++) {
+      let hi = -Infinity, lo = Infinity;
+      for (const u of [k * D + 0.3, k * D + D / 2, (k + 1) * D - 0.3])
+        for (const v of [-W / 2, 0, W / 2]) {
+          const g = P(u, v);
+          hi = Math.max(hi, g);
+          lo = Math.min(lo, g);
+        }
+      const f = Math.min(P(k * D, -W / 2), P(k * D, 0), P(k * D, W / 2));
+      const lk = hi + 0.05;
+      if (k > 0 && (lk < L[k - 1] + 0.45 || lk > L[k - 1] + (pass ? 3 : 2.4))) return false;
+      if (lk - f > (pass ? 3.4 : 2.8) || hi - lo > (pass ? 3.4 : 2.8)) return false;
+      L.push(lk);
+      F.push(f);
+    }
+    if (L[0] - F[0] > (pass ? 2.8 : 2.2)) return false;
+    // the rectangle it takes
+    const ax = x + dx * -0.4 + px * (-W / 2 - 0.4), bx = x + dx * (n * D) + px * (W / 2 + 0.4);
+    const az = z + dz * -0.4 + pz * (-W / 2 - 0.4), bz = z + dz * (n * D) + pz * (W / 2 + 0.4);
+    const x0 = Math.min(ax, bx), x1 = Math.max(ax, bx), z0 = Math.min(az, bz), z1 = Math.max(az, bz);
+    if (!open(x0, z0, x1, z1, 1.5, pass ? 1 : 2)) return false;
+    G.span(x0, z0, x1, z1, sp);
+    take('ledge', x0, z0, x1, z1, sp);
+    items[items.length - 1].allow = sp.hi - sp.lo + 0.4;
+    const w = cellAt((x0 + x1) / 2, (z0 + z1) / 2, sp.lo);
+    w.extra = 0;
+    // a box from u0..u1 along the slope, v0..v1 across it (exact, since d is a local axis)
+    const B = (u0: number, u1: number, v0: number, v1: number, y0: number, y1: number, mask: number, solid: boolean) => {
+      const qx0 = x + dx * u0 + px * v0, qx1 = x + dx * u1 + px * v1, qz0 = z + dz * u0 + pz * v0, qz1 = z + dz * u1 + pz * v1;
+      const X0 = Math.min(qx0, qx1), X1 = Math.max(qx0, qx1), Z0 = Math.min(qz0, qz1), Z1 = Math.max(qz0, qz1);
+      w.box(X0, y0, Z0, X1, y1, Z1, mask);
+      if (solid) solids.push({ x: (X0 + X1) / 2, z: (Z0 + Z1) / 2, hw: (X1 - X0) / 2, hd: (Z1 - Z0) / 2, y0, y1 });
+    };
+    const tint = 80 + Math.floor(rng() * 50);
+    const crop = rng();
+    for (let k = 0; k < n; k++) {
+      const u0 = k * D, u1 = (k + 1) * D;
+      const lo = Math.min(F[k], k > 0 ? L[k - 1] : F[k]) - 0.4;
+      // the fill, soil on top
+      w.mat = MAT.soil;
+      w.tint = 110;
+      B(u0 + 0.25, u1, -W / 2, W / 2, lo, L[k], 4, true);
+      // the retaining wall at its foot, a little proud of the soil, and the walls at its ends
+      w.mat = MAT.stone;
+      w.tint = clamp(tint + Math.floor((rng() - 0.5) * 20), 0, 255);
+      const segs = Math.max(1, Math.round(W / 4));
+      for (let j = 0; j < segs; j++) {
+        const v0 = -W / 2 - 0.25 + ((W + 0.5) * j) / segs, v1 = -W / 2 - 0.25 + ((W + 0.5) * (j + 1)) / segs;
+        const g = Math.min(P(u0, v0), P(u0, v1));
+        B(u0 - 0.25, u0 + 0.25, v0, v1, Math.min(g, lo + 0.4) - 0.4, L[k] + 0.35, 55, true);
+      }
+      for (const sg of [-1, 1]) {
+        const v = sg * (W / 2 + 0.25);
+        const g = Math.min(P(u0, v), P(u1, v));
+        B(u0 + 0.25, u1, v - 0.25, v + 0.25, g - 0.4, L[k] + 0.35, 55, true);
+      }
+      // crops in rows across the terrace, now and then a fruit tree
+      const rows = Math.max(1, Math.floor((D - 0.8) / 1.0));
+      for (let r = 0; r < rows; r++) {
+        const u = u0 + 0.75 + ((D - 1.2) * (r + 0.5)) / rows;
+        const sp0 = (crop < 0.6 ? 0.7 : 0.95) / Math.sqrt(Math.max(0.3, dens));
+        for (let v = -W / 2 + 0.5; v < W / 2 - 0.3; v += sp0 * (0.85 + rng() * 0.3)) {
+          tuft(w, x + dx * u + px * v, L[k], z + dz * u + pz * v, crop < 0.6 ? 0.45 : 0.9, crop < 0.6 ? 170 : 110, rng);
+          counts.tufts++;
+        }
+      }
+      if (rng() < 0.45) {
+        const v = (rng() - 0.5) * (W - 3);
+        const tx = x + dx * (u0 + D * 0.6) + px * v, tz = z + dz * (u0 + D * 0.6) + pz * v;
+        const th = fruitTree(w, tx, L[k], tz, 0.75 + rng() * 0.25, rng() < 0.3, rng);
+        solids.push({ x: tx, z: tz, hw: 0.2, hd: 0.2, y0: L[k] - 1, y1: L[k] + th + 1.4 });
+        counts.trees++;
+      }
+    }
+    return true;
+  }
+
+  /** A small walled garden on a platform (the platform is already built; top is its surface). */
+  function raisedGarden(x: number, z: number, hw: number, hd: number, top: number, rng: () => number): void {
+    const w = cellAt(x, z, top - 1);
+    w.mat = MAT.stone;
+    w.tint = 100 + Math.floor(rng() * 40);
+    w.extra = 0;
+    const th = 0.4, h = 0.55;
+    for (const [x0, z0, x1, z1] of [
+      [x - hw, z - hd, x + hw, z - hd + th], [x - hw, z + hd - th, x + hw, z + hd],
+      [x - hw, z - hd + th, x - hw + th, z + hd - th], [x + hw - th, z - hd + th, x + hw, z + hd - th],
+    ]) {
+      w.box(x0, top - 0.05, z0, x1, top + h, z1, 55);
+      solids.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, hw: (x1 - x0) / 2, hd: (z1 - z0) / 2, y0: top - 0.05, y1: top + h });
+    }
+    w.mat = MAT.soil;
+    w.tint = 110;
+    w.box(x - hw + th, top, z - hd + th, x + hw - th, top + 0.3, z + hd - th, 4);
+    const sp0 = 0.75 / Math.sqrt(Math.max(0.3, dens));
+    const tint = 120 + Math.floor(rng() * 90);
+    for (let c = z - hd + th + 0.7; c < z + hd - th - 0.3; c += 1.2)
+      for (let u = x - hw + th + 0.4; u < x + hw - th - 0.2; u += sp0 * (0.85 + rng() * 0.3)) {
+        tuft(w, u, top + 0.3, c, 0.45, tint, rng);
+        counts.tufts++;
+      }
+  }
+
+  /** A cairn: a low heap of stones with a smaller one set on top. */
+  function cairn(x: number, z: number, g: number, rng: () => number): void {
+    const w = cellAt(x, z, g);
+    w.mat = MAT.stone;
+    w.tint = 70 + Math.floor(rng() * 80);
+    w.extra = 0;
+    const r = 0.45 + rng() * 0.25, h = 0.55 + rng() * 0.45, rot = rng() * TAU;
+    taper(w, x, z, r, r * 0.55, g - 0.15, g + h, 6, rot);
+    taper(w, x, z, r * 0.55, 0.06, g + h, g + h + r * 0.6, 6, rot + 0.4);
+    // and a standing marker stone on some
+    if (rng() < 0.35) ubox(w, x, g + h + r * 0.5, z, 0.12, 0, 0, 0, 0.45, 0, 0, 0, 0.07, 1 | 2 | 4 | 16 | 32);
+  }
+
+  /** A stone cistern: a rectangular tank of dark water inside a kerbed rim, steps down at one end and a trough. */
+  function cisternAt(x: number, z: number, hw: number, hd: number, s: Span, rng: () => number): void {
+    const w = cellAt(x, z, s.lo);
+    const top = s.hi + 0.7;
+    w.mat = MAT.stone;
+    w.tint = 90 + Math.floor(rng() * 50);
+    w.extra = 0;
+    const th = 0.5;
+    for (const [x0, z0, x1, z1] of [
+      [x - hw, z - hd, x + hw, z - hd + th], [x - hw, z + hd - th, x + hw, z + hd],
+      [x - hw, z - hd + th, x - hw + th, z + hd - th], [x + hw - th, z - hd + th, x + hw, z + hd - th],
+    ]) {
+      w.box(x0, s.lo - 0.4, z0, x1, top, z1, 55);
+      solids.push({ x: (x0 + x1) / 2, z: (z0 + z1) / 2, hw: (x1 - x0) / 2, hd: (z1 - z0) / 2, y0: s.lo - 0.4, y1: top });
+    }
+    // the water, still and dark
+    w.mat = MAT.opening;
+    w.box(x - hw + th, top - 0.35, z - hd + th, x + hw - th, top - 0.3, z + hd - th, 4);
+    w.mat = MAT.stone;
+    // two steps up to the rim on the side facing the town, and a trough beside it
+    const sg = Math.abs(x) > Math.abs(z) ? -Math.sign(x) : 0, sz = sg === 0 ? -Math.sign(z) : 0;
+    const ex = x + sg * hw, ez = z + sz * hd;
+    for (let k = 0; k < 2; k++) {
+      const o = 0.45 * (k + 1);
+      const y1 = top - (top - (s.lo - 0.1)) * ((k + 1) / 3);
+      const cx = ex + sg * (o - 0.22), cz = ez + sz * (o - 0.22);
+      const hx = sg !== 0 ? 0.22 : 0.9, hz = sg !== 0 ? 0.9 : 0.22;
+      w.box(cx - hx, s.lo - 0.4, cz - hz, cx + hx, y1, cz + hz, 63 ^ 8);
+      solids.push({ x: cx, z: cz, hw: hx, hd: hz, y0: s.lo - 0.4, y1 });
+    }
+    const tx = x + (sg !== 0 ? sg * (hw + 0.6) : hw * 0.55), tz = z + (sz !== 0 ? sz * (hd + 0.6) : hd * 0.55);
+    const tg = G.at(tx, tz);
+    w.box(tx - (sg !== 0 ? 0.35 : 1.0), tg - 0.2, tz - (sg !== 0 ? 1.0 : 0.35), tx + (sg !== 0 ? 0.35 : 1.0), tg + 0.5, tz + (sg !== 0 ? 1.0 : 0.35), 55);
+    emitters.push({ x, z, kind: 'water', gain: 0.25, reach: 14 });
+  }
+
+  /** A well head: a round stone kerb on a paved apron, two posts, a beam and a pulley, a trough. */
+  function wellAt(x: number, z: number, s: Span, rng: () => number): void {
+    const w = cellAt(x, z, s.lo);
+    w.mat = MAT.stone;
+    w.tint = 100 + Math.floor(rng() * 50);
+    w.extra = 0;
+    const ap = s.hi + 0.12;
+    w.box(x - 2.3, s.lo - 0.4, z - 2.3, x + 2.3, ap, z + 2.3, 63 ^ 8);
+    solids.push({ x, z, hw: 2.3, hd: 2.3, y0: s.lo - 0.4, y1: ap });
+    taper(w, x, z, 1.0, 0.95, ap - 0.05, ap + 0.8, 10, 0);
+    w.mat = MAT.opening;
+    polyCap(w, x, z, 0.75, ap + 0.62, 10, 0);
+    w.mat = MAT.stone;
+    for (let k = 0; k < 10; k++) {
+      const a0 = (k / 10) * TAU, a1 = ((k + 1) / 10) * TAU;
+      w.quad(x + Math.cos(a0) * 0.75, ap + 0.8, z + Math.sin(a0) * 0.75, x + Math.cos(a1) * 0.75, ap + 0.8, z + Math.sin(a1) * 0.75,
+        x + Math.cos(a1) * 0.95, ap + 0.8, z + Math.sin(a1) * 0.95, x + Math.cos(a0) * 0.95, ap + 0.8, z + Math.sin(a0) * 0.95, 0, 1, 0);
+    }
+    solids.push({ x, z, hw: 0.95, hd: 0.95, y0: ap, y1: ap + 0.8 });
+    w.mat = MAT.wood;
+    w.tint = 80;
+    const a = rng() * Math.PI;
+    const c = Math.cos(a), sn = Math.sin(a);
+    for (const sg of [-1, 1]) bar(w, x + c * sg * 1.05, ap, z + sn * sg * 1.05, x + c * sg * 1.05, ap + 2.3, z + sn * sg * 1.05, 0.14, true);
+    bar(w, x - c * 1.25, ap + 2.25, z - sn * 1.25, x + c * 1.25, ap + 2.25, z + sn * 1.25, 0.12, true);
+    ubox(w, x, ap + 2.05, z, c * 0.05, 0, sn * 0.05, 0, 0.16, 0, -sn * 0.16, 0, c * 0.16, 63);
+    bar(w, x, ap + 1.9, z, x, ap + 1.2, z, 0.025);
+    ubox(w, x, ap + 1.05, z, 0.14, 0, 0, 0, 0.15, 0, 0, 0, 0.14, 63);
+    w.mat = MAT.stone;
+    const tx = x - sn * 1.7, tz = z + c * 1.7;
+    ubox(w, tx, ap + 0.25, tz, c * 0.9, 0, sn * 0.9, 0, 0.27, 0, -sn * 0.3, 0, c * 0.3, 55);
+  }
+
+  /** A drying rack: two A-frames joined by rails, hung with cloth, hides and bunches. */
+  function rack(x: number, z: number, yaw: number, rng: () => number): void {
+    const g = G.at(x, z);
+    const w = cellAt(x, z, g);
+    const F = new Frame().set(x, 0, z, yaw);
+    const L = 1.6 + rng() * 0.6;
+    w.mat = MAT.wood;
+    w.tint = 70 + Math.floor(rng() * 50);
+    w.extra = 0;
+    for (const e of [-L, L]) {
+      const gl = G.at(F.X(e, -0.5), F.Z(e, -0.5)), gr = G.at(F.X(e, 0.5), F.Z(e, 0.5));
+      const gt = Math.max(gl, gr) + 1.85;
+      fbar(w, F, e, gl - 0.2, -0.55, e, gt, 0, 0.08);
+      fbar(w, F, e, gr - 0.2, 0.55, e, gt, 0, 0.08);
+    }
+    const gy = Math.max(G.at(F.X(-L, 0), F.Z(-L, 0)), G.at(F.X(L, 0), F.Z(L, 0)));
+    for (const [y, o] of [[gy + 1.75, 0], [gy + 1.2, -0.3], [gy + 1.2, 0.3]]) fbar(w, F, -L - 0.1, y, o, L + 0.1, y, o, 0.05);
+    // what hangs from it
+    const n = 3 + Math.floor(rng() * 3);
+    for (let k = 0; k < n; k++) {
+      const u = -L + 0.35 + ((2 * L - 0.7) * (k + 0.5)) / n;
+      const kind = rng();
+      if (kind < 0.5) {
+        // a hanging cloth or hide over the top rail
+        w.mat = MAT.cloth;
+        w.tint = kind < 0.25 ? 150 + Math.floor(rng() * 40) : 200 + Math.floor(rng() * 55);
+        w.extra = rng() < 0.4 ? 5 : 0;
+        const hw = 0.28 + rng() * 0.12, dr = 0.7 + rng() * 0.5;
+        for (const sg of [-1, 1])
+          w.quadAuto(
+            F.X(u - hw, 0), gy + 1.76, F.Z(u - hw, 0), F.X(u + hw, 0), gy + 1.76, F.Z(u + hw, 0),
+            F.X(u + hw, sg * 0.12), gy + 1.76 - dr, F.Z(u + hw, sg * 0.12), F.X(u - hw, sg * 0.12), gy + 1.76 - dr, F.Z(u - hw, sg * 0.12),
+            F.s * sg, 0, F.c * sg,
+          );
+        w.extra = 0;
+      } else {
+        // bunches of dates or herbs on the lower rails
+        const o = rng() < 0.5 ? -0.3 : 0.3;
+        if (kind < 0.8) {
+          w.mat = MAT.cloth;
+          w.tint = 140 + Math.floor(rng() * 30);
+        } else {
+          w.mat = MAT.plant;
+          w.tint = 60 + Math.floor(rng() * 80);
+        }
+        taper(w, F.X(u, o), F.Z(u, o), 0.13, 0.04, gy + 0.75, gy + 1.2, 5, rng() * TAU);
       }
     }
   }
