@@ -21,14 +21,12 @@ import { AutoQuality, QUALITY, applyQuality, defaultTier } from './quality';
 import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
 import { DEFAULTS, type Params } from '../render/types';
+import { LOOKS, type Look } from './looks';
 import { WORLD_SCALE } from '../world/scale';
 import { Massifs } from '../world/massifs';
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
-
-// The "35 mm" film treatment for the post pass.
-const FILM: Partial<Params> = { grain: 0.075, vig: 0.5, chroma: 0.0028, sat: 0.94, contrast: 1.03 };
 
 const cap = (k: string) => 'u' + k[0].toUpperCase() + k.slice(1);
 const canvasHost = document.getElementById('game') as HTMLElement;
@@ -48,14 +46,24 @@ function start() {
     uFigPos: { value: new THREE.Vector3() },
   };
   for (const n of ['uInk', 'uPaperCol', 'uA', 'uB', 'uLine']) u[n] = { value: new THREE.Vector3() };
-  const film: Params = { ...DEFAULTS, ...FILM };
+  // One float uniform per style setting. Glow and fog are not here: the day cycle owns them.
   for (const k of Object.keys(DEFAULTS) as Array<keyof Params>) {
-    if (k !== 'glow' && k !== 'fog') u[cap(k)] = { value: film[k] };
+    if (k !== 'glow' && k !== 'fog') u[cap(k)] = { value: DEFAULTS[k] };
   }
-  u.uBands.value = 0;
 
   const qs = new URLSearchParams(location.search);
   const day = new DayCycle(u, qs.has('day') ? Number(qs.get('day')) : Math.random());
+  // The look: one of the gallery styles. The UI picks it; ?style=<id> chooses one for this visit.
+  let look: Look = LOOKS[0];
+  const applyLook = (l: Look) => {
+    look = l;
+    for (const k of Object.keys(DEFAULTS) as Array<keyof Params>) {
+      if (k !== 'glow' && k !== 'fog') u[cap(k)].value = l.params[k];
+    }
+    (u.uInk.value as THREE.Vector3).copy(l.ink);
+    (u.uPaperCol.value as THREE.Vector3).copy(l.paper);
+    day.setLook(l.day);
+  };
   const world = createWorld(WORLD_SEED);
   const player = new Player(world);
 
@@ -222,7 +230,7 @@ function start() {
       canvas.toBlob((blob) => {
         if (!blob) return;
         // On a phone, hand the picture to the share sheet when the browser allows it.
-        const name = `aster-${Date.now()}.png`;
+        const name = `aster-${look.id}-${Date.now()}.png`;
         if (touch.used && typeof navigator.canShare === 'function') {
           const file = new File([blob], name, { type: 'image/png' });
           if (navigator.canShare({ files: [file] })) {
@@ -237,8 +245,12 @@ function start() {
         setTimeout(() => URL.revokeObjectURL(a.href), 2000);
       }, 'image/png');
     },
+    onStyle(i) {
+      applyLook(LOOKS[i]);
+      stillDrawn = false;
     },
-    { quality: auto.tier },
+    },
+    { quality: auto.tier, styles: LOOKS.map(({ id, name }) => ({ id, name })), style: qs.get('style') },
   );
   applyTier();
   discoveries.onReach = () => audio.chime();
@@ -600,6 +612,13 @@ function start() {
           render();
         },
         freeze: (f: boolean) => (frozen = f),
+        // switch the look without touching the saved choice
+        look: (id: string) => {
+          const l = LOOKS.find((x) => x.id === id);
+          if (l) applyLook(l);
+          stillDrawn = false;
+          return l?.name;
+        },
         player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 

@@ -366,6 +366,47 @@
   padding: 6px 16px;
 }
 
+/* Style picker: ‹ Name › */
+
+.aster-ui .aster-pick {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--aster-line);
+  border-radius: 9px;
+}
+
+.aster-ui .aster-pick__step {
+  flex: 0 0 auto;
+  width: 34px;
+  min-height: 34px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--aster-ink-muted);
+  font-size: 1.3rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.aster-ui .aster-pick__step:hover {
+  background: rgba(239, 230, 216, 0.1);
+  color: var(--aster-ink);
+}
+
+.aster-ui .aster-pick__name {
+  min-width: 8.5em;
+  padding: 0 4px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.aster-ui .aster-pick--wide .aster-pick__name {
+  flex: 1 1 auto;
+}
+
 .aster-ui .aster-bar__hint {
   margin: 0 6px;
   font-size: 0.78rem;
@@ -515,7 +556,8 @@
 
   .aster-ui .aster-btn,
   .aster-ui .aster-bar .aster-btn,
-  .aster-ui .aster-seg button {
+  .aster-ui .aster-seg button,
+  .aster-ui .aster-pick__step {
     min-height: 44px;
     min-width: 44px;
   }
@@ -544,6 +586,10 @@
   .aster-ui .aster-range::-moz-range-thumb {
     width: 28px;
     height: 28px;
+  }
+
+  .aster-ui .aster-pick__step {
+    width: 44px;
   }
 
   .aster-ui .aster-photo {
