@@ -102,6 +102,11 @@ export const TERRAIN = {
   // of the massif's foot (as a fraction of its height profile).
   springLo: 0.04,
   springHi: 0.07,
+  // The spring's notch, in terms of how present the river still is (1 at the pool, 0 above the
+  // headwall): the lip the water pours from, and the back wall of the notch.
+  springLip: 0.5,
+  springBack: 0.2,
+  springHalf: 8, // half-width of the notch (m)
 } as const;
 
 /** Tallest ground the terrain can produce (m); shadows stop marching above it. */
@@ -513,7 +518,11 @@ vec4 surfaceBase(vec2 p) {
         carved = mix(carved, max(carved, min(h - 6.0, ${F(T.waterY + T.spireMax)})), sm);
         rkc = max(rkc, sm);
       }
-      h = mix(h, carved, rs);
+      // the spring: where a river meets a massif, a notch is cut back into the headwall above
+      // the pool, and the water pours from its lip. Through the notch the carve is held at one
+      // strength, which makes a shelf with a wall behind it.
+      float nk = (1.0 - smoothstep(${F(T.springHalf - 1)}, ${F(T.springHalf + 1)}, rd)) * smoothstep(${F(T.springBack - 0.04)}, ${F(T.springBack)}, rs) * (1.0 - smoothstep(${F(T.springLip)}, ${F(T.springLip + 0.04)}, rs)) * step(0.0001, mfo);
+      h = mix(h, carved, mix(rs, ${F(T.springLip + 0.02)}, nk));
       rock = mix(rock, rkc, rs);
       salt *= mix(1.0, w, rs);
       green = rs * (1.0 - smoothstep(${F(T.riverHalf)}, ${F(T.riverFloor + 12)}, rd));
@@ -843,7 +852,9 @@ export function createWorld(seed: number): DesertWorld {
           carved = carved + (Math.max(carved, Math.min(h - 6, T.waterY + T.spireMax)) - carved) * sm;
           rkc = Math.max(rkc, sm);
         }
-        h = h + (carved - h) * rs;
+        // the spring's notch (mirrors the GLSL)
+        const nk = (1 - smoothstep(T.springHalf - 1, T.springHalf + 1, rd)) * smoothstep(T.springBack - 0.04, T.springBack, rs) * (1 - smoothstep(T.springLip, T.springLip + 0.04, rs)) * (mfo >= 0.0001 ? 1 : 0);
+        h = h + (carved - h) * (rs + (T.springLip + 0.02 - rs) * nk);
         rock = rock + (rkc - rock) * rs;
         salt *= 1 + (w - 1) * rs;
         green = rs * (1 - smoothstep(T.riverHalf, T.riverFloor + 12, rd));
