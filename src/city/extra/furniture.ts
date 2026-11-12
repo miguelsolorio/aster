@@ -898,9 +898,35 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     return false;
   };
 
-  /** True if a thing of radius r can stand at (x, z): off the street, the people spots and everything else. */
+  // A clear way in front of every door: its width plus 0.4 m, 1.6 m deep.
+  const DOOR_D = 1.6;
+  const db = new Map<number, number[]>(); // door indices by 16 m bucket
+  ctx.doors.forEach((d, k) => {
+    const ex = d.x + d.nx * DOOR_D, ez = d.z + d.nz * DOOR_D, hw = d.w / 2 + 0.2;
+    for (let j = Math.floor((Math.min(d.z, ez) - hw - 1) / 16); j <= Math.floor((Math.max(d.z, ez) + hw + 1) / 16); j++)
+      for (let i = Math.floor((Math.min(d.x, ex) - hw - 1) / 16); i <= Math.floor((Math.max(d.x, ex) + hw + 1) / 16); i++) {
+        const kk = key(i, j);
+        let l = db.get(kk);
+        if (!l) db.set(kk, (l = []));
+        l.push(k);
+      }
+  });
+  /** True if a circle of radius r at (x, z) reaches into the clear way in front of a door. */
+  const inDoor = (x: number, z: number, r: number): boolean => {
+    const l = db.get(key(Math.floor(x / 16), Math.floor(z / 16)));
+    if (!l) return false;
+    for (const k of l) {
+      const d = ctx.doors[k];
+      const dx = x - d.x, dz = z - d.z;
+      const a = dx * -d.nz + dz * d.nx, b = dx * d.nx + dz * d.nz;
+      if (Math.abs(a) < d.w / 2 + 0.2 + r && b > -r && b < DOOR_D + r) return true;
+    }
+    return false;
+  };
+
+  /** True if a thing of radius r can stand at (x, z): off the street, the people spots, the doorways and everything else. */
   const fits = (x: number, z: number, r: number): boolean =>
-    ctx.streetGap(x, z) > 0.3 + r && !keep.hit(x, z, r) && !inRect(x, z, r) && ctx.free(x, z, r);
+    ctx.streetGap(x, z) > 0.3 + r && !keep.hit(x, z, r) && !inRect(x, z, r) && !inDoor(x, z, r) && ctx.free(x, z, r);
   const take = (x: number, z: number, r: number): boolean => {
     if (!fits(x, z, r)) return false;
     ctx.claim(x, z, r);
@@ -911,7 +937,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     for (const a of [-hu, hu])
       for (const b of [-hn, hn]) {
         const cx = x + ux * a - uz * b, cz = z + uz * a + ux * b;
-        if (ctx.streetGap(cx, cz) < 0.3 || ctx.roofAt(cx, cz) > 0 || keep.hit(cx, cz, 0.05)) return false;
+        if (ctx.streetGap(cx, cz) < 0.3 || ctx.roofAt(cx, cz) > 0 || keep.hit(cx, cz, 0.05) || inDoor(cx, cz, 0)) return false;
       }
     return true;
   };
@@ -1045,6 +1071,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       const cx = x + ux * a + vx * b, cz = z + uz * a + vz * b;
       if (ctx.streetGap(cx, cz) < 0.3 || keep.hit(cx, cz, 0.05) || inRect(cx, cz, 0) || !ctx.free(cx, cz, 0.05)) return false;
     }
+    for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) if (inDoor(x + ux * a * hl + vx * b * hw, z + uz * a * hl + vz * b * hw, 0.05)) return false;
     if (keep.hit(x, z, r * 0.7) || !ctx.free(x, z, Math.min(hl, hw))) return false;
     flatRug(S(x, z), x, ground(x, z), z, ux, uz, hl, hw, rng);
     rugsLater.push(x, z, Math.min(hl, hw));
@@ -1384,6 +1411,50 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       const pcs = line(F(mx, mz), ax, y + (rng() - 0.5) * 0.2, az, bx, y + (rng() - 0.5) * 0.2, bz, 0.15 + bd * 0.02, true, 3.5, rng);
       counts.bunting++;
       counts.pieces += pcs;
+    }
+  }
+
+  // Beside the doors: a pair of jars flanking it, a bench to one side, or a lantern over it.
+  for (const d of ctx.doors) {
+    const qx = d.x + d.nx * 0.55, qz = d.z + d.nz * 0.55;
+    if (ctx.streetGap(qx, qz) > 3.5) continue;
+    const busy = busyAt(qx, qz, laneAt(qx, qz));
+    if (rng() > (0.12 + 0.25 * busy) * dens) continue;
+    const tx = -d.nz, tz = d.nx;
+    const P = (a: number, off: number): [number, number] => [d.x + tx * a + d.nx * off, d.z + tz * a + d.nz * off];
+    const p = rng();
+    if (p < 0.45) {
+      const kind = rng() < 0.6 ? 0 : 1;
+      const sc = kind === 0 ? 0.6 + rng() * 0.25 : 0.8 + rng() * 0.2;
+      const rr = JAR_R[kind] * sc + 0.03;
+      for (const side of [-1, 1]) {
+        const [x, z] = P(side * (d.w / 2 + 0.25 + rr), rr + 0.08);
+        if (!take(x, z, rr)) continue;
+        jar(S(x, z), x, ground(x, z), z, sc, kind, rng);
+        counts.jars++;
+      }
+    } else if (p < 0.75) {
+      const side = rng() < 0.5 ? -1 : 1;
+      const hl = 0.55 + rng() * 0.3;
+      const a = side * (d.w / 2 + 0.3 + hl);
+      const [x, z] = P(a, 0.32), [ex, ez] = P(a - side * (hl - 0.25), 0.3), [fx2, fz2] = P(a + side * (hl - 0.25), 0.3);
+      const [cx, cz] = P(a, 0.26);
+      if (!fits(x, z, 0.28) || !fits(ex, ez, 0.25) || !fits(fx2, fz2, 0.25) || !cornersClear(cx, cz, tx, tz, hl + 0.03, 0.25)) continue;
+      ctx.claim(x, z, 0.28);
+      ctx.claim(ex, ez, 0.25);
+      ctx.claim(fx2, fz2, 0.25);
+      bench(S(x, z), cx, ground(x, z), cz, tx, tz, hl, rng);
+      counts.benches++;
+    } else {
+      const h = ctx.roofAt(d.x - d.nx * 0.5, d.z - d.nz * 0.5);
+      const y = Math.min(3.6, h - 0.75);
+      const [ox, oz] = P(0, 0.6);
+      if (d.w >= 1.9 || y < 3.45 || over.hit(ox, oz, 2.5) || lamps.hit(ox, oz, 3)) continue; // not over a great portal
+      over.add(ox, oz, 1);
+      bracket(S(d.x, d.z), d.x, d.z, d.nx, d.nz, y, 0.58);
+      const [hx, hz] = P(0, 0.52);
+      lantern(F(ox, oz), G, hx, y - 0.03, hz, 0.1 + rng() * 0.12, rng());
+      counts.lanterns++;
     }
   }
 

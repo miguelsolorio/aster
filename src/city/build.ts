@@ -16,6 +16,8 @@ export interface CityMeshes {
   near: THREE.Group;
   /** Simplified skyline for viewing from 1.5 to 9 km away, same local space. */
   far: THREE.Group;
+  /** Every door the near city cut into its walls (local, on the wall plane, outward normal). */
+  doors: Array<{ x: number; z: number; nx: number; nz: number; w: number }>;
   dispose(): void;
 }
 
@@ -712,6 +714,7 @@ class NearBuilder {
   readonly cloth = new Writer(4096, 8192);
   readonly plants = new Writer(4096, 8192);
   readonly glows = new Glows();
+  readonly doors: CityMeshes['doors'] = [];
   private readonly grid: Float32Array;
   private readonly gs: number;
   private readonly gh: number;
@@ -899,6 +902,7 @@ class NearBuilder {
           u0, u1, y0: 0, y1: dh, d: 0.45, back: rng() < 0.55 ? MAT.wood : MAT.opening,
           seed: rng() < 0.2 ? lit() : 0, arch: arched ? dw * 0.5 : 0, k: 3, point: 0.3,
         });
+        this.doors.push({ x: px(f, c.u, 0), z: pz(f, c.u, 0), nx: f.nx, nz: f.nz, w: dw });
         placed++;
       }
     }
@@ -1745,6 +1749,7 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
   return {
     near,
     far,
+    doors: nb.doors,
     dispose() {
       for (const g of geos) g.dispose();
       for (const m of mats) m.dispose();

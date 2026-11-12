@@ -62,6 +62,8 @@ export interface ExtraCtx {
   rng(salt: number): () => number;
   /** World bearings (atan2(dz, dx)) of the worn tracks leaving the city toward its neighbours. */
   tracks: number[];
+  /** Every door cut into a wall: centre on the wall plane, outward normal, width (metres). */
+  doors: Door[];
   /** Terrain height relative to the plateau (0 on the paved area, varies outside it). */
   groundAt(x: number, z: number): number;
   /** Height of the building roof over a point (0 on open ground or outside the city grid). */
@@ -79,6 +81,14 @@ export interface ExtraCtx {
 
 export type ExtraBuilder = (ctx: ExtraCtx) => Extra;
 
+export interface Door {
+  x: number;
+  z: number;
+  nx: number;
+  nz: number;
+  w: number;
+}
+
 // ------------------------------------------------------------------ context
 
 function mulberry(seed: number): () => number {
@@ -95,7 +105,7 @@ function mulberry(seed: number): () => number {
 const SB = 32; // street bucket size, metres
 const CB = 16; // claim bucket size
 
-export function createExtraCtx(plan: CityPlan, uniforms: Uniforms, density: number, worldHeight: (x: number, z: number) => number, tracks: number[] = []): ExtraCtx {
+export function createExtraCtx(plan: CityPlan, uniforms: Uniforms, density: number, worldHeight: (x: number, z: number) => number, tracks: number[] = [], doors: Door[] = []): ExtraCtx {
   const site = plan.site;
   const co = Math.cos(site.rot);
   const si = Math.sin(site.rot);
@@ -136,6 +146,7 @@ export function createExtraCtx(plan: CityPlan, uniforms: Uniforms, density: numb
     uniforms,
     density,
     tracks,
+    doors,
     rng: (salt) => mulberry((site.seed ^ Math.imul(salt | 0, 0x9e3779b1)) >>> 0),
     groundAt(x, z) {
       return worldHeight(site.cx + co * x - si * z, site.cz + si * x + co * z) - site.groundY;

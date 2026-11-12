@@ -176,7 +176,7 @@ export class Cities {
   /** Builds the next missing extra of a city. Returns true if it did some work. */
   private buildExtra(c: Loaded): boolean {
     if (c.extras.length >= EXTRAS.length) return false;
-    c.ctx ??= createExtraCtx(c.plan, this.u, this.density, (x, z) => this.world.height(x, z), this.tracks(c.site));
+    c.ctx ??= createExtraCtx(c.plan, this.u, this.density, (x, z) => this.world.height(x, z), this.tracks(c.site), c.meshes.doors);
     const e = EXTRAS[c.extras.length](c.ctx);
     c.extras.push(e);
     c.meshes.near.add(e.near);
