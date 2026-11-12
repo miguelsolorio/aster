@@ -209,25 +209,26 @@ export class Player {
         let nx = pos.x + vel.x * dt;
         let nz = pos.z + vel.z * dt;
         let nh = this.top(nx, nz);
-        // A wall: anything more than a step higher than where you stand. Slide along it.
-        if (nh > pos.y + 0.55) {
-          const hx = this.top(nx, pos.z);
-          const hz = this.top(pos.x, nz);
-          if (hx <= pos.y + 0.55) {
+        // A wall: anything more than a step higher than where you stand. Probe a body's
+        // width ahead so the figure stops short of it, and slide along it.
+        const spd = Math.hypot(vel.x, vel.z);
+        const ox = spd > 1e-3 ? (vel.x / spd) * 0.38 : 0;
+        const oz = spd > 1e-3 ? (vel.z / spd) * 0.38 : 0;
+        const step = pos.y + 0.55;
+        if (this.top(nx + ox, nz + oz) > step) {
+          if (this.top(nx + ox, pos.z) <= step && this.top(nx + ox, pos.z + oz) <= step) {
             nz = pos.z;
             vel.z = 0;
-            nh = hx;
-          } else if (hz <= pos.y + 0.55) {
+          } else if (this.top(pos.x, nz + oz) <= step && this.top(pos.x + ox, nz + oz) <= step) {
             nx = pos.x;
             vel.x = 0;
-            nh = hz;
           } else {
             nx = pos.x;
             nz = pos.z;
             vel.x = 0;
             vel.z = 0;
-            nh = pos.y;
           }
+          nh = Math.min(this.top(nx, nz), step);
         }
         const follow = (nh - pos.y) / dt;
         // If the ground falls away faster than we can follow, we are airborne.
