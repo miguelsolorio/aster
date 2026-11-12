@@ -23,12 +23,12 @@ export interface StyleChoice {
 const KEY_VOLUME = 'aster.volume';
 const KEY_QUALITY = 'aster.quality';
 const KEY_STYLE = 'aster.style';
-const CONTROLS = ['WASD glide', 'Mouse look', 'Shift boost', 'Space leap, hold to rise, let go to glide', 'In the air: WASD steer, Shift drop', 'Esc menu'];
+const CONTROLS = ['WASD glide', 'Mouse look', 'Shift boost', 'Space leap, hold to rise, let go to glide', 'In the air: WASD steer, Shift boost, double-tap Space to drop', 'Esc menu'];
 const TOUCH_CONTROLS = [
   'Left thumb: glide (push to the edge to boost)',
   'Right thumb: look, pinch to zoom',
   'Button: leap, hold to rise, let go to glide',
-  'In the air: stick steers, small button drops',
+  'In the air: stick steers (edge to boost), small button drops',
 ];
 const QUALITIES: Quality[] = ['mobile', 'low', 'high'];
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled])';

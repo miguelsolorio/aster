@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { PlayerState, Uniforms } from './contract';
+import { strideLength } from './player';
 import { STYLE_GLSL } from '../render/styleGlsl';
 
 // The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
@@ -273,7 +274,7 @@ export class Figure {
   ) {
     const k = (rate: number) => 1 - Math.exp(-dt * rate);
     const walking = st.grounded && !st.sliding;
-    const strideLen = st.running ? 1.15 : 0.8;
+    const strideLen = strideLength(st.speed, st.running);
     if (walking) this.cycle += (st.speed * dt) / (2 * strideLen);
     const a = this.cycle * Math.PI * 2;
     this.time += dt;
