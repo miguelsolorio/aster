@@ -10,6 +10,7 @@ import { Dust } from '../world/dust';
 import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
 import { Cities } from '../city/cities';
+import { Caravans } from '../city/caravans';
 import { Figure } from './figure';
 import { AudioEngine } from '../audio/audio';
 import { UI } from '../ui/ui';
@@ -93,7 +94,8 @@ function start() {
   const dust = new Dust(world, u);
   const discoveries = new Discoveries(world, u);
   const wildlife = new Wildlife(world, u);
-  scene.add(clipmap.group, cities.group, discoveries.group, wildlife.group, dust.group);
+  const caravans = new Caravans(world, world.cities, u);
+  scene.add(clipmap.group, cities.group, caravans.group, discoveries.group, wildlife.group, dust.group);
 
   const figure = new Figure(u);
   scene.add(figure.group);
@@ -316,6 +318,8 @@ function start() {
   const tmp2 = new THREE.Vector3();
   const sliders: Array<{ x: number; z: number; life: number }> = [];
   let slideStampDist = 0;
+  let cityNear = 0;
+  let bustle = 0;
   let airCam = 0;
   const probe = { h: 0, rock: 0, salt: 0 };
 
@@ -489,6 +493,15 @@ function start() {
     dust.update(frame);
     discoveries.update(frame);
     wildlife.update(frame);
+    caravans.update(frame);
+    // How much of a city surrounds the listener: 0 out in the desert, rising from 900 m out to the centre.
+    {
+      const site = cities.nearest(st.pos.x, st.pos.z);
+      const d = Math.hypot(site.cx - st.pos.x, site.cz - st.pos.z);
+      const near = d > site.radius ? 0.7 * Math.max(0, 1 - (d - site.radius) / 900) : 0.7 + 0.3 * (1 - d / site.radius);
+      cityNear = near;
+      audio.setCity(near, bustle, d < site.radius * 0.92 && st.grounded);
+    }
     audio.update({
       dt,
       day: day.day,
@@ -516,7 +529,7 @@ function start() {
           render();
         },
         freeze: (f: boolean) => (frozen = f),
-        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, audio, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let frozen = false;

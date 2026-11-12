@@ -7,6 +7,8 @@
 //   chime ─┘          └─ delay ───────┘                    │         │
 //   wind / sand hiss ─────────────────────────────────────────────── preMaster
 //   footsteps / landings ─────────────────────────────────────────── ┘
+//   city near (murmur, voices, steps) ─ cityBus ─┬─ dry ───────────── preMaster
+//   city far (murmur, bell, drum) ─ cityFarBus ──┴─ mostly → reverb
 //   preMaster → high-shelf cut → pause low-pass → pause duck → limiter
 //             → start fade → volume → visibility gain → speakers
 
@@ -157,9 +159,47 @@ interface Graph {
   hissBP: BiquadFilterNode;
   hissGain: GainNode;
   noise: AudioBuffer; // short mono noise for one-shots
+  cityBus: GainNode; // close city sounds: some dry, some space
+  cityFarBus: GainNode; // distant city sounds: mostly reverb
 }
 
 type MoodWeights = Record<MoodName, number>;
+
+// ------------------------------------------------------------- city sound
+
+/** Seconds between city scheduler ticks (events are placed with jitter inside each tick). */
+const CITY_TICK = 0.25;
+
+/** One formant band of the crowd murmur bed. */
+interface CityBand {
+  f1: BiquadFilterNode;
+  f2: BiquadFilterNode;
+  level: GainNode;
+  lfoA: OscillatorNode;
+  lfoB: OscillatorNode;
+  wander: number;
+  timer: number;
+}
+
+/** The continuous murmur bed, built lazily the first time a city is near. */
+interface CityBed {
+  bands: CityBand[];
+  nearGain: GainNode;
+  farGain: GainNode;
+  sources: AudioScheduledSourceNode[];
+  nodes: AudioNode[];
+}
+
+/** Large warm bell: [ratio, relative level, relative decay]. Low partials sit on D and A. */
+const BELL_PARTIALS: readonly (readonly [number, number, number])[] = [
+  [0.5, 0.5, 1.0], // hum
+  [1.0, 1.0, 0.75], // strike tone
+  [1.5, 0.2, 0.45], // fifth
+  [2.006, 0.32, 0.4], // slightly wide octave
+  [2.66, 0.11, 0.22], // inharmonic upper partials, short
+  [3.94, 0.06, 0.14],
+  [5.4, 0.03, 0.08],
+];
 
 // ------------------------------------------------------------ the engine
 
@@ -182,6 +222,21 @@ export class AudioEngine {
   private chordMood: MoodName = 'day';
   private chordIdx = -1;
   private melodyIdx = 3;
+
+  // City: raw targets from setCity(), smoothed values used by the engine.
+  private cityNearT = 0;
+  private cityBustleT = 0;
+  private cityPaved = false;
+  private cityNear = 0;
+  private cityBustle = 0;
+  private cityNight = 0;
+  private cityDay = 0.5;
+  private bed: CityBed | null = null;
+  private bedIdle = 0;
+  private nextCityTick = 0;
+  /** Time of the next bell or drum; 0 while not armed (away from any city). */
+  private nextCityBell = 0;
+  private duskBellDone = false;
 
   private paramTimer = 0;
   private clock = 0;
@@ -239,6 +294,18 @@ export class AudioEngine {
     this.g.pauseLP.frequency.setTargetAtTime(p ? 750 : 18000, now, 0.25);
   }
 
+  /**
+   * Call once per frame alongside update().
+   * near: 0 far from any city .. 1 inside one (the game ramps this from about 900 m out to the city edge and on to the centre).
+   * bustle: 0..1 how many people are close to the listener right now.
+   * paved: true when the listener is walking on city streets or roofs.
+   */
+  setCity(near: number, bustle: number, paved: boolean): void {
+    this.cityNearT = Number.isFinite(near) ? clamp01(near) : 0;
+    this.cityBustleT = Number.isFinite(bustle) ? clamp01(bustle) : 0;
+    this.cityPaved = !!paved;
+  }
+
   /** Once per frame. Cheap: smoothing in JS, AudioParams touched at ~10 Hz. */
   update(f: AudioFrame): void {
     const ctx = this.ctx;
@@ -257,6 +324,14 @@ export class AudioEngine {
       for (const m of MOOD_NAMES) this.w[m] += (target[m] - this.w[m]) * k;
     }
 
+    // City presence, smoothed over a couple of seconds on top of the game's own ramp.
+    this.cityNear += (this.cityNearT - this.cityNear) * (1 - Math.exp(-dt / 1.5));
+    this.cityBustle += (this.cityBustleT - this.cityBustle) * (1 - Math.exp(-dt / 2.5));
+    if (this.cityNearT === 0 && this.cityNear < 1e-4) this.cityNear = 0;
+    if (this.cityBustleT === 0 && this.cityBustle < 1e-4) this.cityBustle = 0;
+    this.cityNight = clamp01(f.night);
+    this.cityDay = f.day;
+
     this.paramTimer += dt;
     if (this.paramTimer >= 0.1) {
       this.paramTimer = 0;
@@ -273,6 +348,11 @@ export class AudioEngine {
     const s = clamp01(strength);
     if (s <= 0.01) return;
     const t = ctx.currentTime + 0.005;
+    if (this.cityPaved) {
+      // Stone or packed earth: a short bright tick with a small resonant body.
+      this.stoneStep(t, s, 1, null, g.sfxBus);
+      return;
+    }
     const src = ctx.createBufferSource();
     src.buffer = g.noise;
     src.playbackRate.value = rand(0.85, 1.15);
@@ -388,6 +468,7 @@ export class AudioEngine {
         /* already stopped */
       }
     }
+    this.teardownBed();
     this.ctx = null;
     this.g = null;
     if (ctx) void ctx.close().catch(() => undefined);
@@ -474,6 +555,14 @@ export class AudioEngine {
     sfxBus.connect(preMaster);
     sfxBus.connect(gain(0.08)).connect(reverbIn);
 
+    // City: near sounds partly dry; distant sounds mostly reverb (heard across rooftops).
+    const cityBus = gain(1);
+    cityBus.connect(gain(0.6)).connect(preMaster);
+    cityBus.connect(gain(0.4)).connect(reverbIn);
+    const cityFarBus = gain(1);
+    cityFarBus.connect(gain(0.3)).connect(preMaster);
+    cityFarBus.connect(gain(0.7)).connect(reverbIn);
+
     // Wind: stereo pink noise loop through a broad band-pass plus a faint whistle band.
     const windBuf = makePinkNoise(ctx, 7, 2);
     const windSrc = ctx.createBufferSource();
@@ -534,6 +623,8 @@ export class AudioEngine {
       hissBP,
       hissGain,
       noise: makeWhiteNoise(ctx, 2),
+      cityBus,
+      cityFarBus,
     };
   }
 
@@ -551,11 +642,13 @@ export class AudioEngine {
     // Air rushing past when moving fast (sliding, launched).
     const rush = clamp01((f.speed - 8) / 17);
 
-    const windLevel = 0.025 + 0.07 * gust + 0.04 * alt + 0.015 * breathe + 0.07 * rush;
+    // Buildings shelter you: duck the wind a little as a city closes around you (1 when no city).
+    const shelter = 1 - 0.35 * this.cityNear;
+    const windLevel = (0.025 + 0.07 * gust + 0.04 * alt + 0.015 * breathe + 0.07 * rush) * shelter;
     const windFreq = 280 + 420 * gust + 260 * alt + 120 * breathe + 700 * rush;
     g.windGain.gain.setTargetAtTime(windLevel, now, 1.2);
     g.windBP.frequency.setTargetAtTime(windFreq, now, 1.5);
-    g.whistleGain.gain.setTargetAtTime(0.006 * gust * (0.3 + alt) * breathe, now, 2);
+    g.whistleGain.gain.setTargetAtTime(0.006 * gust * (0.3 + alt) * breathe * shelter, now, 2);
     g.whistleBP.frequency.setTargetAtTime(700 + 500 * gust + 400 * alt + 200 * breathe, now, 2.5);
 
     const sand = f.sliding && f.grounded ? clamp01((f.speed - 2) / 16) : 0;
@@ -566,6 +659,154 @@ export class AudioEngine {
     g.padRev.gain.setTargetAtTime(0.42 + 0.25 * wn, now, 3);
     g.pluckRev.gain.setTargetAtTime(0.5 + 0.35 * wn, now, 3);
     g.pluckDry.gain.setTargetAtTime(0.7 - 0.32 * wn, now, 3);
+
+    this.applyCity(now, 0.1);
+  }
+
+  /** Murmur bed levels and the slow wander of its formant bands. */
+  private applyCity(now: number, dt: number): void {
+    const near = this.cityNear;
+    const bustle = this.cityBustle;
+    const night = this.cityNight;
+    const active = near > 0.002 || bustle > 0.002;
+    if (!this.bed) {
+      if (!active) return;
+      this.bed = this.buildCityBed();
+      if (!this.bed) return;
+    }
+    const bed = this.bed;
+    if (!active) {
+      // Free the bed once it has long since faded to silence.
+      this.bedIdle += dt;
+      if (this.bedIdle > 30) {
+        this.teardownBed();
+        return;
+      }
+    } else {
+      this.bedIdle = 0;
+    }
+
+    // Close crowd follows bustle; the far-off city follows near. Night empties the streets.
+    const nearLvl = 0.24 * bustle * (1 - 0.8 * night);
+    const farLvl = 0.18 * Math.pow(near, 1.5) * (1 - 0.6 * bustle) * (1 - 0.75 * night);
+    bed.nearGain.gain.setTargetAtTime(nearLvl, now, 1.5);
+    bed.farGain.gain.setTargetAtTime(farLvl, now, 2.5);
+
+    // More people, more independent bands audible.
+    const density = Math.max(bustle, 0.6 * near);
+    bed.bands.forEach((b, i) => {
+      b.timer -= dt;
+      if (b.timer <= 0) {
+        b.timer = rand(1.2, 3.5);
+        b.wander = rand(0.45, 1);
+        b.f1.frequency.setTargetAtTime(rand(320, 780), now, rand(0.6, 1.4));
+        b.f2.frequency.setTargetAtTime(rand(950, 2300), now, rand(0.6, 1.4));
+        b.lfoA.frequency.setTargetAtTime(rand(2.6, 4.8), now, 1.5);
+        b.lfoB.frequency.setTargetAtTime(rand(0.6, 1.6), now, 2);
+      }
+      const weight = clamp01((density - i * 0.15) / 0.3);
+      b.level.gain.setTargetAtTime(weight * b.wander, now, 1.2);
+    });
+  }
+
+  /**
+   * Crowd murmur bed: four decorrelated pink-noise bands, each through two vowel-region
+   * band-passes, amplitude-modulated at syllable-ish rates by two incommensurate LFOs.
+   */
+  private buildCityBed(): CityBed | null {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return null;
+    const now = ctx.currentTime;
+    const buf = makePinkNoise(ctx, 6, 1);
+    const sources: AudioScheduledSourceNode[] = [];
+    const nodes: AudioNode[] = [];
+    const mk = <T extends AudioNode>(n: T): T => {
+      nodes.push(n);
+      return n;
+    };
+
+    const hp = mk(ctx.createBiquadFilter());
+    hp.type = 'highpass';
+    hp.frequency.value = 180;
+    hp.Q.value = 0.5;
+    const nearLP = mk(ctx.createBiquadFilter());
+    nearLP.type = 'lowpass';
+    nearLP.frequency.value = 1700;
+    nearLP.Q.value = 0.5;
+    const farLP = mk(ctx.createBiquadFilter());
+    farLP.type = 'lowpass';
+    farLP.frequency.value = 420;
+    farLP.Q.value = 0.5;
+    const nearGain = mk(ctx.createGain());
+    nearGain.gain.value = 0;
+    const farGain = mk(ctx.createGain());
+    farGain.gain.value = 0;
+    hp.connect(nearLP).connect(nearGain).connect(g.cityBus);
+    hp.connect(farLP).connect(farGain).connect(g.cityFarBus);
+
+    const pans = [-0.65, -0.22, 0.22, 0.65];
+    const bands: CityBand[] = pans.map((p) => {
+      const src = ctx.createBufferSource();
+      src.buffer = buf;
+      src.loop = true;
+      sources.push(src);
+      nodes.push(src);
+      const f1 = mk(ctx.createBiquadFilter());
+      f1.type = 'bandpass';
+      f1.frequency.value = rand(320, 780);
+      f1.Q.value = 3;
+      const f2 = mk(ctx.createBiquadFilter());
+      f2.type = 'bandpass';
+      f2.frequency.value = rand(950, 2300);
+      f2.Q.value = 4;
+      const f2g = mk(ctx.createGain());
+      f2g.gain.value = 0.55;
+      // Syllabic amplitude: 0.5 ± (0.28 + 0.2), never below zero.
+      const amp = mk(ctx.createGain());
+      amp.gain.value = 0.5;
+      const lfoA = ctx.createOscillator();
+      lfoA.type = 'sine';
+      lfoA.frequency.value = rand(2.6, 4.8);
+      const depthA = mk(ctx.createGain());
+      depthA.gain.value = 0.28;
+      const lfoB = ctx.createOscillator();
+      lfoB.type = 'sine';
+      lfoB.frequency.value = rand(0.6, 1.6);
+      const depthB = mk(ctx.createGain());
+      depthB.gain.value = 0.2;
+      sources.push(lfoA, lfoB);
+      nodes.push(lfoA, lfoB);
+      lfoA.connect(depthA).connect(amp.gain);
+      lfoB.connect(depthB).connect(amp.gain);
+      const level = mk(ctx.createGain());
+      level.gain.value = 0;
+      const pan = mk(ctx.createStereoPanner());
+      pan.pan.value = p;
+      src.connect(f1).connect(amp);
+      src.connect(f2).connect(f2g).connect(amp);
+      amp.connect(level).connect(pan).connect(hp);
+      src.start(now, Math.random() * 5);
+      lfoA.start(now);
+      lfoB.start(now);
+      return { f1, f2, level, lfoA, lfoB, wander: rand(0.45, 1), timer: rand(0, 2) };
+    });
+    this.bedIdle = 0;
+    return { bands, nearGain, farGain, sources, nodes };
+  }
+
+  private teardownBed(): void {
+    const bed = this.bed;
+    if (!bed) return;
+    this.bed = null;
+    for (const s of bed.sources) {
+      try {
+        s.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    disconnectAll(...bed.nodes);
   }
 
   // ------------------------------------------------------------ scheduler
@@ -589,6 +830,401 @@ export class AudioEngine {
     while (this.nextDrone < horizon) {
       const t = Math.max(this.nextDrone, now + 0.02);
       this.nextDrone = t + this.playDrone(t);
+    }
+    if (this.nextCityTick < now - 1) this.nextCityTick = now + 0.05;
+    while (this.nextCityTick < horizon) {
+      const t = Math.max(this.nextCityTick, now + 0.02);
+      this.cityTick(t);
+      this.nextCityTick = t + CITY_TICK;
+    }
+  }
+
+  // ---------------------------------------------------------------- city
+
+  /** One city scheduler tick: random sparse events, each jittered within the tick. */
+  private cityTick(t: number): void {
+    const near = this.cityNear;
+    const bustle = this.cityBustle;
+    const night = this.cityNight;
+
+    // Dusk bell bookkeeping runs everywhere so the figure sounds at most once per dusk.
+    const d = ((this.cityDay % 1) + 1) % 1;
+    const inDusk = d > 0.735 && d < 0.79;
+    if (d < 0.7 || d > 0.83) this.duskBellDone = false;
+
+    if (near < 0.002 && bustle < 0.002) {
+      this.nextCityBell = 0;
+      return;
+    }
+    const ns = 1 - 0.8 * night;
+    const jit = (): number => t + rand(0, CITY_TICK);
+
+    // Speaking voices: close ones follow bustle; distant ones follow near.
+    const rNear = 1.5 * bustle * ns;
+    const rFar = 0.35 * Math.pow(near, 1.5) * (1 - 0.5 * bustle) * (1 - 0.7 * night);
+    if (Math.random() < rNear * CITY_TICK) this.cityVoice(jit(), false);
+    if (Math.random() < rFar * CITY_TICK) this.cityVoice(jit(), true);
+    // Other people walking past and small activity sounds.
+    if (Math.random() < 0.22 * bustle * ns * CITY_TICK) this.cityWalker(jit());
+    if (Math.random() < 0.3 * bustle * ns * CITY_TICK) this.cityActivity(jit());
+
+    // Bell or drum from somewhere in the city.
+    if (near <= 0.3) {
+      this.nextCityBell = 0;
+      return;
+    }
+    if (inDusk && !this.duskBellDone) {
+      this.duskBellDone = true;
+      this.duskBells(t + rand(1, 4));
+      this.nextCityBell = t + rand(50, 120);
+      return;
+    }
+    if (this.nextCityBell === 0) {
+      this.nextCityBell = t + rand(8, 35); // heard soon after arriving
+      return;
+    }
+    if (t >= this.nextCityBell) {
+      if (Math.random() < 0.5 + 0.3 * night) {
+        const root = Math.random() < 0.6 ? midiHz(D3) : midiHz(D3 - 5); // D3 or A2
+        this.cityBell(t, root, rand(0.045, 0.06), rand(-0.6, 0.6), rand(7, 10));
+      } else {
+        this.cityDrum(t);
+      }
+      this.nextCityBell = t + rand(40, 120);
+    }
+  }
+
+  /** A short wordless spoken gesture: 1..3 formant syllables with a gentle pitch contour. */
+  private cityVoice(t: number, far: boolean): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const r = Math.random();
+    let f0 = r < 0.12 ? rand(260, 380) : r < 0.55 ? rand(105, 150) : rand(175, 255);
+    const syllables = Math.random() < 0.55 ? 1 : Math.random() < 0.7 ? 2 : 3;
+    // Statements mostly fall; some rise.
+    const contour = Math.random() < 0.7 ? -1 : 1;
+    const peakBase = (far ? 0.03 : 0.04) * rand(0.35, 1);
+
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = far ? 750 : 2000;
+    lp.Q.value = 0.5;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = far ? rand(-0.5, 0.5) : rand(-0.8, 0.8);
+    lp.connect(pan).connect(far ? g.cityFarBus : g.cityBus);
+
+    let at = t;
+    for (let i = 0; i < syllables; i++) {
+      const dur = rand(0.15, 0.4);
+      const ratio = Math.pow(2, (contour * rand(1, 3)) / 12);
+      const voiced = Math.random() < 0.75;
+      let src: AudioScheduledSourceNode;
+      if (voiced) {
+        const o = ctx.createOscillator();
+        o.type = 'sawtooth';
+        o.frequency.setValueAtTime(f0 * rand(0.97, 1.03), at);
+        o.frequency.exponentialRampToValueAtTime(f0 * ratio, at + dur);
+        src = o;
+      } else {
+        // Breathy, noise-excited syllable.
+        const n = ctx.createBufferSource();
+        n.buffer = g.noise;
+        src = n;
+      }
+      const f1 = ctx.createBiquadFilter();
+      f1.type = 'bandpass';
+      f1.Q.value = 5;
+      f1.frequency.setValueAtTime(rand(350, 800), at);
+      f1.frequency.linearRampToValueAtTime(rand(350, 800), at + dur);
+      const f2 = ctx.createBiquadFilter();
+      f2.type = 'bandpass';
+      f2.Q.value = 7;
+      f2.frequency.setValueAtTime(rand(1000, 2300), at);
+      f2.frequency.linearRampToValueAtTime(rand(1000, 2300), at + dur);
+      const f2g = ctx.createGain();
+      f2g.gain.value = 0.45;
+      const env = ctx.createGain();
+      const peak = Math.max(peakBase * (voiced ? 1 : 2) * (i === 0 ? 1 : 0.8), 2 * EPS);
+      env.gain.setValueAtTime(0, at);
+      env.gain.linearRampToValueAtTime(peak, at + dur * 0.35);
+      env.gain.exponentialRampToValueAtTime(EPS, at + dur);
+      src.connect(f1).connect(env);
+      src.connect(f2).connect(f2g).connect(env);
+      env.connect(lp);
+      const last = i === syllables - 1;
+      if (src instanceof AudioBufferSourceNode) src.start(at, Math.random() * (g.noise.duration - 0.6));
+      else src.start(at);
+      src.stop(at + dur + 0.05);
+      // Syllables are sequential, so the last one to end also frees the shared nodes.
+      src.onended = () => {
+        disconnectAll(src, f1, f2, f2g, env);
+        if (last) disconnectAll(lp, pan);
+      };
+      f0 *= ratio * rand(0.97, 1.03);
+      at += dur + rand(0.03, 0.12);
+    }
+  }
+
+  /** Stone footstep: a bright short tick plus a small resonant body. */
+  private stoneStep(t: number, s: number, scale: number, panV: number | null, dest: AudioNode): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const src = ctx.createBufferSource();
+    src.buffer = g.noise;
+    src.playbackRate.value = rand(0.9, 1.12);
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = rand(2000, 2900);
+    bp.Q.value = 1.3;
+    const ce = ctx.createGain();
+    const cPeak = Math.max(0.042 * s * scale, 2 * EPS);
+    ce.gain.setValueAtTime(EPS, t);
+    ce.gain.exponentialRampToValueAtTime(cPeak, t + 0.002);
+    ce.gain.exponentialRampToValueAtTime(EPS, t + 0.002 + rand(0.025, 0.04));
+
+    const body = ctx.createOscillator();
+    body.type = 'sine';
+    const bf = rand(170, 250);
+    body.frequency.setValueAtTime(bf * 1.15, t);
+    body.frequency.exponentialRampToValueAtTime(bf, t + 0.02);
+    const be = ctx.createGain();
+    const bPeak = Math.max(0.02 * s * scale, 2 * EPS);
+    be.gain.setValueAtTime(EPS, t);
+    be.gain.exponentialRampToValueAtTime(bPeak, t + 0.003);
+    be.gain.exponentialRampToValueAtTime(EPS, t + 0.003 + rand(0.05, 0.08));
+
+    let out: AudioNode = dest;
+    const extra: AudioNode[] = [];
+    if (panV !== null) {
+      const pan = ctx.createStereoPanner();
+      pan.pan.value = panV;
+      pan.connect(dest);
+      out = pan;
+      extra.push(pan);
+    }
+    src.connect(bp).connect(ce).connect(out);
+    body.connect(be).connect(out);
+    const end = t + 0.13;
+    src.start(t, Math.random() * (g.noise.duration - 0.4));
+    src.stop(end);
+    body.start(t);
+    body.stop(end);
+    body.onended = () => disconnectAll(src, bp, ce, body, be, ...extra);
+  }
+
+  /** Someone else walking past: a few quiet stone steps drifting across the stereo field. */
+  private cityWalker(t: number): void {
+    const g = this.g;
+    if (!g) return;
+    const steps = 3 + Math.floor(Math.random() * 5);
+    const gap = rand(0.45, 0.6);
+    let p = rand(-0.9, 0.9);
+    const dp = (p > 0 ? -1 : 1) * rand(0.02, 0.07);
+    const level = rand(0.2, 0.45);
+    for (let i = 0; i < steps; i++) {
+      this.stoneStep(t + i * gap + rand(-0.02, 0.02), rand(0.7, 1), level, p, g.cityBus);
+      p = Math.max(-1, Math.min(1, p + dp));
+    }
+  }
+
+  /** Small sounds of people busy nearby: cloth, a clay pot, a wooden knock, a tick. */
+  private cityActivity(t: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const kind = pickOne(['rustle', 'rustle', 'pot', 'wood', 'tick'] as const);
+    const dist = rand(0.4, 1);
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.85, 0.85);
+    pan.connect(g.cityBus);
+
+    const noiseHit = (at: number, freq: number, q: number, att: number, dec: number, peak: number, rate = 1): void => {
+      const src = ctx.createBufferSource();
+      src.buffer = g.noise;
+      src.playbackRate.value = rate;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = freq;
+      bp.Q.value = q;
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0, at);
+      env.gain.linearRampToValueAtTime(Math.max(peak, 2 * EPS), at + att);
+      env.gain.exponentialRampToValueAtTime(EPS, at + att + dec);
+      src.connect(bp).connect(env).connect(pan);
+      src.start(at, Math.random() * (g.noise.duration - 0.6));
+      src.stop(at + att + dec + 0.03);
+      src.onended = () => disconnectAll(src, bp, env);
+    };
+    const tone = (at: number, freq: number, dec: number, peak: number): void => {
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.value = freq;
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(0, at);
+      env.gain.linearRampToValueAtTime(Math.max(peak, 2 * EPS), at + 0.002);
+      env.gain.exponentialRampToValueAtTime(EPS, at + 0.002 + dec);
+      o.connect(env).connect(pan);
+      o.start(at);
+      o.stop(at + dec + 0.03);
+      o.onended = () => disconnectAll(o, env);
+    };
+
+    let end = t;
+    if (kind === 'rustle') {
+      const att = rand(0.06, 0.12);
+      const dec = rand(0.15, 0.3);
+      noiseHit(t, rand(2200, 3800), 0.8, att, dec, 0.02 * dist, rand(0.7, 1));
+      end = t + att + dec;
+    } else if (kind === 'pot') {
+      const f = rand(320, 520);
+      tone(t, f, 0.18, 0.012 * dist);
+      tone(t, f * 2.7, 0.08, 0.004 * dist);
+      end = t + 0.2;
+    } else if (kind === 'wood') {
+      const knocks = Math.random() < 0.35 ? 2 : 1;
+      for (let k = 0; k < knocks; k++) {
+        const at = t + k * rand(0.12, 0.2);
+        const f = rand(600, 1000);
+        noiseHit(at, f, 6, 0.002, 0.05, 0.05 * dist);
+        tone(at, f, 0.06, 0.01 * dist);
+        end = at + 0.06;
+      }
+    } else {
+      noiseHit(t, rand(2600, 3400), 1, 0.001, 0.015, 0.012 * dist);
+      end = t + 0.02;
+    }
+    // The shared panner outlives every hit; free it shortly after the last one.
+    const keeper = ctx.createConstantSource();
+    keeper.offset.value = 0;
+    keeper.start(t);
+    keeper.stop(end + 0.1);
+    keeper.onended = () => disconnectAll(keeper, pan);
+  }
+
+  /** A large warm bell heard across the rooftops, tuned to D (or A). Mostly reverb. */
+  private cityBell(t: number, freq: number, level: number, panV: number, decay: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 2400;
+    lp.Q.value = 0.5;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = panV;
+    lp.connect(pan).connect(g.cityFarBus);
+    const end = t + decay + 0.2;
+    const nodes: AudioNode[] = [lp, pan];
+    const oscs: OscillatorNode[] = [];
+    const partial = (ratio: number, gl: number, dl: number, detuneHz: number): void => {
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      o.frequency.value = freq * ratio + detuneHz;
+      const env = ctx.createGain();
+      const att = ratio < 1 ? 0.02 : 0.006;
+      env.gain.setValueAtTime(0, t);
+      env.gain.linearRampToValueAtTime(Math.max(level * gl, 2 * EPS), t + att);
+      env.gain.exponentialRampToValueAtTime(EPS, t + att + decay * dl);
+      o.connect(env).connect(lp);
+      oscs.push(o);
+      nodes.push(o, env);
+    };
+    for (const [r, gl, dl] of BELL_PARTIALS) partial(r, gl, dl, 0);
+    // A slightly detuned twin of the strike tone gives the slow warm beat of a big bell.
+    partial(1, 0.4, 0.7, rand(0.6, 1.2));
+    for (const o of oscs) {
+      o.start(t);
+      o.stop(end);
+    }
+    oscs[0].onended = () => disconnectAll(...nodes);
+  }
+
+  /** Dusk: one slow tolling figure from a single tower, D and A. */
+  private duskBells(t: number): void {
+    const pattern = pickOne([
+      [0, -5, 0, -5, 0],
+      [0, 0, -5, 0],
+      [-5, 0, -5, 0, 0],
+    ]);
+    const panV = rand(-0.5, 0.5);
+    let at = t;
+    pattern.forEach((semi, i) => {
+      const lastOne = i === pattern.length - 1;
+      this.cityBell(at, midiHz(D3 + semi), 0.055 * (1 - i * 0.05), panV, lastOne ? 11 : rand(7.5, 9));
+      at += rand(2.6, 3.4);
+    });
+  }
+
+  /** Two to four soft frame-drum strokes: low "dum" thumps and lighter rim taps. */
+  private cityDrum(t: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const pattern = pickOne([
+      [0, 0.5],
+      [0, 0.36, 0.72],
+      [0, 0.3, 0.45, 0.9],
+      [0, 0.6, 0.9],
+    ]);
+    const tempo = rand(0.9, 1.2);
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = rand(900, 1400);
+    lp.Q.value = 0.5;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.6, 0.6);
+    lp.connect(pan).connect(g.cityFarBus);
+    const base = rand(95, 130);
+    let latest: AudioScheduledSourceNode | null = null;
+    let latestEnd = 0;
+
+    pattern.forEach((offset, i) => {
+      const at = t + offset * tempo;
+      const dum = i === 0 || Math.random() < 0.45;
+      const lvl = (dum ? 0.07 : 0.035) * (i === 0 ? 1 : rand(0.6, 0.85));
+      const nodes: AudioNode[] = [];
+      // Pitched thump.
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      const f = dum ? base : base * 2.3;
+      o.frequency.setValueAtTime(f * 1.6, at);
+      o.frequency.exponentialRampToValueAtTime(f, at + 0.03);
+      const oe = ctx.createGain();
+      const od = dum ? 0.3 : 0.08;
+      oe.gain.setValueAtTime(0, at);
+      oe.gain.linearRampToValueAtTime(lvl, at + 0.004);
+      oe.gain.exponentialRampToValueAtTime(EPS, at + 0.004 + od);
+      o.connect(oe).connect(lp);
+      // Skin noise.
+      const n = ctx.createBufferSource();
+      n.buffer = g.noise;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = dum ? rand(180, 320) : rand(1100, 1600);
+      bp.Q.value = dum ? 1.2 : 1.5;
+      const ne = ctx.createGain();
+      const nd = dum ? 0.12 : 0.07;
+      ne.gain.setValueAtTime(0, at);
+      ne.gain.linearRampToValueAtTime(dum ? 0.12 : 0.05, at + 0.003);
+      ne.gain.exponentialRampToValueAtTime(EPS, at + 0.003 + nd);
+      n.connect(bp).connect(ne).connect(lp);
+      const end = at + Math.max(od, nd) + 0.05;
+      o.start(at);
+      o.stop(end);
+      n.start(at, Math.random() * (g.noise.duration - 0.5));
+      n.stop(end);
+      nodes.push(o, oe, n, bp, ne);
+      o.onended = () => disconnectAll(...nodes);
+      if (end > latestEnd) {
+        latestEnd = end;
+        latest = n;
+      }
+    });
+    // Free the shared filter and panner when the last-ending stroke finishes.
+    if (latest) {
+      (latest as AudioScheduledSourceNode).onended = () => disconnectAll(lp, pan);
     }
   }
 
