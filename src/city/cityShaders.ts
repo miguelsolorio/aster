@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Uniforms } from '../game/contract';
 import { CITY_SHADOW_GLSL } from './cityGlsl';
+import { STYLE_GLSL } from '../render/styleGlsl';
 
 // Shaders for the cities: masonry (walls, roofs, domes, wood, cloth, plants), the pool,
 // and the warm glows (lamps, lit windows, lanterns) that make a city read at night.
@@ -139,6 +140,7 @@ varying vec2 vUv;
 ${CITY_SHADOW_GLSL}
 #endif
 ${NOISE}
+${STYLE_GLSL}
 float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 vec3 paler(vec3 c, float k) { return mix(c, vec3(lum(c)), k); }
 
@@ -170,6 +172,7 @@ void main() {
 #ifdef TWO_SIDED
   if (!gl_FrontFacing) n = -n;
 #endif
+  n = styleFacet(n, vW);
   float ndl = dot(n, uSunDir);
   float l = smoothstep(-0.12, 0.5, ndl); // soft wrap
 #ifdef TWO_SIDED
@@ -181,6 +184,7 @@ void main() {
   sun = cityShadow(vW + n * 0.45, uSunDir);
   l *= sun;
 #endif
+  l = styleBands(l, vW.xz);
   l += (1.0 - l) * uNight * 0.16; // walls stay readable under the moon
 
   float m = cvn(vW.xz * 0.06 + vW.y * 0.045) * 0.6 + cvn(vW.xz * 0.55 + vec2(vW.y * 0.7, -vW.y * 0.4)) * 0.4;

@@ -24,6 +24,11 @@ uniform float uGlow;
 uniform float uStars;
 uniform float uMoonVis;
 uniform vec2 uWind;
+// from the look
+uniform float uSkyCurve; // gradient exponent
+uniform float uSkyBands; // 0 = smooth gradient, N = stepped
+uniform float uSunScale; // multiplier on the sun and moon discs
+uniform float uSunBands; // 1 = striped lower half of the sun
 
 varying vec3 vDir;
 
@@ -66,10 +71,18 @@ float discMask(vec3 d, vec3 c, float size) {
   return 1.0 - smoothstep(size - fa, size + fa, ang);
 }
 
+// floor(x) with a one-pixel ramp at each step so band edges do not stair-step.
+float aaFloor(float x) {
+  float w = clamp(fwidth(x), 1e-4, 1.0);
+  return floor(x) + smoothstep(1.0 - w, 1.0, fract(x));
+}
+
 void main() {
   vec3 d = normalize(vDir);
   float h = d.y + 0.02;
-  float g = pow(clamp(h, 0.0, 1.0), 0.5);
+  float g = pow(clamp(h, 0.0, 1.0), uSkyCurve);
+  float gb = clamp(aaFloor(g * max(uSkyBands, 1.0)) / max(uSkyBands - 1.0, 1.0), 0.0, 1.0);
+  g = uSkyBands > 0.5 ? gb : g;
   vec3 col = mix(uHorizon, uTop, g);
 
   // glow around the light, plus a warm wash along the horizon under it
@@ -107,14 +120,28 @@ void main() {
   vec3 cc = mix(uHorizon, uSunCol, 0.35 + 0.5 * pow(sdp, 4.0));
   col = mix(col, cc, cl * 0.32 * (1.0 - 0.65 * uStars));
 
-  // sun
-  float sun = discMask(d, uSunPos, 0.028);
+  // sun, striped across its lower half in some looks
+  float sunR = 0.028 * uSunScale;
+  float sun = discMask(d, uSunPos, sunR);
+  {
+    vec3 rgt = cross(uSunPos, vec3(0.0, 1.0, 0.0));
+    rgt = length(rgt) > 1e-4 ? normalize(rgt) : vec3(1.0, 0.0, 0.0);
+    vec3 upv = cross(rgt, uSunPos);
+    float yy = -dot(d, upv) / max(sunR, 1e-4); // 0 at the centre, 1 at the bottom
+    float sy = yy * 5.0;
+    float fws = max(fwidth(sy), 1e-4);
+    float f = abs(fract(sy) - 0.5);
+    float gapW = 0.15 + 0.45 * clamp(yy, 0.0, 1.0);
+    float gap = (1.0 - smoothstep(gapW * 0.5 - fws, gapW * 0.5 + fws, f)) * step(0.0, yy);
+    sun *= 1.0 - gap * step(0.5, uSunBands);
+  }
   col = mix(col, uSunCol * 1.05, sun * (1.0 - uMoonVis));
 
   // moon, with soft mottling
-  float moon = discMask(d, uMoonPos, 0.034);
+  float moonR = 0.034 * uSunScale;
+  float moon = discMask(d, uMoonPos, moonR);
   vec3 mr = cross(uMoonPos, vec3(0.0, 1.0, 0.0));
-  vec2 mp = vec2(dot(d, normalize(mr)), dot(d, cross(normalize(mr), uMoonPos))) / 0.034;
+  vec2 mp = vec2(dot(d, normalize(mr)), dot(d, cross(normalize(mr), uMoonPos))) / moonR;
   float mott = 0.82 + 0.18 * fbm(mp * 2.2 + 4.0);
   col = mix(col, vec3(0.9, 0.96, 0.94) * mott, moon * uMoonVis);
 

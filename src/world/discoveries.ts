@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import { WORLD_SCALE } from './scale';
+import { STYLE_GLSL } from '../render/styleGlsl';
 import { TERRAIN, type Cave, type Massif } from './surface';
 import { CITY_CELL } from '../city/placement';
 
@@ -99,10 +100,12 @@ varying vec3 vN;
 varying vec3 vTint;
 varying float vKind;
 ${NOISE}
+${STYLE_GLSL}
 void main() {
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
-  float l = smoothstep(-0.12, 0.42, dot(n, uSunDir));
+  n = styleFacet(n, vW);
+  float l = styleBands(smoothstep(-0.12, 0.42, dot(n, uSunDir)), vW.xz);
   vec3 sh = uShade;
   vec3 li = uLit;
   if (vKind < 0.5) { sh = uRockShade; li = uRockLit; }
@@ -197,10 +200,12 @@ uniform float uFog;
 varying vec3 vW;
 varying vec3 vN;
 varying float vK;
+${STYLE_GLSL}
 void main() {
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
-  float l = smoothstep(-0.2, 0.5, dot(n, uSunDir));
+  n = styleFacet(n, vW);
+  float l = styleBands(smoothstep(-0.2, 0.5, dot(n, uSunDir)), vW.xz);
   vec3 sh = uShade * vec3(0.42, 0.52, 0.34);
   vec3 li = uLit * vec3(0.46, 0.6, 0.3);
   vec3 col = mix(sh, li, l) * vK;

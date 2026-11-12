@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import type { CitySite } from './types';
+import { STYLE_GLSL } from '../render/styleGlsl';
 
 const RANGE = 2500;
 const FADE0 = 1200;
@@ -731,14 +732,16 @@ varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
+${STYLE_GLSL}
 void main() {
   vec3 toCam = cameraPosition - vW;
   float dist = length(toCam);
   vec3 V = toCam / max(dist, 1e-4);
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
+  n = styleFacet(n, vW);
   float ndl = dot(n, uSunDir);
-  float l = smoothstep(-0.35, 0.75, ndl);
+  float l = styleBands(smoothstep(-0.35, 0.75, ndl), vW.xz);
   float bright = clamp(uLit.g * 1.25, 0.12, 1.0);
   vec3 tint = mix(vec3(1.0), uLit / max(uLit.g, 0.02), 0.35);
   vec3 lit = vCol * tint * bright;

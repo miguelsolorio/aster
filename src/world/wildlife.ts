@@ -2,6 +2,7 @@
 // fireflies at night and the odd meteor. Each is a single draw call.
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
+import { STYLE_GLSL } from '../render/styleGlsl';
 
 const BIRDS = 3;
 const FIREFLIES = 60;
@@ -80,10 +81,12 @@ uniform vec3 uFogCol;
 uniform float uFog;
 varying vec3 vW;
 varying vec3 vN;
+${STYLE_GLSL}
 void main() {
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
-  float l = smoothstep(-0.1, 0.4, dot(n, uSunDir));
+  n = styleFacet(n, vW);
+  float l = styleBands(smoothstep(-0.1, 0.4, dot(n, uSunDir)), vW.xz);
   vec3 col = mix(uFig, mix(uFig, uShade, 0.6), l);
   float dist = length(vW - cameraPosition);
   col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));

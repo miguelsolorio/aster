@@ -19,9 +19,9 @@ export const FOG_CAP = 0.0012;
 const FILM_FOG = [0.0004, 0.00055, 0.0006, 0.00042];
 const FILM_GLOW = [0.5, 0, 1.7, 1.0];
 
-// The game's 35 mm film treatment for the post pass. Surface settings stay at the
-// defaults, which the game's shaders treat as their own tuned look.
-const FILM_POST: Partial<Params> = { grain: 0.075, vig: 0.5, chroma: 0.0028, sat: 0.94, contrast: 1.03 };
+// The game's 35 mm: the gallery's film surface (ripples, terminator), a few glints,
+// and its own tuned post treatment.
+const FILM_GAME: Partial<Params> = { sparkle: 0.35, grain: 0.075, vig: 0.5, chroma: 0.0028, sat: 0.94, contrast: 1.03 };
 
 const INK = '#1a1410';
 const PAPER = '#f4ecdc';
@@ -88,7 +88,7 @@ function build(style: Style): Look {
   const ink = style.ink ?? INK;
   const paper = style.paperCol ?? PAPER;
   if (style.id === 'film') {
-    return { id: style.id, name: style.name, params: { ...DEFAULTS, ...FILM_POST }, day: FILM_LOOK, ink: hexV(ink), paper: hexV(paper) };
+    return { id: style.id, name: style.name, params: { ...DEFAULTS, ...style.p, ...FILM_GAME }, day: FILM_LOOK, ink: hexV(ink), paper: hexV(paper) };
   }
   const params: Params = { ...DEFAULTS, ...style.p };
   const fogMul = params.fog / DEFAULTS.fog;

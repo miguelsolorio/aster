@@ -1,5 +1,5 @@
 // Terrain shaders for the game: the clipmap surface (sand, rock, salt) in the
-// '35 mm' look, and the full-screen pass that bakes surface() into a heightmap.
+// chosen look, and the full-screen pass that bakes surface() into a heightmap.
 // GLSL1-style source for THREE.ShaderMaterial; three prepends `#version 300 es`
 // on WebGL2, so uint, textureLod and textureSize are available.
 //
@@ -13,14 +13,22 @@
 //   float uDetail       0..1 scale on optional fragment work (1 = full quality)
 import { MAX_TERRAIN_H, SURFACE_GLSL, TERRAIN } from '../world/surface';
 import { CITY_SHADOW_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
+import { STYLE_GLSL } from './styleGlsl';
 
-// '35 mm' style, baked in.
+// The look's settings (see render/types.ts Params; the game's 35 mm look sets them
+// to what used to be baked in here).
 const LOOK = /* glsl */ `
-const float TERM_SHARP = 0.6;
-const float SHADOW_K = 8.0;
-const float RIPPLE = 0.9;
-const float RIPPLE_BIG = 0.45;
-const float SPARKLE = 0.35;
+uniform float uTermSharp; // 0 = lambert, 1 = hard light/dark split at the terminator
+uniform float uShadowK;   // cast shadow hardness
+uniform float uShadowAmt; // 0..1 cast shadow strength
+uniform float uRipple;    // small wind ripples
+uniform float uRippleBig; // large ripples
+uniform float uSparkle;   // glints
+uniform float uFlat;      // 1 = no ambient modulation or albedo noise
+uniform float uContour;   // 0..1 height contour lines
+uniform float uGrid;      // 0..1 world grid lines
+uniform vec3 uLine;       // contour and grid line colour
+${STYLE_GLSL}
 const float TRAIL_NORMAL = 0.14; // depth 1.0 is roughly a 14 cm hollow
 const float MAX_TERRAIN_H = ${MAX_TERRAIN_H}.0;
 `;
@@ -193,6 +201,26 @@ float H(vec2 xz) {
   return textureLod(uHeightMap, (xz - uRect.xy) / uRect.z, 0.0).r;
 }
 
+// Low Poly: one flat face per triangle of a fixed world grid, lit from the heightmap at
+// its corners, so the faces stay put while the clipmap rings move with the player.
+const float FACET = 28.0;
+vec3 facetNormal(vec2 xz) {
+  vec2 c = floor(xz / FACET);
+  vec2 f = xz / FACET - c;
+  vec2 a = c * FACET;
+  float h00 = H(a);
+  float h11 = H(a + FACET);
+  vec3 n;
+  if (f.x > f.y) {
+    float h10 = H(a + vec2(FACET, 0.0));
+    n = vec3(h00 - h10, FACET, h10 - h11);
+  } else {
+    float h01 = H(a + vec2(0.0, FACET));
+    n = vec3(h01 - h11, FACET, h00 - h01);
+  }
+  return normalize(n);
+}
+
 float figShadow(vec3 p) {
   vec2 s = uSunDir.xz;
   float ss = dot(s, s);
@@ -285,6 +313,7 @@ void main() {
   vec2 sc = p.xz / 0.03;
   vec2 fwScV = fwidth(sc);
   float fwSc = max(max(fwScV.x, fwScV.y), 1e-4);
+  vec3 meshFace = cross(dFdx(p), dFdy(p)); // Low Poly off the heightmap: the mesh's own triangles
 
   // ---- clipmap overlap: the finer level draws here
   if (uInnerHalf > 0.0) {
@@ -307,6 +336,11 @@ void main() {
     float hu = textureLod(uHeightMap, huv + vec2(0.0, e), 0.0).r;
     vec3 nH = normalize(vec3(hl - hr, 2.0 * uTexel, hd - hu));
     n0 = normalize(mix(n0, nH, nb));
+  }
+  if (uFacet > 0.5) {
+    vec3 fm = dot(meshFace, meshFace) > 1e-14 ? normalize(meshFace) : n0;
+    if (fm.y < 0.0) fm = -fm;
+    n0 = hOk > 0.5 ? facetNormal(p.xz) : fm;
   }
   vec3 n = n0;
 
@@ -334,7 +368,7 @@ void main() {
       // small ripples: their warp fbm is only paid for where they show
       float ph1 = along * k1 + fbm(p.xz * 0.45) * 9.0;
       float pat1 = 0.25 + 0.75 * smoothstep(0.25, 0.75, vnoise(p.xz * 0.05 + vec2(3.7, 1.3)));
-      g += w * cos(ph1) * (0.35 * RIPPLE * fade1 * aa1 * pat1);
+      g += w * cos(ph1) * (0.35 * uRipple * fade1 * aa1 * pat1);
     }
 
     float k2 = 6.2831853 / 2.6;
@@ -342,7 +376,7 @@ void main() {
     float aa2 = 1.0 - smoothstep(1.2, 2.8, fwAlong * k2 * 1.3);
     float fade2 = 1.0 - smoothstep(40.0, 350.0, dist);
     float pat2 = 0.3 + 0.7 * smoothstep(0.3, 0.7, vnoise(p.xz * 0.012 + vec2(-5.1, 8.2)));
-    g += w * cos(ph2) * (0.35 * RIPPLE_BIG * fade2 * aa2 * pat2);
+    g += w * cos(ph2) * (0.35 * uRippleBig * fade2 * aa2 * pat2);
 
     n.xz -= g * rip;
     n = normalize(n);
@@ -351,7 +385,7 @@ void main() {
   // ---- rock: break the smooth mesh normal into crags and ledges
   // (detail > 0.55: both octaves; 0.2..0.55: the large one only; below: none)
   float cragFar = 2500.0 * dk;
-  if (rock > 0.01 && dist < cragFar && uDetail > 0.2) {
+  if (rock > 0.01 && dist < cragFar && uDetail > 0.2 && uFacet < 0.5) {
     float re = 0.7;
     vec2 rp = p.xz + p.y * vec2(0.37, -0.29);
     float c0 = fbm(rp * 0.2);
@@ -405,7 +439,7 @@ void main() {
       if (float(i) >= steps) break;
       vec3 q = o + uSunDir * t;
       float hh = q.y - H(q.xz);
-      res = min(res, SHADOW_K * hh / t);
+      res = min(res, uShadowK * hh / t);
       if (res <= 0.0 || q.y > MAX_TERRAIN_H) break;
       t += max(minStep, t * grow);
     }
@@ -415,20 +449,23 @@ void main() {
   float fs = figShadow(p);
 
   // ---- light
-  float l = mix(clamp(ndl * 1.25, 0.0, 1.0), smoothstep(-0.02, 0.12, ndl), TERM_SHARP);
-  l *= shadow;
+  float l = mix(clamp(ndl * 1.25, 0.0, 1.0), smoothstep(-0.02, 0.12, ndl), uTermSharp);
+  l *= mix(1.0, shadow, uShadowAmt);
   // under a cave roof no sun reaches the floor, whatever the heightmap says
   l *= 1.0 - 0.94 * clamp(vCave, 0.0, 1.0);
   l *= cityShadow(p, uSunDir);
   l *= 1.0 - fs * 0.85;
   l *= 1.0 - tr * 0.22;
+  l = styleBandsW(l, p.xz, 0.08);
   float amb = 0.5 + 0.5 * n.y;
+  // flat looks drop the ambient shading and the albedo noise
+  float ambS = mix(1.0, 0.5 + 0.5 * n.y, 1.0 - uFlat);
   // moonlight: keep a little more ambient so the ground stays readable
   l += (1.0 - l) * uNight * 0.14 * amb;
 
   // ---- sand
-  vec3 sandCol = mix(uShade * (0.82 + 0.18 * amb), uLit, l);
-  sandCol *= 0.96 + 0.08 * fbm(p.xz * 0.3 + vec2(2.3, 7.1));
+  vec3 sandCol = mix(uShade * (0.82 + 0.18 * ambS), uLit, l);
+  if (uFlat < 0.999) sandCol *= mix(0.96 + 0.08 * fbm(p.xz * 0.3 + vec2(2.3, 7.1)), 1.0, uFlat);
 
   // ---- rock: strata bands on world height plus blotches
   vec3 rockCol = vec3(0.0);
@@ -443,13 +480,13 @@ void main() {
     float blot = fbm(p.xz * 0.045 + vec2(-3.1, 5.4));
     float tone = 0.9 + 0.22 * (band - 0.5) * aaS + 0.07 * (band2 - 0.5) * aaS2 + 0.22 * (blot - 0.5);
     tone *= 0.95 + 0.1 * vnoise(vec2(p.y * 0.9, warp * 3.0));
-    rockCol = mix(uRockShade * (0.8 + 0.2 * amb), uRockLit, l) * tone;
+    rockCol = mix(uRockShade * (0.8 + 0.2 * ambS), uRockLit, l) * mix(tone, 0.94, uFlat * 0.85);
   }
 
   // ---- salt: pale crust with polygonal cracks
   vec3 saltCol = vec3(0.0);
   if (salt > 0.001) {
-    saltCol = mix(uSaltShade * (0.86 + 0.14 * amb), uSaltLit, l);
+    saltCol = mix(uSaltShade * (0.86 + 0.14 * ambS), uSaltLit, l);
     float crackFade = (1.0 - smoothstep(0.12, 0.45, fwSalt)) * (1.0 - smoothstep(60.0 * dk, 220.0 * dk, dist));
     if (crackFade > 0.001) {
       vec2 cv = cells(saltUV);
@@ -468,7 +505,7 @@ void main() {
   // ---- snow on the high peaks
   if (p.y > SNOW_LINE - 50.0) {
     float snow = snowAt(p, n.y);
-    col = mix(col, mix(uSnowShade * (0.85 + 0.15 * amb), uSnowLit, l), snow);
+    col = mix(col, mix(uSnowShade * (0.85 + 0.15 * ambS), uSnowLit, l), snow);
   }
   // terrace walls: a slightly darker dressed stone, a light cap along the lip, a shadow at the foot
   col *= 1.0 - 0.1 * stone;
@@ -506,7 +543,7 @@ void main() {
     vec3 gn = normalize(n + (vec3(r2, hash21(id + 5.7), hash21(id + 9.1)) - 0.5) * 0.6);
     float spec = pow(max(dot(gn, Hv), 0.0), 16.0);
     float tw = 0.5 + 0.5 * sin(uTime * (1.2 + 2.5 * r2) + r1 * 80.0);
-    col += uSunCol * (on * dotc * (0.15 + 1.6 * spec) * tw * l * spk * SPARKLE);
+    col += uSunCol * (on * dotc * (0.15 + 1.6 * spec) * tw * l * spk * uSparkle);
   }
 
   // ---- rivers: green, damp banks, and the water itself painted on the flat bed. The distance
@@ -555,6 +592,27 @@ void main() {
       }
       col = mix(col, wcol, wa);
     }
+  }
+
+  // ---- contour lines every 4 m, every 5th thicker (derivatives taken up front)
+  if (uContour > 0.001) {
+    float y = p.y / 4.0;
+    float fy = max(fwY / 4.0, 1e-5);
+    float dl = abs(fract(y + 0.5) - 0.5) / fy;
+    float major = 1.0 - step(0.5, mod(floor(y + 0.5), 5.0));
+    float hw = mix(0.5, 1.1, major);
+    float ln = 1.0 - smoothstep(hw - 0.5, hw + 0.5, dl);
+    ln *= mix(1.0 - smoothstep(0.12, 0.3, fy), 1.0 - smoothstep(0.6, 1.5, fy), major);
+    col = mix(col, uLine, ln * uContour);
+  }
+
+  // ---- world grid every 8 m
+  if (uGrid > 0.001) {
+    vec2 gg = p.xz / 8.0;
+    vec2 fg = max(fwXZv / 8.0, vec2(1e-5));
+    vec2 dg = abs(fract(gg + 0.5) - 0.5) / fg;
+    vec2 lg = (1.0 - smoothstep(vec2(0.0), vec2(1.0), dg)) * (1.0 - smoothstep(vec2(0.12), vec2(0.3), fg));
+    col = mix(col, uLine, max(lg.x, lg.y) * uGrid);
   }
 
   // ---- fog
@@ -610,13 +668,15 @@ void main() {
   if (max(dc.x, dc.y) < uNear.z) discard;
   vec3 n = normalize(vN);
   float ndl = dot(n, uSunDir);
-  float l = mix(clamp(ndl * 1.25, 0.0, 1.0), smoothstep(-0.02, 0.12, ndl), TERM_SHARP);
+  float l = mix(clamp(ndl * 1.25, 0.0, 1.0), smoothstep(-0.02, 0.12, ndl), uTermSharp);
+  l = styleBandsW(l, vW.xz, 0.08);
   float amb = 0.5 + 0.5 * n.y;
   l += (1.0 - l) * uNight * 0.14 * amb;
-  vec3 sandCol = mix(uShade * (0.82 + 0.18 * amb), uLit, l);
-  vec3 rockCol = mix(uRockShade * (0.8 + 0.2 * amb), uRockLit, l) * 0.94;
+  float ambS = mix(1.0, amb, 1.0 - uFlat);
+  vec3 sandCol = mix(uShade * (0.82 + 0.18 * ambS), uLit, l);
+  vec3 rockCol = mix(uRockShade * (0.8 + 0.2 * ambS), uRockLit, l) * 0.94;
   vec3 col = mix(sandCol, rockCol, clamp(vRock, 0.0, 1.0));
-  col = mix(col, mix(uSnowShade * (0.85 + 0.15 * amb), uSnowLit, l), snowAt(vW, n.y));
+  col = mix(col, mix(uSnowShade * (0.85 + 0.15 * ambS), uSnowLit, l), snowAt(vW, n.y));
   col = mix(col, uFogCol, 1.0 - exp(-length(cameraPosition - vW) * uFog * hazeAt(vW.y)));
   gl_FragColor = vec4(col, 1.0);
 }
