@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import type { PlayerState, SurfaceSample, World } from './contract';
 
-const CRUISE = 8.5; // glide speed you can hold on the flat
-const BOOST = 13.5; // with Shift
+const CRUISE = 11; // glide speed you can hold on the flat
+const BOOST = 17; // with Shift
 const WALK = 5.2; // on rock
 const RUN = 9.5;
 const GRAVITY = 20;
-const JUMP = 7.5;
+const GLIDE_GRAVITY = 12; // arms spread: the fall is slower
+const LIFT = 0.08; // lift per speed squared; glide trims near 12 m/s
 const MAX_SPEED = 34;
 
 export interface PlayerInput {
@@ -14,6 +15,8 @@ export interface PlayerInput {
   z: number; // forward, -1..1
   run: boolean;
   jump: boolean; // true on the frame the key went down
+  glide: boolean; // Space held
+  wind: THREE.Vector2; // unit world wind direction
 }
 
 export interface PlayerEvents {
@@ -45,6 +48,12 @@ export class Player {
   slope = 0;
   /** Smoothed turning rate in rad/s, positive to the figure's left. Drives banking and spray. */
   turn = 0;
+  /** True while airborne with arms spread (Space held). */
+  gliding = false;
+  /** Flight path angle in radians: positive climbing, negative diving. */
+  climb = 0;
+  /** Height above the ground, metres. */
+  alt = 0;
   /** 0..1 walk-cycle phase on rock. */
   stride = 0;
 
@@ -53,6 +62,7 @@ export class Player {
   private wish = new THREE.Vector2();
   private stepDist = 0;
   private side: -1 | 1 = 1;
+  private pull = 0;
 
   constructor(private world: World) {}
 
@@ -91,6 +101,9 @@ export class Player {
     let turned = 0;
 
     if (st.grounded) {
+      this.alt = 0;
+      this.climb = 0;
+      this.gliding = false;
       let hs = Math.hypot(vel.x, vel.z);
 
       if (rock) {
@@ -149,7 +162,7 @@ export class Player {
               // Push toward cruising speed; the push fades as you reach it.
               const cruise = input.run ? BOOST : CRUISE;
               const sp = Math.hypot(vx, vz);
-              const push = 8 * Math.max(0, 1 - sp / cruise) * Math.max(0.25, Math.cos(d));
+              const push = 10 * Math.max(0, 1 - sp / cruise) * Math.max(0.25, Math.cos(d));
               vel.x += (vx / sp) * push * dt;
               vel.z += (vz / sp) * push * dt;
             }
@@ -163,7 +176,7 @@ export class Player {
         // Sand drag: light while you ride, firmer when you let go.
         hs = Math.hypot(vel.x, vel.z);
         if (hs > 1e-3) {
-          const drag = (wishing ? 0.25 : 1.0) + 0.006 * hs * hs;
+          const drag = (wishing ? 0.25 : 1.0) + 0.003 * hs * hs;
           const k = Math.max(0, hs - drag * dt) / hs;
           vel.x *= k;
           vel.z *= k;
@@ -178,7 +191,9 @@ export class Player {
       }
 
       if (input.jump) {
-        vel.y = Math.max(vel.y, 0) * 0.5 + JUMP;
+        // A hop from rest; with momentum, a launch that scales with speed.
+        const hsJ = Math.hypot(vel.x, vel.z);
+        vel.y = Math.max(vel.y, 0) * 0.5 + (hsJ < 6 ? 5.5 : Math.min(14, 5 + 0.42 * hsJ));
         st.grounded = false;
         ev.jump();
       } else {
@@ -187,7 +202,7 @@ export class Player {
         const nh = w.height(nx, nz);
         const follow = (nh - pos.y) / dt;
         // If the ground falls away faster than we can follow, we are airborne.
-        if (vel.y - follow > GRAVITY * dt * 2 + 2.2) {
+        if (vel.y - follow > GRAVITY * dt * 2 + 1.7) {
           st.grounded = false;
           pos.x = nx;
           pos.z = nz;
@@ -211,10 +226,59 @@ export class Player {
         }
       }
     } else {
-      // ---- airborne: ballistic with a little air control
-      vel.x += this.wish.x * 4 * dt;
-      vel.z += this.wish.y * 4 * dt;
-      vel.y -= GRAVITY * dt;
+      // ---- airborne
+      let hs = Math.hypot(vel.x, vel.z);
+      let dx = hs > 0.3 ? vel.x / hs : Math.sin(this.facing);
+      let dz = hs > 0.3 ? vel.z / hs : Math.cos(this.facing);
+      let vy = vel.y;
+      const V = Math.hypot(hs, vy);
+      this.gliding = input.glide && V > 3;
+
+      // A and D bank the flight round; much less authority with arms folded.
+      const yaw = -input.x * (this.gliding ? 1.5 : 0.6);
+      turned = yaw;
+      const ca = Math.cos(yaw * dt);
+      const sa = Math.sin(yaw * dt);
+      const ndx = dx * ca + dz * sa;
+      dz = -dx * sa + dz * ca;
+      dx = ndx;
+
+      const gh = w.height(pos.x, pos.z);
+      this.alt = Math.max(0, pos.y - gh);
+
+      if (this.gliding) {
+        // A small glider: lift across the direction of flight, drag along it.
+        // S pulls up (more lift, more drag), W tucks into a dive.
+        const want = input.z < 0 ? 1 : input.z > 0 ? -0.8 : 0;
+        this.pull += (want - this.pull) * (1 - Math.exp(-dt * 4));
+        // Below trim speed the arms open further to hold the glide, up to a limit.
+        const hold = Math.min(2.5, Math.max(1, 150 / Math.max(V * V, 1)));
+        const cl = LIFT * hold * (1 + 0.75 * this.pull);
+        const cd = 0.003 + 0.62 * cl * cl;
+        const gamma = Math.atan2(vy, Math.max(hs, 0.01));
+        let aL = Math.min(cl * V * V, GLIDE_GRAVITY * 1.8);
+        // ease off as the nose comes up so a fast launch becomes a climb, not a loop
+        if (this.pull <= 0.2 && gamma > 0.3) aL *= Math.max(0.25, 1 - (gamma - 0.3) * 2);
+        const aD = cd * V * V;
+        let ah = (-aD * hs - aL * vy) / Math.max(V, 0.01);
+        let ay = (-aD * vy + aL * hs) / Math.max(V, 0.01) - GLIDE_GRAVITY;
+        // Rising air where the wind meets a slope.
+        w.normal(pos.x, pos.z, this.n);
+        const up = Math.min(0.7, Math.max(0, (-this.n.x * input.wind.x - this.n.z * input.wind.y) / this.n.y));
+        ay += 10 * up * Math.max(0, 1 - this.alt / 35);
+        // A cushion of air just above the sand lets you skim.
+        // It only holds you while you still have speed.
+        if (this.alt < 1.3 && vy < 0) ay += (1.3 - this.alt) * 7 * Math.min(1, (hs * hs) / 144);
+        hs = Math.max(0.5, hs + ah * dt);
+        vy += ay * dt;
+      } else {
+        this.pull += (0 - this.pull) * (1 - Math.exp(-dt * 4));
+        vy -= GRAVITY * dt;
+        hs *= 1 - 0.03 * dt;
+      }
+
+      vel.set(dx * hs, vy, dz * hs);
+      this.climb = Math.atan2(vy, Math.max(hs, 0.01));
       pos.addScaledVector(vel, dt);
       const h = w.height(pos.x, pos.z);
       if (pos.y <= h) {
@@ -223,6 +287,20 @@ export class Player {
         pos.y = h;
         vel.y = 0;
         st.grounded = true;
+        this.gliding = false;
+        // A shallow touchdown keeps its speed; a steep one digs in.
+        if (into > 7) {
+          const keep = Math.max(0.45, 1 - (into - 7) * 0.06);
+          vel.x *= keep;
+          vel.z *= keep;
+        }
+        if (w.sample(pos.x, pos.z, this.s).rock > 0.5) {
+          const sp = Math.hypot(vel.x, vel.z);
+          if (sp > WALK) {
+            vel.x *= WALK / sp;
+            vel.z *= WALK / sp;
+          }
+        }
         ev.land(Math.min(1, Math.max(0, into / 14)));
       }
     }

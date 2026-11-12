@@ -20,6 +20,7 @@ const capeVert = /* glsl */ `
 uniform float uTime;
 uniform float uFlow;      // 0 hanging .. 1+ streaming straight back
 uniform vec2 uLocalWind;  // wind in the figure's local x, z
+uniform float uSpread;    // 0 hanging .. 1 opened out like a wing
 attribute vec2 aUV;       // x: -1..1 around the shoulders, y: 0 collar .. 1 hem
 varying vec3 vW;
 varying vec3 vN;
@@ -32,7 +33,8 @@ void main() {
   // stream back and up with speed, and draw the sides in
   p.z -= w * uFlow * 0.62;
   p.y += w * uFlow * 0.24;
-  p.x *= 1.0 - w * min(uFlow, 1.0) * 0.3;
+  p.x *= 1.0 - w * min(uFlow, 1.0) * 0.3 * (1.0 - uSpread) + uSpread * v * 1.1;
+  p.y += uSpread * w * 0.12;
 
   // lean with the wind
   p.x += uLocalWind.x * w * 0.2;
@@ -135,6 +137,8 @@ export class Figure {
   private arms: THREE.Group[] = [];
   private torso = new THREE.Group();
   private flow = { value: 0 };
+  private spreadU = { value: 0 };
+  private pitch = 0;
   private localWind = { value: new THREE.Vector2() };
   private cycle = 0;
   private amp = 0;
@@ -205,81 +209,106 @@ export class Figure {
     );
     add(t, new THREE.ConeGeometry(0.1, 0.34, 12).translate(0, 0.17, 0).rotateX(-2.5).translate(0, 0.8, -0.09), cloth);
 
-    add(t, capeGeometry().translate(0, -HIP, 0), mat(0, { uFlow: this.flow, uLocalWind: this.localWind }, capeVert, 0, THREE.DoubleSide));
+    add(t, capeGeometry().translate(0, -HIP, 0), mat(0, { uFlow: this.flow, uLocalWind: this.localWind, uSpread: this.spreadU }, capeVert, 0, THREE.DoubleSide));
   }
 
   /**
-   * Pose the figure for this frame. wind is the world wind direction; turn is the
-   * carving rate in rad/s (positive to the figure's left).
+   * Pose the figure for this frame.
+   * m.turn: turning rate in rad/s, positive to the figure's left.
+   * m.slopeAlong: rise over run of the ground in the direction of travel.
+   * m.gliding: airborne with arms spread. m.climb: flight path angle in radians.
    */
-  update(dt: number, st: PlayerState, facing: number, wind: THREE.Vector2, gust: number, turn: number) {
+  update(
+    dt: number,
+    st: PlayerState,
+    facing: number,
+    wind: THREE.Vector2,
+    gust: number,
+    m: { turn: number; slopeAlong: number; gliding: boolean; climb: number },
+  ) {
     const k = (rate: number) => 1 - Math.exp(-dt * rate);
     const walking = st.grounded && !st.sliding;
     const strideLen = st.running ? 1.15 : 0.8;
     if (walking) this.cycle += (st.speed * dt) / (2 * strideLen);
     const a = this.cycle * Math.PI * 2;
+    this.time += dt;
+    const t = this.time;
 
     const ampT = walking ? Math.min(0.85, 0.12 * st.speed) : 0;
     this.amp += (ampT - this.amp) * k(10);
-    // surf: 0 standing .. 1 riding
-    this.slide += ((st.sliding && st.grounded ? Math.min(1, st.speed / 4) : 0) - this.slide) * k(5);
-    this.air += ((st.grounded ? 0 : 1) - this.air) * k(10);
-    // bank into the carve, harder at speed
-    const bankT = Math.max(-0.55, Math.min(0.55, turn * (0.12 + st.speed * 0.02)));
-    this.bank += (bankT - this.bank) * k(5);
-    const carve = Math.abs(this.bank);
-    // crouch deeper with speed and in a hard turn, and breathe a little so the ride never looks frozen
-    this.time += dt;
-    const crouch = this.slide * (0.55 + Math.min(0.3, st.speed * 0.012) + carve * 0.5 + Math.sin(this.time * 1.7) * 0.04);
+    // ride: 0 standing .. 1 flying along the sand. Eases in with speed so the pose never snaps.
+    const rideT = st.sliding && st.grounded ? Math.min(1, Math.max(0, (st.speed - 1) / 6)) : 0;
+    this.slide += (rideT - this.slide) * k(4);
+    this.air += ((st.grounded ? 0 : 1) - this.air) * k(6);
+    const spreadT = m.gliding ? 1 : 0;
+    this.spreadU.value += (spreadT - this.spreadU.value) * k(5);
+    const spread = this.spreadU.value;
+    const fly = Math.max(this.slide, this.air);
+
+    // bank like a bird, harder at speed
+    const bankT = Math.max(-0.55, Math.min(0.55, m.turn * (0.14 + st.speed * 0.016)));
+    this.bank += (bankT - this.bank) * k(4);
+    const sway = Math.sin(t * 1.3) * 0.025 + Math.sin(t * 2.1 + 1) * 0.012;
 
     const s = Math.sin(a);
     const c = Math.cos(a);
     for (let i = 0; i < 2; i++) {
-      const sg = i === 0 ? 1 : -1; // +1: the figure's right leg, which leads when surfing
-      // walking (on rock): thighs swing opposite, the knee folds while its leg comes forward
+      const sg = i === 0 ? 1 : -1; // +1 is the figure's right side
+      // walking on rock: thighs swing opposite, the knee folds while its leg comes forward
       let thigh = -sg * s * this.amp;
       let knee = Math.max(0, sg * c) * this.amp * 1.5 + this.amp * 0.12;
-      // surfing: one foot ahead, one behind, both knees bent
-      const sThigh = sg > 0 ? -0.7 - crouch * 0.5 : 0.5 - crouch * 0.3;
-      const sKnee = sg > 0 ? 0.3 + crouch * 0.9 : 0.75 + crouch * 0.8;
-      thigh += (sThigh - thigh) * this.slide;
-      knee += (sKnee - knee) * this.slide;
-      // airborne: knees tucked
-      thigh += (-0.75 + sg * 0.2 - thigh) * this.air;
-      knee += (1.1 - knee) * this.air;
+      // flying: legs long and together, one a touch behind the other, trailing in the air
+      const fThigh = 0.05 * sg + sway * sg + this.air * 0.12;
+      const fKnee = 0.07 + this.air * 0.06;
+      thigh += (fThigh - thigh) * fly;
+      knee += (fKnee - knee) * fly;
       this.hips[i].rotation.x = thigh;
       this.knees[i].rotation.x = knee;
 
-      // arms: swing when walking; held out for balance when surfing, the uphill hand reaching for the sand
+      // arms: swing when walking; swept back like folded wings when riding or diving;
+      // opened wide when gliding. In a turn the inside arm dips and the outside arm lifts.
+      const inside = -sg * this.bank > 0 ? -1 : 1;
+      const tip = inside * Math.abs(this.bank) * 0.8;
+      const backX = 1.1 + Math.min(0.25, st.speed * 0.01);
+      const backZ = 0.38 + tip + sway;
+      const wideX = 0.2;
+      const wideZ = 1.42 + tip * 0.6 + sway;
       let armX = sg * s * this.amp * 0.7;
-      let armZ = -sg * 0.1;
-      // inside hand drops toward the sand, outside hand lifts
-      const reach = -sg * this.bank > 0 ? -0.9 * Math.abs(this.bank) : 0.7 * Math.abs(this.bank);
-      armX += (-0.25 * sg - armX) * this.slide;
-      armZ += (-sg * (0.95 + reach - carve * 0.2) - armZ) * Math.max(this.slide, this.air);
+      let armZ = 0.1;
+      armX += (backX + (wideX - backX) * spread - armX) * fly;
+      armZ += (backZ + (wideZ - backZ) * spread - armZ) * fly;
       this.arms[i].rotation.x = armX;
-      this.arms[i].rotation.z = armZ;
+      this.arms[i].rotation.z = -sg * armZ;
     }
 
-    // torso: turned side-on to the direction of travel, leaning with the ride
-    const leanT = st.grounded ? Math.min(0.2, st.speed * 0.012) : -0.08;
-    this.lean += (leanT - this.lean) * k(5);
-    this.torso.rotation.x = this.lean * 0.6 + crouch * 0.25 + Math.sin(a * 2) * 0.02 * this.amp;
-    this.torso.rotation.y = s * 0.09 * this.amp + this.slide * (0.95 + this.bank * 0.5);
+    // Lean: forward from the ankles on the sand, more with speed and when diving down a face;
+    // nearly level in the air, nose following the flight path.
+    const slopeTilt = -Math.atan(m.slopeAlong) * 0.7;
+    const groundLean = this.slide * (0.26 + Math.min(0.3, st.speed * 0.013)) + this.slide * slopeTilt + (1 - this.slide) * Math.min(0.12, st.speed * 0.012);
+    const airLean = 1.22 - m.climb * 0.85 - spread * 0.08;
+    const pitchT = st.grounded ? groundLean : airLean;
+    this.pitch += (pitchT - this.pitch) * k(st.grounded ? 5 : 3.5);
+
+    this.torso.rotation.x = Math.sin(a * 2) * 0.02 * this.amp - this.air * 0.1;
+    this.torso.rotation.y = s * 0.09 * this.amp;
     this.torso.rotation.z = c * 0.03 * this.amp;
 
     const g = this.group;
+    g.rotation.set(this.pitch, facing, -this.bank * fly + sway * fly);
     g.position.copy(st.pos);
-    // hips drop at each footfall when walking, and ride low when surfing
-    g.position.y += -0.03 - Math.abs(s) * 0.045 * this.amp - crouch * 0.22 - this.slide * 0.06;
-    g.rotation.set(this.lean * 0.3, facing, -this.bank * this.slide);
-
-    const flowT = Math.min(1.25, st.speed / 17 + (st.grounded ? 0 : 0.3) + gust * 0.08 + carve * 0.3);
-    this.flow.value += (flowT - this.flow.value) * k(4);
-    const cf = Math.cos(facing);
+    g.position.y += -0.03 - Math.abs(s) * 0.045 * this.amp;
+    // In the air, turn about the hips so the body stays centred on the flight path.
     const sf = Math.sin(facing);
+    const cf = Math.cos(facing);
+    const off = this.air * HIP;
+    g.position.x -= sf * Math.sin(this.pitch) * off;
+    g.position.z -= cf * Math.sin(this.pitch) * off;
+    g.position.y += (1 - Math.cos(this.pitch)) * off;
+
+    // Cape: streams off the legs when riding, opens like a wing when gliding.
+    const flowT = Math.min(1.25, this.slide * 0.55 + st.speed / 24 + this.air * 0.45 + gust * 0.08 + Math.abs(this.bank) * 0.3);
+    this.flow.value += (flowT - this.flow.value) * k(3.5);
     const str = 0.45 + gust * 0.9;
-    // the cape swings to the outside of a carve
     this.localWind.value.set((wind.x * cf - wind.y * sf) * str - this.bank * 1.6, (wind.x * sf + wind.y * cf) * str);
   }
 }

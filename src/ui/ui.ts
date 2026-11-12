@@ -16,7 +16,7 @@ export interface UIHooks {
 
 const KEY_VOLUME = 'desertscape.volume';
 const KEY_QUALITY = 'desertscape.quality';
-const CONTROLS = ['WASD move', 'Mouse look', 'Shift run', 'Space jump', 'Steep slopes slide', 'Esc menu'];
+const CONTROLS = ['WASD glide', 'Mouse look', 'Shift boost', 'Space leap, hold to fly', 'In the air: S climb, W dive', 'Esc menu'];
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled])';
 
 function el<K extends keyof HTMLElementTagNameMap>(

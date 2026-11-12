@@ -237,12 +237,14 @@ function start() {
     camera,
     player: player.state,
   };
-  const input: PlayerInput = { x: 0, z: 0, run: false, jump: false };
+  const input: PlayerInput = { x: 0, z: 0, run: false, jump: false, glide: false, wind };
   const camTarget = new THREE.Vector3().copy(player.state.pos);
   const tmp = new THREE.Vector3();
   const tmp2 = new THREE.Vector3();
   const sliders: Array<{ x: number; z: number; life: number }> = [];
   let slideStampDist = 0;
+  let airCam = 0;
+  const probe = { h: 0, rock: 0, salt: 0 };
 
   const cascade = (x: number, z: number, count: number) => {
     for (let i = 0; i < count && sliders.length < 40; i++) {
@@ -307,6 +309,7 @@ function start() {
     input.z = playing ? (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) : 0;
     input.run = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight'));
     input.jump = playing && jumpQueued;
+    input.glide = playing && keys.has('Space');
     jumpQueued = false;
     player.update(dt, input, camYaw, events);
 
@@ -342,7 +345,29 @@ function start() {
       trail.stamp(s.x, s.z, 0.22, 0.3 * Math.min(1, s.life));
     }
 
-    figure.update(dt, st, player.facing, wind, frame.gust, player.turn);
+    {
+      const sp = Math.max(st.speed, 0.01);
+      const slopeAlong = st.grounded ? -(st.vel.x * player.downhill.x + st.vel.z * player.downhill.y) / sp * player.slope : 0;
+      figure.update(dt, st, player.facing, wind, frame.gust, { turn: player.turn, slopeAlong, gliding: player.gliding, climb: player.climb });
+    }
+
+    // Flying low drags a faint wake through the sand.
+    if (!st.grounded && player.alt < 2 && st.speed > 6) {
+      slideStampDist += st.speed * dt;
+      if (slideStampDist > 0.5) {
+        slideStampDist = 0;
+        const near = 1 - player.alt / 2;
+        if (world.sample(st.pos.x, st.pos.z, probe).rock < 0.5) {
+          trail.stamp(st.pos.x, st.pos.z, 0.55, 0.22 * near, Math.atan2(st.vel.z, st.vel.x), 2);
+          if (Math.random() < 0.5 * near) {
+            tmp.set(st.pos.x, st.pos.y - player.alt + 0.05, st.pos.z);
+            tmp2.set(st.vel.x * 0.3, 1.2, st.vel.z * 0.3);
+            dust.puff(tmp, tmp2, 0.12 * near);
+          }
+        }
+      }
+    }
+    airCam += ((st.grounded ? 0 : 1) - airCam) * (1 - Math.exp(-dt * 1.8));
     (u.uFigPos.value as THREE.Vector3).copy(st.pos);
 
     // Camera: orbit behind the figure, kept above the sand.
@@ -352,9 +377,13 @@ function start() {
     camTarget.lerp(tmp, 1 - Math.exp(-dt * 12));
     const cp = Math.cos(camPitch);
     tmp2.set(Math.sin(camYaw) * cp, Math.sin(camPitch), Math.cos(camYaw) * cp);
-    let dist = camDist;
+    // pull back and rise a little while airborne
+    const reach = camDist * (1 + 0.6 * airCam);
+    tmp2.y += 0.12 * airCam;
+    tmp2.normalize();
+    let dist = reach;
     for (let i = 1; i <= 6; i++) {
-      const d = (camDist * i) / 6;
+      const d = (reach * i) / 6;
       const x = camTarget.x + tmp2.x * d;
       const z = camTarget.z + tmp2.z * d;
       const clear = camTarget.y + tmp2.y * d - (world.height(x, z) + 0.45);
@@ -388,7 +417,7 @@ function start() {
       sliding: st.sliding && st.grounded,
       grounded: st.grounded,
       gust: frame.gust,
-      altitude: Math.max(0, st.pos.y),
+      altitude: Math.max(0, st.pos.y) + player.alt * 4,
     });
   }
 
@@ -406,15 +435,17 @@ function start() {
           for (let i = 0; i < Math.round(sec * 60); i++) update(1 / 60);
           render();
         },
+        freeze: (f: boolean) => (frozen = f),
         player, day, keys, world, trail, renderer, discoveries, wildlife, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
+  let frozen = false;
   let last = performance.now();
   function tick(now: number) {
     const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
     last = now;
     // The world holds still in the menu and in photo mode.
-    update(ui.state === 'menu' || ui.state === 'photo' ? 0 : dt);
+    update(frozen || ui.state === 'menu' || ui.state === 'photo' ? 0 : dt);
     render();
     requestAnimationFrame(tick);
   }
