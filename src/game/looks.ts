@@ -19,9 +19,8 @@ export const FOG_CAP = 0.0012;
 const FILM_FOG = [0.0004, 0.00055, 0.0006, 0.00042];
 const FILM_GLOW = [0.5, 0, 1.7, 1.0];
 
-// The game's 35 mm: the gallery's film surface (ripples, terminator), a few glints,
-// and its own tuned post treatment.
-const FILM_GAME: Partial<Params> = { sparkle: 0.35, grain: 0.075, vig: 0.5, chroma: 0.0028, sat: 0.94, contrast: 1.03 };
+// The game's 35 mm is the gallery's, plus the glints the sand has always had.
+const FILM_GAME: Partial<Params> = { sparkle: 0.35 };
 
 const INK = '#1a1410';
 const PAPER = '#f4ecdc';
@@ -106,10 +105,28 @@ function build(style: Style): Look {
   };
 }
 
-/** Every look, in gallery order. The first is the default. */
+/** Every look, in gallery order. The first (35 mm) is the game's look. */
 export const LOOKS: Look[] = STYLES.map(build);
 
 export function lookIndex(id: string | null | undefined): number {
   const i = LOOKS.findIndex((l) => l.id === id);
   return i < 0 ? 0 : i;
+}
+
+const KEY_UNLOCK = 'aster.styles';
+
+/**
+ * The style picker is a hidden tool, not a player setting. ?styles turns it on for this
+ * device (and it stays on); ?styles=0 turns it off again. While it is off the game is 35 mm.
+ */
+export function stylesUnlocked(qs: URLSearchParams): boolean {
+  try {
+    if (qs.has('styles')) {
+      if (qs.get('styles') === '0') localStorage.removeItem(KEY_UNLOCK);
+      else localStorage.setItem(KEY_UNLOCK, '1');
+    }
+    return localStorage.getItem(KEY_UNLOCK) === '1';
+  } catch {
+    return qs.has('styles') && qs.get('styles') !== '0';
+  }
 }

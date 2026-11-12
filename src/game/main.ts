@@ -21,7 +21,7 @@ import { AutoQuality, QUALITY, applyQuality, defaultTier } from './quality';
 import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
 import { DEFAULTS, type Params } from '../render/types';
-import { LOOKS, type Look } from './looks';
+import { LOOKS, stylesUnlocked, type Look } from './looks';
 import { WORLD_SCALE } from '../world/scale';
 import { Massifs } from '../world/massifs';
 
@@ -53,7 +53,9 @@ function start() {
 
   const qs = new URLSearchParams(location.search);
   const day = new DayCycle(u, qs.has('day') ? Number(qs.get('day')) : Math.random());
-  // The look: one of the gallery styles. The UI picks it; ?style=<id> chooses one for this visit.
+  // The look: 35 mm. Behind the hidden style picker (see stylesUnlocked) it can be any
+  // gallery style; ?style=<id> then chooses one for this visit.
+  const unlocked = stylesUnlocked(qs);
   let look: Look = LOOKS[0];
   const applyLook = (l: Look) => {
     look = l;
@@ -64,6 +66,7 @@ function start() {
     (u.uPaperCol.value as THREE.Vector3).copy(l.paper);
     day.setLook(l.day);
   };
+  applyLook(LOOKS[0]);
   const world = createWorld(WORLD_SEED);
   const player = new Player(world);
 
@@ -230,7 +233,7 @@ function start() {
       canvas.toBlob((blob) => {
         if (!blob) return;
         // On a phone, hand the picture to the share sheet when the browser allows it.
-        const name = `aster-${look.id}-${Date.now()}.png`;
+        const name = unlocked ? `aster-${look.id}-${Date.now()}.png` : `aster-${Date.now()}.png`;
         if (touch.used && typeof navigator.canShare === 'function') {
           const file = new File([blob], name, { type: 'image/png' });
           if (navigator.canShare({ files: [file] })) {
@@ -250,7 +253,7 @@ function start() {
       stillDrawn = false;
     },
     },
-    { quality: auto.tier, styles: LOOKS.map(({ id, name }) => ({ id, name })), style: qs.get('style') },
+    { quality: auto.tier, styles: unlocked ? LOOKS.map(({ id, name }) => ({ id, name })) : [], style: unlocked ? qs.get('style') : null },
   );
   applyTier();
   discoveries.onReach = () => audio.chime();
