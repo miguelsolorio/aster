@@ -698,6 +698,145 @@ export class AudioEngine {
     this.knock(0.5 + 0.5 * s, bone);
   }
 
+  /**
+   * The pick coming down. On sand it is a dull chop; on rock or stone a bright clink. Over a
+   * hollow (0..1, how near the buried chamber is) the ground answers with a low, ringing boom
+   * that lasts longer the closer you are.
+   */
+  strike(ground: 'sand' | 'rock', hollow: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    const t = ctx.currentTime + 0.005;
+    const h = clamp01(hollow);
+    const nodes: AudioNode[] = [];
+    // the bite of the point
+    const src = ctx.createBufferSource();
+    src.buffer = g.noise;
+    src.playbackRate.value = rand(0.9, 1.1);
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'bandpass';
+    filt.frequency.value = ground === 'rock' ? rand(2600, 3400) : rand(700, 1000);
+    filt.Q.value = ground === 'rock' ? 1.6 : 0.7;
+    const ne = ctx.createGain();
+    ne.gain.setValueAtTime(EPS, t);
+    ne.gain.exponentialRampToValueAtTime(ground === 'rock' ? 0.07 : 0.1, t + 0.003);
+    ne.gain.exponentialRampToValueAtTime(EPS, t + (ground === 'rock' ? 0.05 : 0.11));
+    src.connect(filt).connect(ne).connect(g.sfxBus);
+    src.start(t, Math.random() * (g.noise.duration - 0.4));
+    src.stop(t + 0.2);
+    nodes.push(src, filt, ne);
+    // what it lands in: iron ringing off stone, or a thump the sand swallows; a hollow sings on
+    const parts: Array<[number, number, number, OscillatorType]> =
+      ground === 'rock'
+        ? [[rand(1700, 2000), 0.035, 0.16, 'triangle'], [rand(2900, 3300), 0.02, 0.1, 'sine']]
+        : [[rand(95, 115), 0.12 * (1 - 0.4 * h), 0.09, 'sine']];
+    if (h > 0.02) {
+      const base = 74 - 16 * h + rand(-2, 2);
+      parts.push([base, 0.05 + 0.2 * h, 0.25 + 0.9 * h, 'sine'], [base * 1.52, 0.02 + 0.08 * h, 0.18 + 0.5 * h, 'sine'], [base * 2.7, 0.03 * h, 0.12 + 0.3 * h, 'triangle']);
+    }
+    let last: OscillatorNode | null = null;
+    let longest = 0;
+    for (const [freq, level, dec, type] of parts) {
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.setValueAtTime(freq * 1.25, t);
+      o.frequency.exponentialRampToValueAtTime(freq, t + 0.03);
+      const e = ctx.createGain();
+      e.gain.setValueAtTime(EPS, t);
+      e.gain.exponentialRampToValueAtTime(Math.max(level, 2 * EPS), t + 0.006);
+      e.gain.exponentialRampToValueAtTime(EPS, t + 0.006 + dec);
+      o.connect(e).connect(g.sfxBus);
+      o.start(t);
+      o.stop(t + dec + 0.08);
+      nodes.push(o, e);
+      if (dec >= longest) {
+        longest = dec;
+        last = o;
+      }
+    }
+    if (last) last.onended = () => disconnectAll(...nodes);
+  }
+
+  /** The crust over a hollow giving way a little more: dry snaps, more of them and lower each time (level 1..3). */
+  crack(level: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    const n = 2 + Math.round(level) * 2;
+    let t = ctx.currentTime + 0.06;
+    for (let i = 0; i < n; i++) {
+      const src = ctx.createBufferSource();
+      src.buffer = g.noise;
+      src.playbackRate.value = rand(0.7, 1.3);
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = rand(1400, 3600) / (1 + 0.25 * level);
+      bp.Q.value = 2.2;
+      const e = ctx.createGain();
+      e.gain.setValueAtTime(EPS, t);
+      e.gain.exponentialRampToValueAtTime(rand(0.04, 0.08) * (0.7 + 0.2 * level), t + 0.002);
+      e.gain.exponentialRampToValueAtTime(EPS, t + rand(0.03, 0.07));
+      src.connect(bp).connect(e).connect(g.sfxBus);
+      src.start(t, Math.random() * (g.noise.duration - 0.4));
+      src.stop(t + 0.12);
+      src.onended = () => disconnectAll(src, bp, e);
+      t += rand(0.03, 0.14);
+    }
+    // the slab settling
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    const t0 = ctx.currentTime + 0.05;
+    o.frequency.setValueAtTime(58 - 4 * level, t0);
+    o.frequency.exponentialRampToValueAtTime(38, t0 + 0.5);
+    const oe = ctx.createGain();
+    oe.gain.setValueAtTime(EPS, t0);
+    oe.gain.exponentialRampToValueAtTime(0.05 + 0.04 * level, t0 + 0.03);
+    oe.gain.exponentialRampToValueAtTime(EPS, t0 + 0.55);
+    o.connect(oe).connect(g.sfxBus);
+    o.start(t0);
+    o.stop(t0 + 0.6);
+    o.onended = () => disconnectAll(o, oe);
+  }
+
+  /** Sand pouring away into a hollow for `sec` seconds: a long hiss over a rumble, rising and then running out. */
+  drain(sec: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    const t = ctx.currentTime + 0.01;
+    const src = ctx.createBufferSource();
+    src.buffer = g.noise;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'bandpass';
+    lp.Q.value = 0.5;
+    lp.frequency.setValueAtTime(500, t);
+    lp.frequency.linearRampToValueAtTime(1500, t + sec * 0.5);
+    lp.frequency.linearRampToValueAtTime(700, t + sec);
+    const e = ctx.createGain();
+    e.gain.setValueAtTime(EPS, t);
+    e.gain.exponentialRampToValueAtTime(0.11, t + sec * 0.25);
+    e.gain.setValueAtTime(0.11, t + sec * 0.6);
+    e.gain.exponentialRampToValueAtTime(EPS, t + sec + 0.6);
+    src.connect(lp).connect(e).connect(g.sfxBus);
+    src.start(t, Math.random() * (g.noise.duration - 0.4));
+    src.stop(t + sec + 0.7);
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(46, t);
+    o.frequency.linearRampToValueAtTime(34, t + sec);
+    const oe = ctx.createGain();
+    oe.gain.setValueAtTime(EPS, t);
+    oe.gain.exponentialRampToValueAtTime(0.16, t + 0.3);
+    oe.gain.setValueAtTime(0.16, t + sec * 0.5);
+    oe.gain.exponentialRampToValueAtTime(EPS, t + sec + 0.3);
+    o.connect(oe).connect(g.sfxBus);
+    o.start(t);
+    o.stop(t + sec + 0.4);
+    src.onended = () => disconnectAll(src, lp, e, o, oe);
+  }
+
   /** A soft rising figure of three or four bell notes in the current mode. */
   chime(): void {
     const ctx = this.ctx;

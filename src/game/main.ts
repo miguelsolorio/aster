@@ -158,7 +158,7 @@ function start() {
   const figure = new Figure(u);
   figure.board = player.board;
   figure.carpet = player.carpet;
-  figure.pick = save.has('pick'); // carried, but there is nothing to dig yet
+  figure.pick = save.has('pick');
   scene.add(figure.group);
 
   // ---- a fire and its travellers, a short walk from where you begin, toward the city you face.
@@ -310,7 +310,7 @@ function start() {
   );
   applyTier();
   const syncKnown = () => {
-    ui.setKnown({ talk: save.data.talked, board: save.has('board'), carpet: player.carpet });
+    ui.setKnown({ talk: save.data.talked, board: save.has('board'), carpet: player.carpet, dig: save.has('pick') });
     touch.setBoard(save.has('board'), player.board);
   };
 
@@ -498,12 +498,62 @@ function start() {
       if (ui.state === 'playing') ui.openMenu();
     },
     onTalk() {
-      if (ui.state === 'playing') talk.interact();
+      if (ui.state === 'playing') interact();
     },
     onBoard() {
       if (ui.state === 'playing') toggleBoard();
     },
   });
+  // ---- the pick: with nobody in reach, the key that talks swings it instead
+  const SWING = 0.62; // seconds, start to finish
+  const SWING_HIT = 0.45; // the fraction of it at which the point lands
+  let swingT = -1; // seconds into a swing, or -1 at rest
+  let swingHit = false;
+  /** Whether a swing may start now: a pick, feet on the ground, and no conversation to have. */
+  const canDig = () => save.has('pick') && player.state.grounded && !talk.available;
+  const interact = () => {
+    if (talk.available) talk.interact();
+    else if (canDig() && swingT < 0) {
+      swingT = 0;
+      swingHit = false;
+    }
+  };
+  /** The point of the pick lands, a short reach ahead of the feet. */
+  const strike = () => {
+    const st = player.state;
+    const x = st.pos.x + Math.sin(player.facing) * 0.75;
+    const z = st.pos.z + Math.cos(player.facing) * 0.75;
+    buzz(14);
+    if (waterAt(x, z) && water.y > world.height(x, z) - 0.01) {
+      splash.burst(x, water.y, z, 0, 0, 0.3);
+      splash.ring(x, water.y, z, 1.2, 1.1);
+      audio.splash(0.3);
+      return;
+    }
+    const hard = st.onRock > 0.5 || world.sample(x, z, probe).rock > 0.5;
+    if (hard) {
+      audio.strike('rock', 0);
+      return;
+    }
+    // A scuff: one deep bite where the point went in, and the sand it threw back toward the feet.
+    const fx = Math.sin(player.facing);
+    const fz = Math.cos(player.facing);
+    const along = Math.PI / 2 - player.facing; // the trail field measures headings from +x
+    // (a mark reads by how steep its sides are, so the bite is narrow and deep, not broad)
+    trail.stamp(x, z, 0.15, 1, along, 2.2);
+    trail.stamp(x + fx * 0.12, z + fz * 0.12, 0.11, 1, along, 1.2);
+    for (let i = 0; i < 4; i++) {
+      // the sand it threw: a loose fan back toward the feet and out to the sides
+      const a = (Math.random() - 0.5) * 2.4;
+      const r = 0.45 + Math.random() * 0.5;
+      trail.stamp(x - (fx * Math.cos(a) - fz * Math.sin(a)) * r, z - (fz * Math.cos(a) + fx * Math.sin(a)) * r, 0.07 + Math.random() * 0.05, 0.4);
+    }
+    tmp.set(x, world.height(x, z) + 0.05, z);
+    tmp2.set(-fx * 0.8, 2.2, -fz * 0.8);
+    dust.puff(tmp, tmp2, 0.3);
+    audio.strike('sand', 0);
+  };
+
   // Step on or off the board. Off, it rides on your back and you walk.
   const toggleBoard = () => {
     if (!save.has('board')) return;
@@ -547,7 +597,7 @@ function start() {
       if (!e.repeat) jumpQueued = true;
       e.preventDefault();
     }
-    if (e.code === 'KeyE' && !e.repeat) talk.interact();
+    if (e.code === 'KeyE' && !e.repeat) interact();
     if (e.code === 'KeyQ' && !e.repeat) toggleBoard();
     keys.add(e.code);
   });
@@ -803,6 +853,23 @@ function start() {
       trail.stamp(s.x, s.z, 0.22, 0.3 * Math.min(1, s.life));
     }
 
+    // A swing of the pick: up over the shoulder, down hard, and a moment held where it landed.
+    if (swingT >= 0) {
+      swingT += dt;
+      const k = swingT / SWING;
+      if (!swingHit && k >= SWING_HIT) {
+        swingHit = true;
+        strike();
+      }
+      // the figure's pose runs 0.5 (low in front) .. 1 = 0 (raised) .. 0.5 (struck)
+      const rise = Math.min(1, k / 0.3);
+      const fall = Math.min(1, Math.max(0, (k - 0.3) / (SWING_HIT - 0.3)));
+      figure.swing = k < 0.3 ? 0.5 + 0.5 * rise * rise * (3 - 2 * rise) : 0.5 * fall * fall;
+      if (k >= 1 || !st.grounded) {
+        swingT = -1;
+        figure.swing = -1;
+      }
+    }
     {
       const sp = Math.max(st.speed, 0.01);
       const slopeAlong = st.grounded ? -(st.vel.x * player.downhill.x + st.vel.z * player.downhill.y) / sp * player.slope : 0;
@@ -871,7 +938,7 @@ function start() {
     // Speech is drawn over the scene, so it is placed once the camera has settled.
     talk.setKey(touch.used ? '' : 'E');
     talk.update(camera, st.pos.x, st.pos.z, playing);
-    touch.setTalk(talk.available);
+    touch.setTalk(talk.available, canDig() && st.onRock < 0.5);
 
     cities.update(dt, st.pos);
     bake.update(st.pos);
