@@ -349,7 +349,20 @@ void main() {
   float fogA = (1.0 - exp(-dist * uFog)) * 0.5;
   float flick = kind < 0.5 ? 0.93 + 0.07 * sin(uTime * 3.0 + aGlow.z * 40.0) * sin(uTime * 4.3 + aGlow.z * 17.0) : 1.0;
   vec3 warm = mix(vec3(1.0, 0.68, 0.36), vec3(1.0, 0.8, 0.52), fract(aGlow.z * 3.7));
-  vCol = warm * aGlow.w * on * max(k * k, 0.35) * (1.0 - fogA) * flick;
+#ifdef NEAR_GLOW
+  float keep = max(k * k, 0.35);
+#else
+  // from far away a light is only a point: keep it bright enough to read as a lit city
+  float keep = max(k * k, 0.9);
+#endif
+  vCol = warm * aGlow.w * on * keep * (1.0 - fogA) * flick;
+  // Bring the glow a little toward the eye so the wall it sits on does not swallow it
+  // (the far skyline has no window recesses: its lights lie exactly on the box faces).
+#ifdef NEAR_GLOW
+  mv.xyz -= normalize(mv.xyz) * 0.35;
+#else
+  mv.xyz -= normalize(mv.xyz) * (2.5 + depth * 0.004);
+#endif
   mv.xy += aCorner * r;
   vUv = aCorner;
   gl_Position = on < 0.002 ? vec4(0.0, 0.0, 2.0, 1.0) : projectionMatrix * mv;
@@ -405,7 +418,8 @@ export function createWaterMaterial(shared: Uniforms): THREE.ShaderMaterial {
 
 export function createGlowMaterial(shared: Uniforms, near: boolean): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: withShared(shared, { uViewH: { value: 1080 }, uMinPx: { value: 1.5 } }),
+    uniforms: withShared(shared, { uViewH: { value: 1080 }, uMinPx: { value: near ? 1.5 : 3.2 } }),
+    userData: { minPx: near ? 1.5 : 3.2 },
     vertexShader: glowVert,
     fragmentShader: glowFrag,
     defines: near ? { NEAR_GLOW: 1 } : {},
@@ -422,11 +436,12 @@ export function trackViewport(mesh: THREE.Mesh, mat: THREE.ShaderMaterial): void
   mesh.onBeforeRender = (renderer) => {
     const rt = renderer.getRenderTarget();
     let h: number;
-    let minPx = 1.5;
+    const base = (mat.userData.minPx as number | undefined) ?? 1.5;
+    let minPx = base;
     if (rt) h = rt.height;
     else {
       h = renderer.getDrawingBufferSize(_size).y;
-      minPx = 1.5 * Math.max(1, renderer.getPixelRatio() * 0.7);
+      minPx = base * Math.max(1, renderer.getPixelRatio() * 0.7);
     }
     mat.uniforms.uViewH.value = Math.max(1, h);
     mat.uniforms.uMinPx.value = minPx;

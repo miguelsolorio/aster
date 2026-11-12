@@ -62,6 +62,7 @@ function start() {
     let x = 0;
     let z = 0;
     // Somewhere in the open desert, with a city in sight a few kilometres off.
+    let spawnCity: { cx: number; cz: number } | null = null;
     const ax = (Math.random() * 2 - 1) * SPAWN_RANGE;
     const az = (Math.random() * 2 - 1) * SPAWN_RANGE;
     const city = world.cities.near(ax, az)[0];
@@ -72,7 +73,19 @@ function start() {
       z = city.cz + Math.sin(a) * d;
       world.sample(x, z, s);
       world.normal(x, z, n);
-      if (s.rock < 0.1 && n.y > 0.95) break;
+      if (s.rock >= 0.1 || n.y <= 0.95) continue;
+      // Dunes hide a city easily, so insist on a clear line of sight to its rooftops
+      // (the last attempts accept any open sand rather than fail).
+      let clear = true;
+      const eye = s.h + 3;
+      const roofs = city.groundY + 14;
+      for (let t = 0.02; t < 0.98 && clear; t += 0.02) {
+        if (world.height(x + (city.cx - x) * t, z + (city.cz - z) * t) > eye + (roofs - eye) * t) clear = false;
+      }
+      if (clear || i > 70) {
+        spawnCity = city;
+        break;
+      }
     }
     // ?x=..&z=.. pins the spawn point (handy for sharing a place).
     if (qs.has('x') && qs.has('z')) {
@@ -80,7 +93,8 @@ function start() {
       z = Number(qs.get('z'));
     }
     player.place(x, z);
-    player.facing = Math.random() * Math.PI * 2;
+    // Face the city, so the first thing you see is somewhere to go.
+    player.facing = spawnCity ? Math.atan2(spawnCity.cx - x, spawnCity.cz - z) : Math.random() * Math.PI * 2;
   }
 
   // ---- scene

@@ -138,15 +138,17 @@ export class Cities {
     this.scanT = 0.4;
 
     // Bring cities into range one at a time so a single frame never builds two.
-    let built = false;
     for (const site of this.sites) {
       const d = Math.hypot(site.cx - pos.x, site.cz - pos.z) - site.radius;
-      let c = this.loaded.get(site.id);
-      if (!c && d < FAR_IN && !built) {
-        c = this.load(site);
-        built = true;
+      if (d < FAR_IN && !this.loaded.has(site.id)) {
+        this.load(site);
+        break;
       }
-      if (!c) continue;
+    }
+    // Every loaded city, wherever it is: drop the far ones, and choose skyline or full detail.
+    for (const c of this.loaded.values()) {
+      const site = c.site;
+      const d = Math.hypot(site.cx - pos.x, site.cz - pos.z) - site.radius;
       if (d > FAR_OUT) {
         this.group.remove(c.holder);
         c.meshes.dispose();
