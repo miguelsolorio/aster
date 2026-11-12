@@ -105,7 +105,7 @@ uniform float uLower;      // metres to sink this level (0 for the finest)
 varying vec3 vW;
 varying vec3 vN;
 varying vec4 vMask; // rock, salt, signed distance to the river (m), river presence 0..1
-varying float vCave; // 1 under a cave roof
+varying float vCave; // 1 under a cave roof, rising to 2 deep in a cavern where no daylight reaches
 
 void main() {
   vec2 xz = uLevelCenter + position.xz * uCell;
@@ -182,6 +182,10 @@ float cityTracks(vec2 p) {
   }
   return m;
 }
+
+// What glows in the nearest open cavern: where it is, and how far its light carries (0 = nothing).
+uniform vec4 uCavGlow;
+const vec3 CAV_GLOW = vec3(0.3, 0.95, 0.82);
 
 uniform vec2 uInnerCenter; // centre of the next finer level
 uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
@@ -637,8 +641,23 @@ void main() {
     col = mix(col, uLine, max(lg.x, lg.y) * uGrid);
   }
 
-  // ---- fog
-  col = mix(col, uFogCol, 1.0 - exp(-dist * uFog * hazeAt(p.y)));
+  // ---- deep in a cavern: past the daylight from its mouth the rock is nearly black, and
+  // whatever glows down there is all that lights it
+  float deep = clamp(vCave - 1.0, 0.0, 1.0);
+  if (deep > 0.001) {
+    col *= 1.0 - 0.86 * deep;
+    if (uCavGlow.w > 0.0) {
+      vec3 gd = uCavGlow.xyz - p;
+      float g2 = dot(gd, gd);
+      float ga = 1.0 / (1.0 + g2 / (0.16 * uCavGlow.w * uCavGlow.w));
+      ga *= 0.45 + 0.55 * max(dot(n, gd * inversesqrt(g2 + 1e-3)), 0.0);
+      ga *= 0.92 + 0.08 * sin(uTime * 0.9);
+      col += CAV_GLOW * (0.85 * ga * smoothstep(0.0, 0.35, deep));
+    }
+  }
+
+  // ---- fog (the haze of the open desert does not hang underground)
+  col = mix(col, uFogCol, (1.0 - exp(-dist * uFog * hazeAt(p.y))) * (1.0 - deep));
 
   gl_FragColor = vec4(col, 1.0);
 }

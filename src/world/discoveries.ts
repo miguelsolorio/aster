@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import { WORLD_SCALE } from './scale';
 import { STYLE_GLSL } from '../render/styleGlsl';
-import { TERRAIN, type Cave, type Massif } from './surface';
+import { MAX_CAVERNS, TERRAIN, writeCaverns, type Cave, type Cavern, type Massif } from './surface';
 import { rockCapVert, terrainFrag } from '../render/terrainShaders';
 import { CITY_CELL } from '../city/placement';
 import { Solids, type SolidKind } from './solids';
@@ -19,6 +19,13 @@ const DROP_R = 3500;
 const SCAN_EVERY = 0.3;
 const GROVE_P = 0.7; // chance an otherwise empty cell beside a river holds a grove
 const GROVE_REACH = 260; // metres from a river that counts as beside it
+const CAVERN_P = 0.22; // chance an otherwise empty cell hides a cavern (where the ground suits one)
+const CAVERN_BUILD_R = 900; // an open cavern's roof and contents are built inside this
+const HOLLOW_R = 30; // a strike sounds hollow within this of a sealed cavern (m)
+const DIG_R = 4.5; // and counts toward breaking through within this of the spot
+const DIG_HITS = 4; // strikes on the spot before the sand gives way
+const DRAIN = 4.5; // seconds the sand takes to run out
+const DIMPLE = 0.4; // depth of the dip over a sealed cavern (m)
 
 // ------------------------------------------------------------------ hashing
 
@@ -84,8 +91,11 @@ void main() {
 }
 `;
 
-// kinds: 0 rock palette, 1 pale (salt palette: bone, shell), 2 sand palette (wood, damp sand, shrubs), 3 lantern light
+// kinds: 0 rock palette, 1 pale (salt palette: bone, shell), 2 sand palette (wood, damp sand, shrubs), 3 lantern light,
+// 4 glowing mineral. Ten more than any of these is the same thing deep in a cavern, out of the sun's reach.
 const stoneFrag = /* glsl */ `
+uniform vec4 uCavGlow;
+uniform float uTime;
 uniform vec3 uSunDir;
 uniform vec3 uRockLit;
 uniform vec3 uRockShade;
@@ -107,18 +117,35 @@ void main() {
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
   n = styleFacet(n, vW);
-  float l = styleBands(smoothstep(-0.12, 0.42, dot(n, uSunDir)), vW.xz);
+  float dark = step(9.5, vKind);
+  float kind = vKind - 10.0 * dark;
+  float l = styleBands(smoothstep(-0.12, 0.42, dot(n, uSunDir)), vW.xz) * (1.0 - dark);
   vec3 sh = uShade;
   vec3 li = uLit;
-  if (vKind < 0.5) { sh = uRockShade; li = uRockLit; }
-  else if (vKind < 1.5) { sh = mix(uRockShade, uSaltShade, 0.7); li = uSaltLit; }
+  if (kind < 0.5) { sh = uRockShade; li = uRockLit; }
+  else if (kind < 1.5) { sh = mix(uRockShade, uSaltShade, 0.7); li = uSaltLit; }
   vec3 col = mix(sh, li, l * 0.9);
   float m = dvn(vW.xz * 0.45 + vec2(vW.y * 0.6, -vW.y * 0.3)) * 0.6 + dvn(vW.xz * 1.7 + vW.y) * 0.4;
   col *= vTint * (0.88 + 0.24 * m);
   col += (uTop - col) * 0.06 * max(n.y, 0.0) * (1.0 - l);
   float dist = length(vW - cameraPosition);
   float fogA = 1.0 - exp(-dist * uFog);
-  if (vKind > 2.5) {
+  if (dark > 0.5) {
+    // in a cavern: nearly black, lit only by what glows there (as the rock around it is)
+    col *= 0.2;
+    if (uCavGlow.w > 0.0) {
+      vec3 gd = uCavGlow.xyz - vW;
+      float g2 = dot(gd, gd);
+      float ga = 1.0 / (1.0 + g2 / (0.16 * uCavGlow.w * uCavGlow.w));
+      ga *= 0.45 + 0.55 * max(dot(n, gd * inversesqrt(g2 + 1e-3)), 0.0);
+      col += vec3(0.3, 0.95, 0.82) * vTint * (0.85 * ga);
+    }
+    fogA = 0.0;
+  }
+  if (kind > 3.5) {
+    col = vec3(0.3, 0.95, 0.82) * vTint * (0.8 + 0.2 * sin(uTime * 0.9 + vW.y * 2.0));
+    fogA *= 0.5 * (1.0 - dark);
+  } else if (kind > 2.5) {
     col = vec3(1.0, 0.78, 0.46) * (0.55 + 0.6 * uNight);
     fogA *= 0.5;
   }
@@ -146,6 +173,7 @@ uniform vec3 uFogCol;
 uniform float uFog;
 uniform float uTime;
 uniform float uNight;
+uniform float uDim; // 1 under the sky; lower for a pool underground, which has little to mirror
 varying vec3 vW;
 ${NOISE}
 void main() {
@@ -165,6 +193,8 @@ void main() {
   vec3 rf = reflect(-v, n);
   float g = pow(max(dot(rf, uSunDir), 0.0), 220.0);
   col += uSunCol * g * (1.0 - 0.6 * uNight) * 1.5;
+  // underground: dark water that picks up a little of the mineral's light
+  col = mix(vec3(0.3, 0.95, 0.82) * (0.1 + 0.25 * fres), col, uDim) * mix(0.55, 1.0, uDim);
   float dist = length(vW - cameraPosition);
   col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));
   gl_FragColor = vec4(col, 1.0);
@@ -239,6 +269,8 @@ const glowFrag = /* glsl */ `
 uniform float uNight;
 uniform float uFog;
 uniform float uTime;
+uniform vec3 uGlowCol;
+uniform float uGlowDay; // how much of it shows in daylight: a lantern's is lost in the sun, a cavern's is not
 varying vec2 vUv;
 varying float vDist;
 void main() {
@@ -246,10 +278,37 @@ void main() {
   if (r2 > 1.0) discard;
   float a = exp(-r2 * 5.0) * (1.0 - r2);
   float flick = 0.94 + 0.06 * sin(uTime * 3.1) * sin(uTime * 4.7 + 1.3);
-  float k = (0.12 + 0.88 * smoothstep(0.1, 0.8, uNight)) * flick;
+  float k = mix(0.12 + 0.88 * smoothstep(0.1, 0.8, uNight), 1.0, uGlowDay) * flick;
   float fogA = (1.0 - exp(-vDist * uFog)) * 0.45;
-  vec3 col = vec3(1.0, 0.72, 0.38) * a * k * (1.0 - fogA);
+  vec3 col = uGlowCol * a * k * (1.0 - fogA);
   gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// Daylight falling through a cavern's mouth: a faint wedge of lit dust under the brow.
+const shaftVert = /* glsl */ `
+attribute float aFade;
+varying float vFade;
+varying vec3 vW;
+void main() {
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vW = wp.xyz;
+  vFade = aFade;
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`;
+
+const shaftFrag = /* glsl */ `
+uniform vec3 uSunCol;
+uniform float uNight;
+uniform float uTime;
+varying float vFade;
+varying vec3 vW;
+${NOISE}
+void main() {
+  float dust = 0.7 + 0.3 * dvn(vW.xz * 0.9 + vec2(uTime * 0.05, vW.y * 0.7));
+  float a = vFade * vFade * dust * (1.0 - 0.93 * uNight);
+  gl_FragColor = vec4(uSunCol * (0.085 * a), 1.0);
 }
 `;
 
@@ -260,6 +319,8 @@ const UNIT_CYL = new THREE.CylinderGeometry(1, 1, 1, 10, 1);
 const UNIT_SLAB = new THREE.CylinderGeometry(0.4, 0.5, 1, 4, 3).rotateY(Math.PI / 4).scale(1.414, 1, 1.414);
 const UNIT_BLOB = new THREE.IcosahedronGeometry(1, 1);
 const UNIT_CONE = new THREE.ConeGeometry(1, 1, 4);
+/** A relic: a small eight-pointed thing, two crossed spindles. */
+const RELIC_GEO = new THREE.OctahedronGeometry(0.15, 0).scale(1, 1.6, 1);
 
 const _v = new THREE.Vector3();
 const _m = new THREE.Matrix4();
@@ -279,6 +340,8 @@ class StoneBuilder {
   k = 0;
   rough = 0;
   salt = 1;
+  /** Deep in a cavern: out of the sun, lit only by what glows there. */
+  dark = false;
 
   set(r: number, g: number, b: number, k: number, rough: number): void {
     this.r = r;
@@ -300,7 +363,7 @@ class StoneBuilder {
     }
     this.pos.push(x, y, z);
     this.tint.push(this.r, this.g, this.b);
-    this.kind.push(this.k);
+    this.kind.push(this.dark ? this.k + 10 : this.k);
   }
 
   geo(g: THREE.BufferGeometry, m: THREE.Matrix4): void {
@@ -393,8 +456,16 @@ class Ctx {
   readonly rock = new RockBuilder();
   readonly stone = new StoneBuilder();
   readonly fronds = new FrondBuilder();
-  readonly pools: { y: number; r: number }[] = [];
+  readonly pools: { y: number; r: number; u?: number; v?: number; under?: boolean }[] = [];
   readonly glows: number[] = []; // x, y, z, size
+  /** The cold light of a mineral: the same, but it shows by day too. */
+  readonly veins: number[] = [];
+  /** Shafts of daylight: x, y, z, fade per vertex. */
+  readonly shafts: number[] = [];
+  /** What lights a cavern from inside: local x, y, z and how far it carries. */
+  light: [number, number, number, number] | null = null;
+  /** Where a relic lies, local. */
+  relic: [number, number, number] | null = null;
   /** What the wanderer walks into and stands on: one shape per stone, drum and length of bone. */
   readonly solids = new Solids();
   /** Off while building things you pass straight through (scrub, paving flush with the ground). */
@@ -1332,6 +1403,209 @@ function buildShell(c: Ctx): void {
   }
 }
 
+// ------------------------------------------------------------------ caverns
+
+/** A cavern as the discoveries know it: the shape the terrain cuts, and what is inside. */
+export interface CavernSite {
+  key: number;
+  cav: Cavern;
+  /** 0 a single chamber, 1 a bent passage, 2 a chamber with a pool. */
+  variant: number;
+  /** A great seam of glowing mineral, rather than a few crystals. */
+  vein: boolean;
+  carvings: boolean;
+  relic: boolean;
+  seed: number;
+  /** Strikes landed on the spot so far. */
+  hits: number;
+}
+
+const sstep = (a: number, b: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+/** How far a cavern's centre line has shifted sideways by u, and its half-width there (as the terrain cuts it). */
+const cavLine = (cv: Cavern, u: number): number => cv.bend * sstep(cv.ramp + 3, cv.ramp + 17, u);
+const cavHalf = (cv: Cavern, u: number): number => {
+  const er = cv.half + cv.bulge;
+  return cv.half + cv.bulge * sstep(cv.len - 2 * er - 4, cv.len - er, u);
+};
+
+/**
+ * An open cavern: the sand left standing over it as a roof (the terrain cuts the slot, as it
+ * does for a cave), daylight falling in under the brow, and what the dark holds.
+ */
+function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: Face) => Face): void {
+  const cv = cs.cav;
+  const rk = c.rock;
+  const st = c.stone;
+  const F: Face = { y: 0, nx: 0, ny: 1, nz: 0, rock: 0, salt: 0 };
+  const floorY = cv.floor - c.baseY;
+  const ceilY = floorY + TERRAIN.cavernHeight;
+  const er = cv.half + cv.bulge;
+  c.foot = cv.len;
+
+  // ---- the roof: a sheet following the centre line, wide enough to lap onto uncut ground
+  const WC = er + 3.4;
+  const NV = Math.ceil((WC * 2) / 1.25);
+  const u0 = cv.roof;
+  const NU = Math.ceil((cv.len + 4 - u0) / 1.25);
+  const du = (cv.len + 4 - u0) / NU;
+  const uAt = (i: number) => u0 + i * du;
+  const vAt = (u: number, j: number) => cavLine(cv, u) - WC + (j / NV) * 2 * WC;
+  // the sand itself, a hand's width proud of the ground, tucked under it round the rim
+  const top = (i: number, j: number) => {
+    const u = uAt(i);
+    const v = vAt(u, j);
+    face(u, v, F);
+    c.at(u, v);
+    rk.vert(c.lx, F.y + (j === 0 || j === NV || i === NU ? -0.04 : 0.05), c.lz, F.nx, F.ny, F.nz, F.rock, F.salt, 0);
+  };
+  // the underside: broken rock a little above the ceiling's height, never above the sand
+  const lowY = (i: number, j: number) => {
+    const u = uAt(i);
+    const bump = i === 0 ? 0 : 0.9 * hash4(i, j, st.salt, 21);
+    return Math.min(ceilY + bump, face(u, vAt(u, j), F).y - 0.5);
+  };
+  const low = (i: number, j: number) => {
+    const u = uAt(i);
+    const y = lowY(i, j);
+    c.at(u, vAt(u, j));
+    rk.vert(c.lx, y, c.lz, 0, -1, 0, 1, 0, 1 + sstep(u0 + 1, u0 + 14, u));
+  };
+  c.at(-1, 0);
+  const bl = Math.hypot(c.lx, c.lz) || 1;
+  const bnx = c.lx / bl;
+  const bnz = c.lz / bl;
+  const brow = (j: number, y: number) => {
+    c.at(u0, vAt(u0, j));
+    rk.vert(c.lx, y, c.lz, bnx, 0, bnz, 1, 0, 0.75);
+  };
+  for (let i = 0; i < NU; i++) {
+    for (let j = 0; j < NV; j++) {
+      top(i, j); top(i, j + 1); top(i + 1, j);
+      top(i + 1, j); top(i, j + 1); top(i + 1, j + 1);
+      low(i, j); low(i + 1, j); low(i, j + 1);
+      low(i + 1, j); low(i + 1, j + 1); low(i, j + 1);
+      if (i === 0) {
+        const ya = face(u0, vAt(u0, j), F).y + 0.05;
+        const yb = face(u0, vAt(u0, j + 1), F).y + 0.05;
+        brow(j, lowY(0, j)); brow(j + 1, lowY(0, j + 1)); brow(j, ya);
+        brow(j, ya); brow(j + 1, lowY(0, j + 1)); brow(j + 1, yb);
+      }
+    }
+  }
+
+  // ---- daylight through the mouth: three slanting sheets of lit dust from the brow to the floor
+  const rampY = (u: number) => floorY + (cv.top - cv.floor) * (1 - sstep(2, 2 + cv.ramp, u));
+  for (let k = 0; k < 3; k++) {
+    const ua = u0 - 2.5 + k * 1.2;
+    const ub = u0 + 5 + k * 4;
+    const w = cv.half - 0.4;
+    const cols: Array<[number, number]> = [[-w, 0], [0, 1], [w, 0]];
+    for (let q = 0; q < 2; q++) {
+      const [va, fa] = cols[q];
+      const [vb, fb] = cols[q + 1];
+      const P = (u: number, v: number, y: number, fd: number) => {
+        c.at(u, v + cavLine(cv, u));
+        c.shafts.push(c.lx, y, c.lz, fd);
+      };
+      // (brightest a third of the way down, fading out to both ends so no edge shows)
+      const ya = ceilY + 1.5;
+      const yb = rampY(ub) + 0.1;
+      const um = ua + (ub - ua) * 0.35;
+      const ym = ya + (yb - ya) * 0.35;
+      P(ua, va, ya, 0); P(ua, vb, ya, 0); P(um, va, ym, fa);
+      P(um, va, ym, fa); P(ua, vb, ya, 0); P(um, vb, ym, fb);
+      P(um, va, ym, fa); P(um, vb, ym, fb); P(ub, va, yb, 0);
+      P(ub, va, yb, 0); P(um, vb, ym, fb); P(ub, vb, yb, 0);
+    }
+  }
+
+  // ---- what the dark holds. Everything from here is out of the sun's reach.
+  st.dark = true;
+  const side = c.rng() < 0.5 ? -1 : 1;
+  const wall = (u: number, sd: number, inset: number) => cavLine(cv, u) + sd * (cavHalf(cv, u) - inset);
+
+  // the mineral: a seam climbing one wall of the end chamber, or only a few crystals at its foot
+  {
+    const ua = cv.len - er * 1.7;
+    const ub = cv.len - 2.5;
+    const n = cs.vein ? 16 : 5;
+    for (let i = 0; i < n; i++) {
+      const t = (i + c.rng() * 0.6) / n;
+      const u = ua + (ub - ua) * t;
+      const h = c.r(0.7, 1.9) * (cs.vein ? 1 : 0.7);
+      const y = floorY + (cs.vein ? 0.3 + 4.6 * Math.sin(t * Math.PI) * c.r(0.75, 1) : 0.2);
+      const k = c.r(0.65, 1.1);
+      st.set(k, k, k, 4, 0);
+      c.prim(UNIT_CONE, u, y + h * 0.35, wall(u, side, 0.15), c.r(0.22, 0.5), h, c.r(0.22, 0.5), c.rng() * 6, side * c.r(0.5, 1.1), c.r(-0.5, 0.5));
+    }
+    // a cluster growing out of the floor beneath it
+    const um = (ua + ub) / 2;
+    for (let i = 0; i < (cs.vein ? 7 : 3); i++) {
+      const u = um + c.r(-2.2, 2.2);
+      const v = wall(u, side, c.r(0.9, 2.4));
+      const h = c.r(0.5, 1.5);
+      const k = c.r(0.6, 1.05);
+      st.set(k, k, k, 4, 0);
+      c.prim(UNIT_CONE, u, floorY + h * 0.4, v, c.r(0.16, 0.34), h, c.r(0.16, 0.34), c.rng() * 6, c.r(-0.35, 0.35), c.r(-0.35, 0.35));
+    }
+    const ly = floorY + (cs.vein ? 2.8 : 1);
+    c.at(um, wall(um, side, 1.4));
+    c.light = [c.lx, ly, c.lz, cs.vein ? 17 : 9];
+    c.veins.push(c.lx, ly, c.lz, cs.vein ? 7 : 3.5);
+    if (cs.vein) {
+      for (const t of [0.2, 0.5, 0.8]) {
+        const u = ua + (ub - ua) * t;
+        c.at(u, wall(u, side, 0.4));
+        c.veins.push(c.lx, floorY + 0.6 + 4.4 * Math.sin(t * Math.PI), c.lz, 2);
+      }
+    }
+  }
+
+  // old carvings: stones stood against the other wall, cut with rows of marks that still hold a little light
+  if (cs.carvings) {
+    const n = 3;
+    for (let i = 0; i < n; i++) {
+      const u = cv.len - er - 7 + i * 4.6 + c.r(-0.5, 0.5);
+      const v = wall(u, -side, 0.45);
+      const h = c.r(2.5, 3.4);
+      const k = c.r(0.85, 1.05);
+      st.set(k, k * 0.98, k * 0.94, 0, 0.05);
+      c.prim(UNIT_BOX, u, floorY + h / 2 - 0.3, v, c.r(1.3, 1.7), h, 0.55, c.r(-0.08, 0.08), 0, c.r(-0.04, 0.04));
+      st.set(0.42, 0.42, 0.42, 4, 0);
+      c.solid = false;
+      for (let row = 0; row < 5; row++) {
+        const y = floorY + 0.55 + row * 0.42;
+        if (y > floorY + h - 0.75) break;
+        for (let q = -1; q <= 1; q++) {
+          if (c.rng() < 0.3) continue;
+          const tall = c.rng() < 0.3;
+          c.prim(UNIT_BOX, u + q * 0.36, y, v + side * 0.3, tall ? 0.07 : c.r(0.14, 0.28), tall ? 0.3 : 0.07, 0.06);
+        }
+      }
+      c.solid = true;
+    }
+  }
+
+  // a pool, in the basin the terrain leaves for it
+  if (cv.pool > 0) c.pools.push({ y: floorY - 0.1, r: cv.pool - 0.6, u: cv.len - er, v: cv.bend, under: true });
+
+  // and now and then something left behind, on a stone of its own
+  if (cs.relic) {
+    const u = cv.pool > 0 ? cv.len - 2.6 : cv.len - er;
+    const v = cavLine(cv, u) - side * (cv.pool > 0 ? 0 : 1.5);
+    const k = c.r(0.8, 0.95);
+    st.set(k, k * 0.97, k * 0.93, 0, 0.05);
+    c.prim(UNIT_CYL, u, floorY + 0.3, v, 0.62, 0.75, 0.62, c.rng() * 6);
+    c.prim(UNIT_CYL, u, floorY + 0.74, v, 0.48, 0.14, 0.48, c.rng() * 6);
+    c.at(u, v);
+    c.relic = [c.lx, floorY + 1.12, c.lz];
+  }
+  st.dark = false;
+}
+
 // ------------------------------------------------------------------ the system
 
 /** A spring: the middle of the lip, the unit direction square into the cliff there, and the notch's depth (m). */
@@ -1356,8 +1630,11 @@ interface Site {
   oy: number;
   oz: number;
   solids: Solids | null;
-  /** Still water at the site: surface height (absolute) and radius around (ox, oz). */
-  pools: { y: number; r: number }[];
+  /** Still water at the site: surface height (absolute), radius, and centre. */
+  pools: { y: number; r: number; x: number; z: number }[];
+  /** For a cavern: what lights it (world position, reach) and the relic lying in it, if any. */
+  light?: THREE.Vector4;
+  relic?: { x: number; y: number; z: number; obj: THREE.Object3D };
 }
 
 export class Discoveries {
@@ -1381,8 +1658,27 @@ export class Discoveries {
   private readonly caps = new Map<number, Spring>();
   private scanT = 0;
 
+  /** The sand over a cavern has finished draining away: it is open for good. */
+  onOpened: ((key: number) => void) | null = null;
+  /** The ground has changed shape, so anything baked from it is out of date. */
+  onGround: (() => void) | null = null;
+  private readonly u: Uniforms;
+  private readonly veinMat: THREE.ShaderMaterial;
+  private readonly relicGlowMat: THREE.ShaderMaterial;
+  private readonly shaftMat: THREE.ShaderMaterial;
+  private readonly underWaterMat: THREE.ShaderMaterial;
+  /** Every cell looked at so far: the cavern under it, or null. */
+  private readonly cavernCache = new Map<number, CavernSite | null>();
+  private readonly opened = new Set<number>();
+  private readonly taken = new Set<number>();
+  /** The caverns the terrain is shaped by now: the nearest few. */
+  private active: CavernSite[] = [];
+  private draining: CavernSite | null = null;
+  private readonly struck = { hollow: 0, level: 0, broke: false };
+
   constructor(world: World, uniforms: Uniforms) {
     this.world = world;
+    this.u = uniforms;
     this.group.name = 'discoveries';
     this.stoneMat = new THREE.ShaderMaterial({
       uniforms: { ...uniforms },
@@ -1398,7 +1694,12 @@ export class Discoveries {
       side: THREE.DoubleSide,
     });
     this.waterMat = new THREE.ShaderMaterial({
-      uniforms: { ...uniforms },
+      uniforms: { ...uniforms, uDim: { value: 1 } },
+      vertexShader: waterVert,
+      fragmentShader: waterFrag,
+    });
+    this.underWaterMat = new THREE.ShaderMaterial({
+      uniforms: { ...uniforms, uDim: { value: 0.12 } },
       vertexShader: waterVert,
       fragmentShader: waterFrag,
     });
@@ -1408,14 +1709,302 @@ export class Discoveries {
       fragmentShader: frondFrag,
       side: THREE.DoubleSide,
     });
-    this.glowMat = new THREE.ShaderMaterial({
+    const glow = (r: number, g: number, b: number, day: number) =>
+      new THREE.ShaderMaterial({
+        uniforms: { ...uniforms, uGlowCol: { value: new THREE.Vector3(r, g, b) }, uGlowDay: { value: day } },
+        vertexShader: glowVert,
+        fragmentShader: glowFrag,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+    this.glowMat = glow(1, 0.72, 0.38, 0);
+    this.veinMat = glow(0.22, 0.7, 0.6, 1);
+    this.relicGlowMat = glow(1, 0.72, 0.38, 1);
+    this.shaftMat = new THREE.ShaderMaterial({
       uniforms: { ...uniforms },
-      vertexShader: glowVert,
-      fragmentShader: glowFrag,
+      vertexShader: shaftVert,
+      fragmentShader: shaftFrag,
       transparent: true,
       depthWrite: false,
+      side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
     });
+  }
+
+  // ---------------------------------------------------------------- caverns
+
+  /** What the save remembers: the caverns already opened, and the relics already carried off. */
+  restore(opened: readonly number[], taken: readonly number[]): void {
+    for (const k of opened) this.opened.add(k);
+    for (const k of taken) this.taken.add(k);
+  }
+
+  /** The cavern hidden under a cell, if it has one. Worked out once per cell. */
+  private cavernAt(cx: number, cz: number): CavernSite | null {
+    const key = cellKey(cx, cz);
+    let site = this.cavernCache.get(key);
+    if (site === undefined) {
+      site = this.findCavern(cx, cz, key);
+      this.cavernCache.set(key, site);
+    }
+    return site;
+  }
+
+  /**
+   * Whether a cell hides a cavern, and exactly how it lies. Only a cell with no other find may,
+   * and only on open sand level enough to leave a roof over the whole of it. The floor is set
+   * from the lowest ground above, so the roof is nowhere thinner than cavernCover.
+   */
+  private findCavern(cx: number, cz: number, key: number): CavernSite | null {
+    const w = this.world;
+    const s = w.seed | 0;
+    if (hash4(cx, cz, s, 1) < SITE_P || hash4(cx, cz, s, 9) >= CAVERN_P) return null;
+    const x0 = cx * CELL + MARGIN + hash4(cx, cz, s, 2) * (CELL - 2 * MARGIN);
+    const z0 = cz * CELL + MARGIN + hash4(cx, cz, s, 3) * (CELL - 2 * MARGIN);
+    if (this.riverAt(x0, z0) < 420) return null;
+    const cities = (w as Partial<{ cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>).cities;
+    if (cities) {
+      const c = cities.at(x0, z0);
+      if (Math.hypot(c.cx - x0, c.cz - z0) < c.radius + 1500 * WORLD_SCALE) return null;
+    }
+    const q = this.sample;
+    const seed = Math.floor(hash4(cx, cz, s, 12) * 4294967296);
+    const rng = mulberry32(seed);
+    const variant = Math.floor(rng() * 3) % 3;
+    const half = [4.5, 4, 5][variant] + rng() * 0.8;
+    const bend = variant === 1 ? (rng() < 0.5 ? -1 : 1) * (9 + rng() * 2) : variant === 2 ? (rng() - 0.5) * 6 : 0;
+    const bulge = [4.5, 3, 4.5][variant];
+    const chamber = [24, 30, 30][variant] + rng() * 4;
+    const pool = variant === 2 ? 5.5 + rng() : 0;
+    const vein = rng() < (variant === 2 ? 0.5 : 0.75);
+    const carvings = rng() < (vein ? 0.5 : 0.9);
+    const relic = rng() < 0.35;
+    const yaw0 = rng() * Math.PI * 2;
+    const T = TERRAIN;
+    const uMax = 2 + T.cavernRampMax + chamber + 5;
+    const W = Math.abs(bend) + half + bulge + 5;
+    // Dunes leave few places level enough, so a handful of spots around the cell's own are
+    // tried, each with the cavern lying six ways, and the first that fits is the one.
+    for (let k = 0; k < 30; k++) {
+      const spot = Math.floor(k / 6);
+      const x = Math.fround(x0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 40 + spot) - 0.5) * 240));
+      const z = Math.fround(z0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 50 + spot) - 0.5) * 240));
+      if (k % 6 === 0) {
+        w.sample(x, z, q);
+        if (q.rock > 0.08 || q.salt > 0.25) {
+          k += 5;
+          continue;
+        }
+      }
+      const top = w.height(x, z);
+      const yaw = yaw0 + (k * Math.PI) / 3;
+      const dx = Math.fround(Math.cos(yaw));
+      const dz = Math.fround(Math.sin(yaw));
+      let lo = Infinity;
+      let hi = -Infinity;
+      let ok = true;
+      for (let u = -10; u <= uMax && ok; u += 4) {
+        for (let v = -W; v <= W; v += 4) {
+          w.sample(x + dx * u - dz * v, z + dz * u + dx * v, q);
+          if (q.rock > 0.12) {
+            ok = false;
+            break;
+          }
+          hi = Math.max(hi, q.h);
+          if (u >= 6) lo = Math.min(lo, q.h);
+        }
+      }
+      if (!ok || top - lo > 6.5 || hi - top > 12) continue;
+      const floor = lo - (T.cavernHeight + T.cavernCover);
+      const drop = top - floor;
+      const ramp = Math.min(T.cavernRampMax, drop / T.cavernSlope);
+      // the roof starts where the ramp has sunk a brow's height below the ceiling
+      const want = 1 - (T.cavernHeight - T.cavernBrow) / drop;
+      let a = 0;
+      let b = 1;
+      for (let i = 0; i < 24; i++) {
+        const t = (a + b) / 2;
+        if (t * t * (3 - 2 * t) < want) a = t;
+        else b = t;
+      }
+      const open = this.opened.has(key) ? 1 : 0;
+      return {
+        key,
+        cav: { x, z, dx, dz, top, floor, half, bend, bulge, len: 2 + ramp + chamber, ramp, roof: 2 + ramp * a, pool, open, dimple: DIMPLE },
+        variant,
+        vein,
+        carvings,
+        relic: relic && !this.taken.has(key),
+        seed,
+        hits: 0,
+      };
+    }
+    return null;
+  }
+
+  /** Tell both copies of the terrain which caverns shape the ground now. */
+  private pushCaverns(): void {
+    const list = this.active.map((c) => c.cav);
+    (this.world as Partial<{ setCaverns(l: readonly Cavern[]): void }>).setCaverns?.(list);
+    if (this.u.uCavA) writeCaverns(this.u, list);
+  }
+
+  /**
+   * Keeps the terrain's short list of caverns to the nearest few, and builds the roof and
+   * contents of an open one that has come into range. Returns whether it built one.
+   */
+  private scanCaverns(px: number, pz: number): boolean {
+    if (!(this.world as Partial<{ setCaverns: unknown }>).setCaverns) return false;
+    const pcx = Math.floor(px / CELL);
+    const pcz = Math.floor(pz / CELL);
+    const near: CavernSite[] = [];
+    for (let dz = -2; dz <= 2; dz++) {
+      for (let dx = -2; dx <= 2; dx++) {
+        const cs = this.cavernAt(pcx + dx, pcz + dz);
+        if (cs && Math.hypot(cs.cav.x - px, cs.cav.z - pz) < 1400) near.push(cs);
+      }
+    }
+    // one that is draining stays on the list whatever else is near
+    if (this.draining && !near.includes(this.draining)) near.push(this.draining);
+    const d2 = (c: CavernSite) => (c === this.draining ? -1 : (c.cav.x - px) ** 2 + (c.cav.z - pz) ** 2);
+    near.sort((a, b) => d2(a) - d2(b));
+    near.length = Math.min(near.length, MAX_CAVERNS);
+    if (near.length !== this.active.length || near.some((c, i) => c !== this.active[i])) {
+      const shaped = near.some((c) => c.cav.open > 0) || this.active.some((c) => c.cav.open > 0);
+      this.active = near;
+      this.pushCaverns();
+      if (shaped) this.onGround?.();
+    }
+    for (const cs of near) {
+      if (cs.cav.open > 0 && !this.isBuilt(cs.key) && Math.hypot(cs.cav.x - px, cs.cav.z - pz) < CAVERN_BUILD_R) {
+        this.buildCavernSite(cs);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private buildCavernSite(cs: CavernSite): void {
+    const cv = cs.cav;
+    // the frame's u axis runs down the ramp
+    const ctx = new Ctx(this.world, cv.x, cv.z, cv.top, mulberry32(cs.seed ^ 0x51ab), Math.atan2(-cv.dz, cv.dx));
+    ctx.stone.salt = cs.key & 1023;
+    buildCavern(ctx, cs, this.faceOf(ctx));
+    // it counts as reached once you are down in the end chamber
+    const u = cv.len - cv.half - cv.bulge;
+    ctx.at(u, cavLine(cv, u));
+    this.finishSite(cs.key, 'cavern', cv.x + ctx.lx, cv.z + ctx.lz, cv.top, ctx);
+    this.sites[this.sites.length - 1].reachR = 9;
+  }
+
+  /**
+   * The pick has come down on sand at (x, z). Says how hollow the ground sounds there (0..1,
+   * rising toward a sealed cavern from HOLLOW_R out), and on the spot itself counts the blow:
+   * `level` 1..3 as the crust cracks, then `broke` when the sand starts to drain.
+   */
+  strike(x: number, z: number): { hollow: number; level: number; broke: boolean } {
+    const out = this.struck;
+    out.hollow = 0;
+    out.level = 0;
+    out.broke = false;
+    let best: CavernSite | null = null;
+    let bd = HOLLOW_R;
+    for (const cs of this.active) {
+      if (cs.cav.open > 0) continue;
+      const d = Math.hypot(cs.cav.x - x, cs.cav.z - z);
+      if (d < bd) {
+        bd = d;
+        best = cs;
+      }
+    }
+    if (!best) return out;
+    out.hollow = Math.pow(1 - bd / HOLLOW_R, 0.8);
+    if (bd > DIG_R || this.draining) return out;
+    best.hits++;
+    best.cav.dimple = DIMPLE + 0.14 * best.hits;
+    if (best.hits >= DIG_HITS) {
+      out.broke = true;
+      best.cav.open = 1e-4;
+      this.draining = best;
+      if (!this.isBuilt(best.key)) this.buildCavernSite(best);
+    } else out.level = best.hits;
+    this.pushCaverns();
+    return out;
+  }
+
+  /** How long the sand takes to drain once a cavern breaks open (s). */
+  readonly drainTime = DRAIN;
+
+  /** The cavern whose sand is running out now, if any. */
+  get drainingCavern(): Cavern | null {
+    return this.draining ? this.draining.cav : null;
+  }
+
+  /** The nearest sealed cavern on the terrain's list within r metres, for the signs it gives at the surface. */
+  sealedNear(x: number, z: number, r: number): Cavern | null {
+    let best: Cavern | null = null;
+    for (const cs of this.active) {
+      if (cs.cav.open > 0) continue;
+      const d = Math.hypot(cs.cav.x - x, cs.cav.z - z);
+      if (d < r) {
+        r = d;
+        best = cs.cav;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * The nearest cavern to a point, searching out ring by ring over the cells (they are rare, so
+   * this can look several kilometres). `sealed` leaves out the ones already open.
+   */
+  nearestCavern(x: number, z: number, sealed = true): Cavern | null {
+    const pcx = Math.floor(x / CELL);
+    const pcz = Math.floor(z / CELL);
+    let best: Cavern | null = null;
+    let bd = Infinity;
+    for (let r = 0; r <= 16; r++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          const cs = this.cavernAt(pcx + dx, pcz + dz);
+          if (!cs || (sealed && cs.cav.open > 0)) continue;
+          const d = Math.hypot(cs.cav.x - x, cs.cav.z - z);
+          if (d < bd) {
+            bd = d;
+            best = cs.cav;
+          }
+        }
+      }
+      // nothing in a further ring can be nearer than this
+      if (best && bd < r * CELL) break;
+    }
+    return best;
+  }
+
+  /** The key of a relic lying within reach of (x, y, z), or -1. */
+  relicNear(x: number, y: number, z: number, reach: number): number {
+    for (const s of this.sites) {
+      const r = s.relic;
+      if (r && Math.hypot(r.x - x, r.z - z) < reach && Math.abs(r.y - y - 1) < 1.6) return s.key;
+    }
+    return -1;
+  }
+
+  /** The relic has been picked up: it is gone from its stone for good. */
+  takeRelic(key: number): void {
+    this.taken.add(key);
+    const cs = this.cavernCache.get(key);
+    if (cs) cs.relic = false;
+    for (const s of this.sites) {
+      if (s.key !== key || !s.relic) continue;
+      s.group.remove(s.relic.obj);
+      s.relic.obj.traverse((o) => {
+        if (o instanceof THREE.Mesh) (o.geometry as THREE.BufferGeometry).dispose();
+      });
+      s.relic = undefined;
+    }
   }
 
   /** Site position for a cell, or false if the cell is empty. */
@@ -1447,11 +2036,31 @@ export class Discoveries {
       this.scanT = SCAN_EVERY;
       this.scan(px, pz, this.sites.length === 0 ? 4 : 1);
     }
+    // sand running out of a cavern that has just been broken into
+    const dr = this.draining;
+    if (dr && f.dt > 0) {
+      dr.cav.open = Math.min(1, dr.cav.open + f.dt / DRAIN);
+      this.pushCaverns();
+      if (dr.cav.open >= 1) {
+        this.draining = null;
+        this.opened.add(dr.key);
+        this.onOpened?.(dr.key);
+        this.onGround?.();
+      }
+    }
+    // the light of the nearest cavern's mineral, for the ground's shader and the stones'
+    const glowU = this.u.uCavGlow?.value as THREE.Vector4 | undefined;
+    let glowD = 150 * 150;
+    if (glowU) glowU.w = 0;
     for (let i = 0; i < this.sites.length; i++) {
       const s = this.sites[i];
       const dx = s.x - px;
       const dz = s.z - pz;
       const d2 = dx * dx + dz * dz;
+      if (s.light && glowU && d2 < glowD) {
+        glowD = d2;
+        glowU.copy(s.light);
+      }
       // built out to DROP_R for hysteresis, but only drawn inside the build radius
       s.group.visible = d2 < (BUILD_R + 200) * (BUILD_R + 200);
       if (this.reached.has(s.key)) continue;
@@ -1476,6 +2085,7 @@ export class Discoveries {
     const pcx = Math.floor(px / CELL);
     const pcz = Math.floor(pz / CELL);
     const span = Math.ceil(BUILD_R / CELL);
+    if (this.scanCaverns(px, pz)) return;
     if (this.scanMassifs(px, pz)) return;
     for (let b = 0; b < maxBuilds; b++) {
       let best = Infinity;
@@ -1762,8 +2372,8 @@ export class Discoveries {
     for (let i = 0; i < this.sites.length; i++) {
       const s = this.sites[i];
       for (const p of s.pools) {
-        const dx = x - s.ox;
-        const dz = z - s.oz;
+        const dx = x - p.x;
+        const dz = z - p.z;
         if (dx * dx + dz * dz < p.r * p.r) return p.y;
       }
     }
@@ -1905,39 +2515,44 @@ export class Discoveries {
     if (rg) group.add(new THREE.Mesh(rg, this.rockMat));
     const fg = ctx.fronds.build();
     if (fg) group.add(new THREE.Mesh(fg, this.frondMat));
+    const pools: Site['pools'] = [];
     for (const p of ctx.pools) {
-      const wg = new THREE.CircleGeometry(p.r, 56).rotateX(-Math.PI / 2).translate(0, p.y, 0);
-      group.add(new THREE.Mesh(wg, this.waterMat));
+      ctx.at(p.u ?? 0, p.v ?? 0);
+      const wg = new THREE.CircleGeometry(p.r, 56).rotateX(-Math.PI / 2).translate(ctx.lx, p.y, ctx.lz);
+      group.add(new THREE.Mesh(wg, p.under ? this.underWaterMat : this.waterMat));
+      pools.push({ y: baseY + p.y, r: p.r, x: ctx.x + ctx.lx, z: ctx.z + ctx.lz });
     }
-    if (ctx.glows.length > 0) {
-      const n = ctx.glows.length / 4;
-      const pos = new Float32Array(n * 12);
-      const corner = new Float32Array(n * 8);
-      const size = new Float32Array(n * 4);
-      const index: number[] = [];
-      const cs = [-1, -1, 1, -1, 1, 1, -1, 1];
+    if (ctx.shafts.length > 0) {
+      const n = ctx.shafts.length / 4;
+      const pos = new Float32Array(n * 3);
+      const fade = new Float32Array(n);
       for (let i = 0; i < n; i++) {
-        for (let k = 0; k < 4; k++) {
-          pos[i * 12 + k * 3] = ctx.glows[i * 4];
-          pos[i * 12 + k * 3 + 1] = ctx.glows[i * 4 + 1];
-          pos[i * 12 + k * 3 + 2] = ctx.glows[i * 4 + 2];
-          corner[i * 8 + k * 2] = cs[k * 2];
-          corner[i * 8 + k * 2 + 1] = cs[k * 2 + 1];
-          size[i * 4 + k] = ctx.glows[i * 4 + 3];
-        }
-        const o = i * 4;
-        index.push(o, o + 1, o + 2, o, o + 2, o + 3);
+        pos.set(ctx.shafts.slice(i * 4, i * 4 + 3), i * 3);
+        fade[i] = ctx.shafts[i * 4 + 3];
       }
-      const gg = new THREE.BufferGeometry();
-      gg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-      gg.setAttribute('aCorner', new THREE.BufferAttribute(corner, 2));
-      gg.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
-      gg.setIndex(index);
-      const gm = new THREE.Mesh(gg, this.glowMat);
-      gm.frustumCulled = false;
-      gm.renderOrder = 10;
-      group.add(gm);
+      const sg2 = new THREE.BufferGeometry();
+      sg2.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      sg2.setAttribute('aFade', new THREE.BufferAttribute(fade, 1));
+      const sm = new THREE.Mesh(sg2, this.shaftMat);
+      sm.renderOrder = 9;
+      group.add(sm);
     }
+    let relic: Site['relic'];
+    if (ctx.relic) {
+      // the relic is its own small thing, so it can be lifted off its stone
+      const [rx, ry, rz] = ctx.relic;
+      const rb = new StoneBuilder();
+      rb.set(1, 1, 1, 3, 0);
+      rb.geo(RELIC_GEO, _m.makeTranslation(rx, ry, rz));
+      const obj = new THREE.Group();
+      obj.add(new THREE.Mesh(rb.build()!, this.stoneMat));
+      const gm = this.glowMesh([rx, ry, rz, 0.9, rx, ry, rz, 3.2], this.relicGlowMat);
+      obj.add(gm);
+      group.add(obj);
+      relic = { x: ctx.x + rx, y: baseY + ry, z: ctx.z + rz, obj };
+    }
+    if (ctx.veins.length > 0) group.add(this.glowMesh(ctx.veins, this.veinMat));
+    if (ctx.glows.length > 0) group.add(this.glowMesh(ctx.glows, this.glowMat));
     this.group.add(group);
     this.sites.push({
       key,
@@ -1950,8 +2565,43 @@ export class Discoveries {
       oy: baseY,
       oz: ctx.z,
       solids: ctx.solids.count > 0 ? ctx.solids : null,
-      pools: ctx.pools.map((p) => ({ y: baseY + p.y, r: p.r })),
+      pools,
+      light: ctx.light ? new THREE.Vector4(ctx.x + ctx.light[0], baseY + ctx.light[1], ctx.z + ctx.light[2], ctx.light[3]) : undefined,
+      relic,
     });
+  }
+
+  /** Soft additive discs that always face the camera, one per (x, y, z, size) in `list`. */
+  private glowMesh(list: number[], mat: THREE.ShaderMaterial): THREE.Mesh {
+    {
+      const n = list.length / 4;
+      const pos = new Float32Array(n * 12);
+      const corner = new Float32Array(n * 8);
+      const size = new Float32Array(n * 4);
+      const index: number[] = [];
+      const cs = [-1, -1, 1, -1, 1, 1, -1, 1];
+      for (let i = 0; i < n; i++) {
+        for (let k = 0; k < 4; k++) {
+          pos[i * 12 + k * 3] = list[i * 4];
+          pos[i * 12 + k * 3 + 1] = list[i * 4 + 1];
+          pos[i * 12 + k * 3 + 2] = list[i * 4 + 2];
+          corner[i * 8 + k * 2] = cs[k * 2];
+          corner[i * 8 + k * 2 + 1] = cs[k * 2 + 1];
+          size[i * 4 + k] = list[i * 4 + 3];
+        }
+        const o = i * 4;
+        index.push(o, o + 1, o + 2, o, o + 2, o + 3);
+      }
+      const gg = new THREE.BufferGeometry();
+      gg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      gg.setAttribute('aCorner', new THREE.BufferAttribute(corner, 2));
+      gg.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+      gg.setIndex(index);
+      const gm = new THREE.Mesh(gg, mat);
+      gm.frustumCulled = false;
+      gm.renderOrder = 10;
+      return gm;
+    }
   }
 
   private disposeSite(s: Site): void {
@@ -1971,6 +2621,10 @@ export class Discoveries {
     this.waterMat.dispose();
     this.frondMat.dispose();
     this.glowMat.dispose();
+    this.veinMat.dispose();
+    this.relicGlowMat.dispose();
+    this.shaftMat.dispose();
+    this.underWaterMat.dispose();
   }
 }
 

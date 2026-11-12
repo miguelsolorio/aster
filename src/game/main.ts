@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { FrameState, Uniforms } from './contract';
 import { DayCycle } from './daycycle';
 import { Player, type PlayerInput } from './player';
-import { TERRAIN, createWorld } from '../world/surface';
+import { TERRAIN, cavernUniforms, createWorld } from '../world/surface';
 import { HeightBake } from '../world/heightBake';
 import { Clipmap } from '../world/clipmap';
 import { TrailField } from '../world/trailField';
@@ -142,11 +142,16 @@ function start() {
   const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 14000);
   const cities = new Cities(world, u); // first: it creates the uniforms that tell the terrain where to flatten
   cities.setFocus(player.state.pos.x, player.state.pos.z);
+  cavernUniforms(u); // likewise for the caverns, which the discoveries fill in
   const bake = new HeightBake(renderer, u);
   const trail = new TrailField(renderer, u);
   const clipmap = new Clipmap(u);
   const dust = new Dust(world, u);
   const discoveries = new Discoveries(world, u);
+  // Caverns opened on an earlier visit are open still, and their relics stay taken.
+  discoveries.restore(save.data.opened, save.data.taken);
+  discoveries.onOpened = (key) => save.open(key);
+  discoveries.onGround = () => bake.invalidate();
   const splash = new Splash(u);
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, u);
@@ -405,8 +410,8 @@ function start() {
   discoveries.onReach = () => audio.chime();
   cities.onReach = () => audio.chime();
   // Roofs you can land on: buildings, and the rock over a cave once you are above its ceiling.
-  // (rock ceilings: the caves in the massifs, and the caps over the springs)
-  const ceilAt = (x: number, z: number) => Math.min(world.caveCeil(x, z), discoveries.capCeil(x, z));
+  // (ceilings: the caves in the massifs, the caps over the springs, and the sand left over an open cavern)
+  const ceilAt = (x: number, z: number) => Math.min(world.caveCeil(x, z), discoveries.capCeil(x, z), world.cavernCeil(x, z));
   const caveRoofAt = (x: number, z: number, y: number) => {
     const ceil = ceilAt(x, z);
     return ceil < Infinity && y > ceil - 0.3 ? world.uncarved(x, z) : -Infinity;
@@ -551,7 +556,26 @@ function start() {
     tmp.set(x, world.height(x, z) + 0.05, z);
     tmp2.set(-fx * 0.8, 2.2, -fz * 0.8);
     dust.puff(tmp, tmp2, 0.3);
-    audio.strike('sand', 0);
+    // The ground answers: dull over solid sand, hollow near a buried chamber, and on the spot
+    // itself the crust cracks a little further with each blow until it gives.
+    const hit = discoveries.strike(x, z);
+    audio.strike('sand', hit.hollow);
+    if (hit.level > 0 || hit.broke) {
+      const n = hit.broke ? 14 : 3 + hit.level * 3;
+      for (let i = 0; i < n; i++) {
+        // cracks running out from the blow, longer each time
+        const a = Math.random() * Math.PI * 2;
+        const len = 0.4 + Math.random() * (0.4 + 0.45 * (hit.broke ? 4 : hit.level));
+        trail.stamp(x + Math.cos(a) * len * 0.6, z + Math.sin(a) * len * 0.6, 0.05, 0.8, a, len / 0.05 / 2);
+      }
+      dust.puff(tmp, tmp2.set(0, 2, 0), 0.4 + 0.15 * hit.level);
+      buzz(20 + 12 * hit.level);
+      if (hit.broke) {
+        audio.crack(3);
+        audio.drain(discoveries.drainTime);
+        buzz(120);
+      } else audio.crack(hit.level);
+    }
   };
 
   // Step on or off the board. Off, it rides on your back and you walk.
@@ -947,6 +971,28 @@ function start() {
     dust.update(frame);
     splash.update(frame);
     discoveries.update(frame);
+    // Over a sealed cavern the sand drifts slowly, where everywhere else the wind takes it.
+    {
+      const cv = discoveries.sealedNear(st.pos.x, st.pos.z, 110);
+      if (cv && dt > 0) dust.wisp(cv.x, world.height(cv.x, cv.z), cv.z, 4.5, dt);
+    }
+    // Sand draining into a cavern: it slides in from the rim, and dust hangs over the hole.
+    {
+      const cv = discoveries.drainingCavern;
+      if (cv && dt > 0) {
+        for (let i = 0; i < 2; i++) {
+          const along = 2 + Math.random() * cv.roof;
+          const side = (Math.random() - 0.5) * 2 * (cv.half + 4);
+          const x = cv.x + cv.dx * along - cv.dz * side;
+          const z = cv.z + cv.dz * along + cv.dx * side;
+          if (Math.random() < 0.5) cascade(x, z, 1);
+          tmp.set(x, world.height(x, z) + 0.1, z);
+          tmp2.set(-cv.dz * side * -0.1, 1.2, cv.dx * side * -0.1);
+          dust.puff(tmp, tmp2, 0.25 + 0.3 * Math.random());
+        }
+        if (Math.random() < dt * 5) buzz(12);
+      }
+    }
     massifs.update(frame, clipmap.levelCount);
     wildlife.update(frame);
     const ambience = cities.frame(frame);

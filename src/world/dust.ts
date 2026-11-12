@@ -255,6 +255,25 @@ export class Dust {
     }
   }
 
+  /**
+   * Sand that hangs and turns slowly in one place: over a hollow the air does not carry it off
+   * as it does everywhere else. Call every frame with dt; (x, y, z) is the middle of the patch.
+   */
+  wisp(x: number, y: number, z: number, radius: number, dt: number): void {
+    if (Math.random() > dt * 7 * this.density) return;
+    const a = Math.random() * Math.PI * 2;
+    const r = Math.sqrt(Math.random()) * radius;
+    // a slow turn about the middle, barely rising
+    const sp = 0.12 + Math.random() * 0.2;
+    this.spawn(
+      x + Math.cos(a) * r, y + 0.06 + Math.random() * 0.2, z + Math.sin(a) * r,
+      -Math.sin(a) * sp, 0.05 + Math.random() * 0.1, Math.cos(a) * sp,
+      3.5 + Math.random() * 2.5,
+      0.16 + Math.random() * 0.14,
+      0.2, 0.0, SPINDRIFT_ALPHA * 0.8,
+    );
+  }
+
   /** Continuous spray while sliding: rooster tail behind and to the sides. */
   spray(pos: THREE.Vector3, vel: THREE.Vector3, amount: number): void {
     const a = Math.min(Math.max(amount, 0), 1);
