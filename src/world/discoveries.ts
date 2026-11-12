@@ -1559,7 +1559,7 @@ function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: F
     }
     const ly = floorY + (cs.vein ? 2.8 : 1);
     c.at(um, wall(um, side, 1.4));
-    c.light = [c.lx, ly, c.lz, cs.vein ? 17 : 9];
+    c.light = [c.lx, ly, c.lz, cs.vein ? 17 : 12];
     c.veins.push(c.lx, ly, c.lz, cs.vein ? 7 : 3.5);
     if (cs.vein) {
       for (const t of [0.2, 0.5, 0.8]) {
