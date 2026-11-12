@@ -251,6 +251,8 @@ void main() {
   vec2 fwSaltV = fwidth(saltUV);
   float fwSalt = max(fwSaltV.x, fwSaltV.y);
   float fwY = fwidth(p.y);
+  vec2 fwXZv = fwidth(p.xz);
+  float fwXZ = max(fwXZv.x, fwXZv.y); // pixel footprint on the ground, metres
   vec2 sc = p.xz / 0.03;
   vec2 fwScV = fwidth(sc);
   float fwSc = max(max(fwScV.x, fwScV.y), 1e-4);
@@ -279,8 +281,10 @@ void main() {
   }
   vec3 n = n0;
 
-  // The terrace walls around a hill town are stone wherever they are steep.
-  float stone = cityStone(p.xz) * (1.0 - smoothstep(0.84, 0.95, n0.y));
+  // The terrace walls around a hill town: stone, from the terrace function itself.
+  float stoneLip;
+  float stoneFoot;
+  float stone = cityRiser(p.xz, fwXZ, stoneLip, stoneFoot);
   if (stone > 0.0) {
     rock = max(rock, stone);
     salt *= 1.0 - stone;
@@ -430,6 +434,10 @@ void main() {
   // trodden sand is a little darker and flatter than the dunes around it
   sandCol *= 1.0 - 0.13 * track;
   vec3 col = mix(mix(sandCol, saltCol, salt), rockCol, rock);
+  // terrace walls: a slightly darker dressed stone, a light cap along the lip, a shadow at the foot
+  col *= 1.0 - 0.1 * stone;
+  col = mix(col, col * 1.16 + vec3(0.015), stoneLip);
+  col *= 1.0 - 0.3 * stoneFoot;
 
   // ---- city ground: pale packed earth with a faint, worn paving pattern
   if (pave > 0.001) {

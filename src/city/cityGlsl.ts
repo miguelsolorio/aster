@@ -14,7 +14,8 @@ export const CITY_REACH_EXTRA = 600;
  * uCityA[i] = (centre x, centre z, radius, plateau height); radius 0 means unused.
  * uCityB[i] = (edge phase 1, edge phase 2, falloff metres, kind: 1 hill, 2 canyon, 3 oasis, 4 trade).
  * uCityC[i] = (track bearing 1, track bearing 2, avenues A, avenues B): see cityAveLat.
- * cityPave returns the paved (built) mask 0..1, cheaply, for fragment shaders.
+ * cityPave returns the paved (built) mask 0..1, cheaply, for fragment shaders; cityRiser the
+ * stone walls of hill terraces. The terrace and way-out helpers here are shared with cityBlend.
  */
 export const CITY_SITES_GLSL = /* glsl */ `
 uniform vec4 uCityA[${MAX_SITES}];
@@ -36,38 +37,6 @@ float cityPave(vec2 p) {
   return best;
 }
 
-// 1 on the terraced slopes around a hill town (between the plateau edge and the foot of the
-// mound), where the steep risers are drawn as stone (the fragment shader decides by slope).
-float cityStone(vec2 p) {
-  for (int i = 0; i < ${MAX_SITES}; i++) {
-    vec4 a = uCityA[i];
-    vec4 b = uCityB[i];
-    if (a.z <= 0.0 || b.w > 1.5) continue;
-    vec2 d = p - a.xy;
-    float dist = length(d);
-    if (dist < a.z * 0.8 || dist > a.z * 1.2 + b.z) continue;
-    float ang = atan(d.y, d.x);
-    float edge = a.z * (1.0 + 0.10 * sin(3.0 * ang + b.x) + 0.06 * sin(5.0 * ang + b.y));
-    return smoothstep(edge, edge + 4.0, dist) * (1.0 - smoothstep(edge + b.z - 4.0, edge + b.z, dist));
-  }
-  return 0.0;
-}
-`;
-
-/**
- * The ground a city makes around itself. Needs CITY_SITES_GLSL and sfNoise (surface.ts) first.
- * Inside the plateau edge the ground is flat at the plateau height, exactly as it always was;
- * outside it each kind shapes its surroundings, leaving ways out along the avenues and tracks:
- *   hill    the mound steps down in 4 to 7 terraces with short rocky risers, ramps on the ways out
- *   canyon  a broken ring of rock buttes and cliffs 20 to 60 m high, with gaps on the ways out
- *   oasis   a ring of sheltering dunes 250 to 450 m out, saddled where the tracks cross it
- *   trade   a barely raised rim around the salt pan
- * cityBlend(p, base, key, h, rock): base = the raw desert height at p, key = noise key.
- * (The hill risers are not rock to the player: they are drawn as stone by slope, see cityStone.)
- * Returns (flatten 0..1, paved 0..1); h = the new height; rock = rock mask added there.
- * The TypeScript twin is cityBlendAt in placement.ts: keep them identical, operation for operation.
- */
-export const CITY_SHAPE_GLSL = /* glsl */ `
 const float CITY_TAU = 6.283185307;
 const float CITY_PI = 3.141592654;
 
@@ -94,6 +63,85 @@ float cityAveLat(float ang, float dist, vec4 c) {
   return best * dist;
 }
 
+// The terrace coordinate down the slope of a hill town: k = warped u (0 at the plateau edge,
+// 1 at the foot) times N, the number of terraces (4 to 7). Bench j is floor(k) = j; the riser
+// below it is fract(k) in 0.9..1. dk = dk/du, for metric distances.
+float cityTerraceK(float u, float ang, vec4 b, out float N, out float dk) {
+  N = 4.0 + floor(fract(b.x * 1.37) * 4.0);
+  float s2 = sin(2.0 * ang + b.y);
+  float c3 = cos(3.0 * ang + b.x);
+  float uw = u + 0.0584 * sin(9.424778 * u) * s2 + 0.0191 * sin(15.70796 * u) * c3;
+  dk = (1.0 + 0.0584 * 9.424778 * cos(9.424778 * u) * s2 + 0.0191 * 15.70796 * cos(15.70796 * u) * c3) * N;
+  return uw * N;
+}
+
+// How open the slope of a hill town is at a point: 1 on a ramp (a track or an avenue), 0 on terraces.
+float cityRamp(float ang, float dist, vec4 c) {
+  float tr = min(abs(cityWrap(ang - c.x)), abs(cityWrap(ang - c.y)));
+  return max(1.0 - smoothstep(0.16, 0.28, tr), 1.0 - smoothstep(16.0, 34.0, cityAveLat(ang, dist, c)));
+}
+
+// The stone walls (risers) of a hill town's terraces, decided from the same terrace function that
+// shapes the ground, so their edges are exact at any distance. aa = pixel footprint in metres.
+// Returns stone 0..1; lip = a thin light line along the top edge of each wall, foot = a thin
+// shadow line along its foot (both fade out once they are thinner than a pixel).
+float cityRiser(vec2 p, float aa, out float lip, out float foot) {
+  lip = 0.0;
+  foot = 0.0;
+  for (int i = 0; i < ${MAX_SITES}; i++) {
+    vec4 a = uCityA[i];
+    vec4 b = uCityB[i];
+    if (a.z <= 0.0 || b.w > 1.5) continue;
+    vec2 d = p - a.xy;
+    float dist = length(d);
+    if (dist < a.z * 0.8 || dist > a.z * 1.2 + b.z) continue;
+    float ang = atan(d.y, d.x);
+    float edge = a.z * (1.0 + 0.10 * sin(3.0 * ang + b.x) + 0.06 * sin(5.0 * ang + b.y));
+    float F = b.z;
+    float t = dist - edge;
+    if (t <= 0.0 || t >= F) return 0.0;
+    float N;
+    float dk;
+    float k = cityTerraceK(t / F, ang, b, N, dk);
+    float kf = floor(k);
+    float fr = k - kf;
+    float mpf = F / max(dk, 0.05); // metres per unit of k
+    float dTop = (fr - 0.9) * mpf; // metres past the lip of this bench's wall (< 0: still on the bench)
+    float dFoot = (1.0 - fr) * mpf; // metres to the foot of that wall
+    float dPast = fr * mpf; // metres past the foot of the wall above
+    // where the warp stretches a wall into a long gentle slope, it is sand rather than stone
+    float open = (1.0 - cityRamp(ang, dist, uCityC[i])) * smoothstep(0.2, 0.45, 24.0 / (N * 0.1 * mpf));
+    // lower walls fade as the dunes come back in near the foot of the mound
+    float sBelow = (kf + 1.0) / N;
+    float sAbove = kf / N;
+    float wHere = open * (1.0 - 0.6 * sBelow * sBelow * sBelow);
+    float wAbove = open * (1.0 - 0.6 * sAbove * sAbove * sAbove) * step(0.5, kf);
+    float e = max(aa, 0.04);
+    float stone = smoothstep(-e, e, dTop) * smoothstep(-e, e, dFoot) * wHere + (1.0 - smoothstep(-e, e, dPast)) * wAbove;
+    float lines = 1.0 - smoothstep(0.3, 0.9, aa);
+    lip = (1.0 - smoothstep(0.0, 0.45, abs(dTop + 0.3))) * wHere * lines;
+    foot = max(1.0 - smoothstep(0.0, 1.0, dPast), 1.0 - smoothstep(0.0, 0.6, dFoot)) * lines;
+    foot *= dPast < dFoot ? wAbove : wHere;
+    return stone;
+  }
+  return 0.0;
+}
+`;
+
+/**
+ * The ground a city makes around itself. Needs CITY_SITES_GLSL and sfNoise (surface.ts) first.
+ * Inside the plateau edge the ground is flat at the plateau height, exactly as it always was;
+ * outside it each kind shapes its surroundings, leaving ways out along the avenues and tracks:
+ *   hill    the mound steps down in 4 to 7 terraces with short rocky risers, ramps on the ways out
+ *   canyon  a broken ring of rock buttes and cliffs 20 to 60 m high, with gaps on the ways out
+ *   oasis   a ring of sheltering dunes 250 to 450 m out, saddled where the tracks cross it
+ *   trade   a barely raised rim around the salt pan
+ * cityBlend(p, base, key, h, rock): base = the raw desert height at p, key = noise key.
+ * (The hill risers are not rock to the player: they are drawn as stone, see cityRiser.)
+ * Returns (flatten 0..1, paved 0..1); h = the new height; rock = rock mask added there.
+ * The TypeScript twin is cityBlendAt in placement.ts: keep them identical, operation for operation.
+ */
+export const CITY_SHAPE_GLSL = /* glsl */ `
 vec2 cityBlend(vec2 p, float base, uint key, out float h, out float rock) {
   h = base;
   rock = 0.0;
@@ -119,10 +167,9 @@ vec2 cityBlend(vec2 p, float base, uint key, out float h, out float rock) {
       if (b.w < 1.5) {
         // hill: terraces of irregular width, ramps on the ways out
         if (t < F) {
-          float u = t / F;
-          float N = 4.0 + floor(fract(b.x * 1.37) * 4.0);
-          float uw = u + 0.0584 * sin(9.424778 * u) * sin(2.0 * ang + b.y) + 0.0191 * sin(15.70796 * u) * cos(3.0 * ang + b.x);
-          float k = uw * N;
+          float N;
+          float dk;
+          float k = cityTerraceK(t / F, ang, b, N, dk);
           float kf = floor(k);
           float fr = k - kf;
           float st = (kf + smoothstep(0.9, 1.0, fr)) / N;
