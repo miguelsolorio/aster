@@ -10,7 +10,7 @@
 // with a per-person lateral offset, avoid each other and the player, and every step is checked
 // against the 1 m roof grid and the pool so nobody ever stands inside a building or the water.
 //
-// Rendering: two draw calls. One InstancedBufferGeometry of a ~180 triangle hooded figure
+// Rendering: two draw calls. One InstancedBufferGeometry of a robed figure in four silhouettes
 // (posed and animated in the vertex shader from per-instance attributes) and one instanced quad
 // of soft multiply-blended blob shadows. Both read the same interleaved dynamic buffer, uploaded
 // once per frame; colour and seed live in a second buffer that is only touched when someone appears.
@@ -18,7 +18,7 @@
 import * as THREE from 'three';
 import type { FrameState, Uniforms } from '../game/contract';
 import { CITY_SHADOW_GLSL } from './cityGlsl';
-import type { CityPlan, CitySite, Spot, SpotKind } from './types';
+import type { CityKind, CityPlan, CitySite, Spot, SpotKind } from './types';
 
 const MAXP = 320;
 const DYN = 12; // floats per instance in the dynamic buffer: iA (4), iB (4), iD (4)
@@ -72,21 +72,81 @@ export function populationAt(day: number): number {
   return POP_V[POP_V.length - 1];
 }
 
-// Muted cloth: ochres, faded indigo, rust, cream, sand, grey-green, grey, a few dark.
-const PALETTE: Array<[number, number, number, number]> = [
-  [0.66, 0.48, 0.26, 3],
-  [0.58, 0.38, 0.2, 2],
-  [0.3, 0.34, 0.48, 2],
-  [0.24, 0.27, 0.4, 1],
-  [0.56, 0.27, 0.17, 2],
-  [0.8, 0.74, 0.62, 3],
-  [0.64, 0.56, 0.43, 3],
-  [0.44, 0.49, 0.41, 2],
-  [0.5, 0.48, 0.45, 1],
-  [0.17, 0.15, 0.14, 1],
-  [0.22, 0.18, 0.16, 1],
-];
-const PAL_TOTAL = PALETTE.reduce((s, p) => s + p[3], 0);
+// Cloth by kind of city. Most people wear one muted colour in the city's own tones; a few
+// wear an accent: a bright robe that blends from one colour at the hood to another at the hem.
+type RGB = [number, number, number];
+interface Cloth {
+  base: Array<[number, number, number, number]>; // r, g, b, weight
+  accent: Array<[RGB, RGB]>; // hood colour, hem colour
+  rate: number; // share of people in an accent robe
+}
+const DARK: [number, number, number, number] = [0.2, 0.17, 0.16, 1];
+const CLOTH: Record<CityKind, Cloth> = {
+  hill: {
+    base: [[0.72, 0.52, 0.26, 3], [0.84, 0.78, 0.64, 3], [0.62, 0.3, 0.18, 2], [0.64, 0.56, 0.43, 2], DARK],
+    accent: [
+      [[0.8, 0.24, 0.12], [0.96, 0.68, 0.24]],
+      [[0.94, 0.86, 0.66], [0.78, 0.34, 0.16]],
+    ],
+    rate: 0.2,
+  },
+  canyon: {
+    base: [[0.68, 0.36, 0.24, 3], [0.5, 0.16, 0.14, 2], [0.36, 0.2, 0.3, 2], [0.7, 0.5, 0.44, 2], DARK],
+    accent: [
+      [[0.82, 0.14, 0.12], [0.46, 0.16, 0.42]],
+      [[0.94, 0.46, 0.14], [0.74, 0.12, 0.14]],
+    ],
+    rate: 0.2,
+  },
+  oasis: {
+    base: [[0.2, 0.46, 0.46, 3], [0.34, 0.48, 0.3, 2], [0.6, 0.72, 0.78, 2], [0.84, 0.8, 0.68, 2], [0.16, 0.2, 0.24, 1]],
+    accent: [
+      [[0.08, 0.6, 0.62], [0.62, 0.86, 0.54]],
+      [[0.2, 0.38, 0.82], [0.14, 0.66, 0.66]],
+    ],
+    rate: 0.2,
+  },
+  trade: {
+    base: [[0.7, 0.5, 0.26, 2], [0.26, 0.3, 0.5, 2], [0.6, 0.3, 0.2, 2], [0.84, 0.78, 0.66, 2], [0.22, 0.44, 0.44, 1], [0.4, 0.22, 0.34, 1], DARK],
+    accent: [
+      [[0.96, 0.28, 0.5], [0.98, 0.62, 0.2]],
+      [[0.5, 0.24, 0.82], [0.96, 0.32, 0.56]],
+      [[0.86, 0.16, 0.56], [0.18, 0.7, 0.7]],
+      [[0.98, 0.8, 0.22], [0.94, 0.3, 0.46]],
+    ],
+    rate: 0.3,
+  },
+};
+
+// Silhouettes: 0 wide cone, 1 slim with a tall hood, 2 short round elder with a cane, 3 column with a headpiece.
+const SHAPES = 4;
+
+/**
+ * Pick what one person wears. Writes the hood colour to a[o..o+2] and the hem colour to
+ * b[o..o+2], and returns whether the robe is an accent with bands.
+ */
+function dress(kind: CityKind, rnd: () => number, a: Float32Array, b: Float32Array, o: number): boolean {
+  const c = CLOTH[kind];
+  if (rnd() < c.rate) {
+    const [top, hem] = c.accent[Math.floor(rnd() * c.accent.length) % c.accent.length];
+    for (let k = 0; k < 3; k++) {
+      a[o + k] = top[k];
+      b[o + k] = hem[k];
+    }
+    return rnd() < 0.5;
+  }
+  let total = 0;
+  for (const p of c.base) total += p[3];
+  let r = rnd() * total;
+  let p = 0;
+  for (; p < c.base.length - 1; p++) {
+    r -= c.base[p][3];
+    if (r <= 0) break;
+  }
+  const lum = 0.9 + rnd() * 0.2;
+  for (let k = 0; k < 3; k++) a[o + k] = b[o + k] = c.base[p][k] * lum * (0.95 + rnd() * 0.1);
+  return false;
+}
 
 const bump = (d: number, c: number, w: number) => {
   let x = Math.abs(d - c);
@@ -696,7 +756,9 @@ const figureVert = /* glsl */ `
 uniform float uTime;
 uniform vec2 uWindL;
 uniform vec3 uSunDir;
-attribute vec2 aPart;  // x: 0 cloak, 1 hood, 2/3 legs; y: shade multiplier (face recess)
+attribute vec2 aPart;  // x: 0 robe, 1 head and hood, 2/3 legs, 4 cane; y: shade multiplier
+attribute vec3 aKind;  // x: 0 cloth, 1 white face, 2 dark; y: silhouette (-1 all, -2 all but the tall hood); z: robe height 0 hem .. 1 neck
+attribute vec4 iE;     // hem colour rgb, silhouette + 0.5 if banded
 attribute vec4 iA;     // x, z (city local), facing, height scale
 attribute vec4 iB;     // walk phase 0..1, speed m/s, sitting 0..1, talking 0..1
 attribute vec4 iC;     // cloth tint rgb, seed
@@ -706,16 +768,31 @@ varying vec3 vTint;
 varying float vFade;
 varying float vMul;
 varying float vSun;
+varying vec3 vTint2;
+varying vec3 vInfo;    // material, height along the robe, banded
 ${CITY_SHADOW_GLSL}
+// The robe's outline for each silhouette: radius, height, forward offset.
+vec3 robe(float v, float shape) {
+  if (shape < 0.5) return vec3(mix(0.36, 0.085, pow(v, 0.85)), mix(0.3, 1.42, v), 0.0);
+  if (shape < 1.5) return vec3(mix(0.25, 0.085, v * (0.5 + 0.5 * v)), mix(0.2, 1.42, v), 0.0);
+  if (shape < 2.5) return vec3(0.28 * (1.0 - 0.7 * v * v * v), mix(0.34, 1.18, v), 0.11 * v * v);
+  return vec3(mix(0.21, 0.185, v) * (1.0 - 0.52 * smoothstep(0.78, 1.0, v)), mix(0.18, 1.42, v), 0.0);
+}
 void main() {
   vFade = iD.x;
-  if (iD.x < 0.004) {
-    vW = vec3(0.0); vTint = vec3(0.0); vMul = 0.0; vSun = 0.0;
+  float shape = floor(iE.w + 0.01);
+  bool mine = aKind.y < -1.5 ? abs(shape - 1.0) > 0.5 : (aKind.y < -0.5 || abs(aKind.y - shape) < 0.5);
+  if (iD.x < 0.004 || !mine || (aPart.x > 3.5 && iB.z > 0.3)) {
+    vW = vec3(0.0); vTint = vec3(0.0); vMul = 0.0; vSun = 0.0; vTint2 = vec3(0.0); vInfo = vec3(0.0);
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
     return;
   }
   vec3 p = position;
   float part = aPart.x;
+  if (aKind.z >= 0.0) {
+    vec3 o = robe(aKind.z, shape);
+    p = vec3(position.x * o.x, o.y, position.z * o.x * 0.86 + o.z);
+  }
   float t = uTime + iC.w * 61.0;
   float ph = iB.x * 6.2831853;
   float amp = clamp(iB.y / 1.3, 0.0, 1.4);
@@ -751,6 +828,11 @@ void main() {
     q.xz = vec2(cy * q.x + sy * q.z, -sy * q.x + cy * q.z);
     p = q + vec3(0.0, 1.42, 0.0);
     p.y += talk * 0.014 * (0.5 + 0.5 * sin(t * 3.3)) + 0.004 * sin(t * 1.6);
+    // the elder's head sits low and forward on a bent back
+    if (abs(shape - 2.0) < 0.5) p += vec3(0.0, -0.2, 0.14);
+  } else if (part > 3.5) {
+    // the cane swings from the hand and is planted with each step
+    p.z += sin(ph) * 0.14 * amp * (1.0 - p.y / 0.95);
   } else {
     float side = part < 2.5 ? 1.0 : -1.0;
     float foot = 1.0 - clamp(p.y / 0.3, 0.0, 1.0);
@@ -785,6 +867,8 @@ void main() {
   vec4 wp = modelMatrix * vec4(lp, 1.0);
   vW = wp.xyz;
   vTint = iC.rgb;
+  vTint2 = iE.rgb;
+  vInfo = vec3(aKind.x, aKind.z < 0.0 ? 1.0 : aKind.z, fract(iE.w));
   vMul = aPart.y;
   vSun = cityShadow(wp.xyz, uSunDir);
   gl_Position = projectionMatrix * viewMatrix * wp;
@@ -807,6 +891,8 @@ varying vec3 vTint;
 varying float vFade;
 varying float vMul;
 varying float vSun;
+varying vec3 vTint2;
+varying vec3 vInfo;
 void main() {
   if (vFade < 0.995) {
     float h = fract(sin(dot(floor(gl_FragCoord.xy), vec2(12.9898, 78.233))) * 43758.5453);
@@ -820,11 +906,27 @@ void main() {
   float ndl = dot(n, uSunDir);
   float l = smoothstep(-0.1, 0.35, ndl) * vSun;
   l += (1.0 - l) * uNight * 0.12;
-  // cloth lit by the same light as the sand, tinted per person
-  vec3 sh = vTint * uShade * 1.3;
-  vec3 li = vTint * uLit * 1.25;
-  vec3 col = mix(sh, li, l * 0.85);
-  col = mix(col, mix(uFig, uFigLit, l), 0.15) * vMul;
+  // cloth: one colour, or a blend from the hood colour down to the hem colour, some with bands
+  float hgt = vInfo.y;
+  vec3 tint = mix(vTint2, vTint, smoothstep(0.15, 0.85, hgt));
+  if (vInfo.z > 0.25) {
+    float band = step(0.09, hgt) * step(hgt, 0.16) + step(0.21, hgt) * step(hgt, 0.245);
+    tint = mix(tint, vTint, band);
+  }
+  // lit by the same light as the sand, but less dyed by it, so a blue robe stays blue
+  float lumL = dot(uLit, vec3(0.3333));
+  float lumS = dot(uShade, vec3(0.3333));
+  vec3 sunW = mix(uSunCol, vec3(1.0), 0.45);
+  vec3 liC = mix(uLit * 1.25, sunW * lumL * 1.6, 0.8);
+  vec3 shC = mix(uShade * 1.3, mix(sunW, uFogCol, 0.5) * lumS * 1.9, 0.8);
+  vec3 col = mix(tint * shC, tint * liC, l * 0.85);
+  col = mix(col, mix(uFig, uFigLit, l), 0.1) * vMul;
+  if (vInfo.x > 1.5) {
+    col = uFig * mix(0.45, 0.75, l);
+  } else if (vInfo.x > 0.5) {
+    // the face: flat white, tinted by the light and dimmed at night
+    col = vec3(0.97, 0.95, 0.9) * mix(vec3(1.0), uSunCol, 0.3) * (1.0 - 0.42 * uNight) * mix(0.7, 1.0, l);
+  }
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * smoothstep(-0.2, 0.3, ndl) * vSun;
   col += uSunCol * rim * 0.1 * (1.0 - 0.5 * uNight);
   col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));
@@ -872,85 +974,209 @@ void main() {
 }
 `;
 
-/** A low-poly hooded figure: feet at 0, facing +z, about 1.8 m tall. ~176 triangles. */
+/**
+ * One figure that holds every silhouette. The robe is a unit tube that the vertex shader
+ * shapes per person; hoods, headpiece, eye and cane are each tagged with the silhouette they
+ * belong to and collapsed for everyone else. Feet at 0, facing +z. About 350 triangles are
+ * drawn for any one person.
+ */
 function figureGeometry(): THREE.InstancedBufferGeometry {
   const N = 10;
   const pos: number[] = [];
   const part: number[] = [];
+  const kind: number[] = [];
   const idx: number[] = [];
-  const ring = (y: number, rx: number, rz: number, zo: number, pid: number, shade: (k: number) => number) => {
+  let pid = 0;
+  let mat = 0;
+  let who = -1;
+  let shade = 1;
+  const vert = (x: number, y: number, z: number, v = -1) => {
+    pos.push(x, y, z);
+    part.push(pid, shade);
+    kind.push(mat, who, v);
+    return pos.length / 3 - 1;
+  };
+  const ring = (y: number, rx: number, rz: number, zo: number, v = -1, n = N) => {
     const base = pos.length / 3;
-    for (let k = 0; k < N; k++) {
-      const a = (k / N) * TAU;
-      pos.push(Math.sin(a) * rx, y, Math.cos(a) * rz + zo);
-      part.push(pid, shade(k));
+    for (let k = 0; k < n; k++) {
+      const a = (k / n) * TAU;
+      vert(Math.sin(a) * rx, y, Math.cos(a) * rz + zo, v);
     }
     return base;
   };
-  const band = (r0: number, r1: number) => {
-    for (let k = 0; k < N; k++) {
-      const k1 = (k + 1) % N;
+  const band = (r0: number, r1: number, n = N) => {
+    for (let k = 0; k < n; k++) {
+      const k1 = (k + 1) % n;
       idx.push(r0 + k, r0 + k1, r1 + k, r0 + k1, r1 + k1, r1 + k);
     }
   };
-  const point = (x: number, y: number, z: number, pid: number, shade: number) => {
-    pos.push(x, y, z);
-    part.push(pid, shade);
-    return pos.length / 3 - 1;
-  };
-  const fan = (r: number, c: number, flip: boolean) => {
-    for (let k = 0; k < N; k++) {
-      const k1 = (k + 1) % N;
+  const fan = (r: number, c: number, flip: boolean, n = N) => {
+    for (let k = 0; k < n; k++) {
+      const k1 = (k + 1) % n;
       if (flip) idx.push(r + k1, r + k, c);
       else idx.push(r + k, r + k1, c);
     }
   };
-  const one = () => 1;
-  // cloak, hem to neck
-  const cloak = [
-    ring(0.1, 0.33, 0.3, 0, 0, one),
-    ring(0.55, 0.27, 0.24, 0, 0, one),
-    ring(0.95, 0.23, 0.19, 0, 0, one),
-    ring(1.22, 0.25, 0.18, 0, 0, one),
-    ring(1.38, 0.21, 0.15, -0.01, 0, one),
-    ring(1.46, 0.09, 0.09, 0, 0, one),
-  ];
-  for (let k = 0; k + 1 < cloak.length; k++) band(cloak[k], cloak[k + 1]);
-  fan(cloak[0], point(0, 0.12, 0, 0, 0.6), true);
-  // hood, with the face in its shadow at the front
-  const face = (strong: number) => (k: number) => (k === 0 ? strong : k === 1 || k === N - 1 ? 0.5 + strong * 0.5 : 1);
-  const hood = [ring(1.4, 0.15, 0.15, -0.01, 1, face(0.6)), ring(1.56, 0.15, 0.16, 0, 1, face(0.3)), ring(1.7, 0.12, 0.13, -0.02, 1, face(0.7))];
-  band(hood[0], hood[1]);
-  band(hood[1], hood[2]);
-  fan(hood[2], point(0, 1.8, -0.07, 1, 1), false);
-  // legs: two narrow boxes under the hem
-  for (const [pid, sx] of [
-    [2, 0.09],
-    [3, -0.09],
-  ]) {
+  /** A low-poly ball: bottom pole, rings, top pole. */
+  const ball = (cx: number, cy: number, cz: number, rx: number, ry: number, rz: number, n = 8, rows = 4) => {
+    const bot = vert(cx, cy - ry, cz);
+    let prev = -1;
+    for (let j = 1; j <= rows; j++) {
+      const a = (j / (rows + 1)) * Math.PI;
+      const r = ring(cy - Math.cos(a) * ry, Math.sin(a) * rx, Math.sin(a) * rz, cz, -1, n);
+      if (prev < 0) fan(r, bot, true, n);
+      else band(prev, r, n);
+      prev = r;
+    }
+    fan(prev, vert(cx, cy + ry, cz), false, n);
+  };
+
+  // robe: unit rings, hem to neck, shaped in the shader
+  pid = 0;
+  const R = 6;
+  const robe: number[] = [];
+  for (let j = 0; j <= R; j++) robe.push(ring(0, 1, 1, 0, j / R));
+  for (let j = 0; j < R; j++) band(robe[j], robe[j + 1]);
+  shade = 0.6;
+  fan(robe[0], vert(0, 0, 0, 0.04), true);
+  shade = 1;
+
+  // head: a plain white ball. Hoods sit a little behind it, so the face shows as a disc.
+  pid = 1;
+  mat = 1;
+  ball(0, 1.53, 0.035, 0.125, 0.125, 0.125, 10, 5);
+  mat = 0;
+  // cowl, for everyone but the tall hood
+  who = -2;
+  ball(0, 1.545, -0.035, 0.158, 0.162, 0.158);
+  // tall pointed hood
+  who = 1;
+  const tall = [ring(1.4, 0.165, 0.165, -0.04, -1, 8), ring(1.63, 0.145, 0.15, -0.045, -1, 8), ring(1.86, 0.075, 0.08, -0.07, -1, 8)];
+  band(tall[0], tall[1], 8);
+  band(tall[1], tall[2], 8);
+  fan(tall[2], vert(0, 2.1, -0.1), false, 8);
+  shade = 0.6;
+  fan(tall[0], vert(0, 1.42, -0.04), true, 8);
+  shade = 1;
+  // headpiece: a tall flat-topped cap, and a single dark eye
+  who = 3;
+  const cap = [ring(1.62, 0.12, 0.12, -0.03, -1, 8), ring(2.02, 0.15, 0.14, -0.03, -1, 8)];
+  band(cap[0], cap[1], 8);
+  fan(cap[1], vert(0, 2.04, -0.03), false, 8);
+  mat = 2;
+  {
+    const c = vert(0, 1.54, 0.163);
     const b = pos.length / 3;
-    const w = 0.045;
-    for (const y of [0, 0.3]) {
-      for (const [dx, dz] of [
-        [-w, -w],
-        [w, -w],
-        [w, w + 0.03],
-        [-w, w + 0.03],
-      ]) {
-        pos.push(sx + dx, y, dz + 0.02);
-        part.push(pid, 0.75);
+    for (let k = 0; k < 6; k++) vert(Math.sin((k / 6) * TAU) * 0.03, 1.54 + Math.cos((k / 6) * TAU) * 0.03, 0.161);
+    for (let k = 0; k < 6; k++) idx.push(c, b + ((k + 1) % 6), b + k);
+  }
+
+  // legs: two thin sticks with a small foot, mostly hidden up inside the robe
+  who = -1;
+  for (const [id, sx] of [
+    [2, 0.07],
+    [3, -0.07],
+  ]) {
+    pid = id;
+    const b = pos.length / 3;
+    const w = 0.02;
+    for (const [y, toe] of [
+      [0, 0.075],
+      [0.035, 0.0],
+      [0.5, 0.0],
+    ]) {
+      vert(sx - w, y, -w);
+      vert(sx + w, y, -w);
+      vert(sx + w, y, w + toe);
+      vert(sx - w, y, w + toe);
+    }
+    for (let j = 0; j < 2; j++) {
+      for (let k = 0; k < 4; k++) {
+        const k1 = (k + 1) % 4;
+        const r0 = b + j * 4;
+        idx.push(r0 + k, r0 + k1, r0 + 4 + k, r0 + k1, r0 + 4 + k1, r0 + 4 + k);
       }
+    }
+  }
+  // the elder's cane
+  who = 2;
+  pid = 4;
+  {
+    const b = pos.length / 3;
+    const w = 0.014;
+    for (const y of [0, 0.95]) {
+      vert(-0.3 - w, y, 0.24 - w);
+      vert(-0.3 + w, y, 0.24 - w);
+      vert(-0.3 + w, y, 0.24 + w);
+      vert(-0.3 - w, y, 0.24 + w);
     }
     for (let k = 0; k < 4; k++) {
       const k1 = (k + 1) % 4;
       idx.push(b + k, b + k1, b + 4 + k, b + k1, b + 4 + k1, b + 4 + k);
     }
   }
+
   const g = new THREE.InstancedBufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('aPart', new THREE.Float32BufferAttribute(part, 2));
+  g.setAttribute('aKind', new THREE.Float32BufferAttribute(kind, 3));
   g.setIndex(idx);
   return g;
+}
+
+/** One person on the dev review sheet. */
+export interface SheetPerson {
+  x: number;
+  z: number;
+  facing: number;
+  shape: number;
+  child?: boolean;
+  walk?: boolean;
+  /** Seed for the cloth pick, so a sheet looks the same each time. */
+  seed: number;
+}
+
+/** Dev only: a static row of townsfolk dressed for one kind of city, drawn with the crowd's own shader. */
+export function townsfolkSheet(uniforms: Uniforms, kind: CityKind, list: SheetPerson[]): THREE.Mesh {
+  const n = list.length;
+  const dyn = new Float32Array(n * DYN);
+  const a = new Float32Array(n * 4);
+  const b = new Float32Array(n * 4);
+  list.forEach((p, i) => {
+    let s = (p.seed * 2654435761) >>> 0 || 1;
+    const rnd = () => {
+      s ^= s << 13;
+      s >>>= 0;
+      s ^= s >>> 17;
+      s ^= s << 5;
+      s >>>= 0;
+      return s / 4294967296;
+    };
+    const banded = dress(kind, rnd, a, b, i * 4);
+    a[i * 4 + 3] = rnd();
+    b[i * 4 + 3] = (p.child ? 0 : p.shape) + (banded ? 0.5 : 0);
+    dyn.set([p.x, p.z, p.facing, p.child ? 0.6 : 1, p.walk ? 0.2 : 0, p.walk ? 1.2 : 0, 0, 0, 1, 0, 0, 0], i * DYN);
+  });
+  const buf = new THREE.InstancedInterleavedBuffer(dyn, DYN, 1);
+  const g = figureGeometry();
+  g.setAttribute('iA', new THREE.InterleavedBufferAttribute(buf, 4, 0));
+  g.setAttribute('iB', new THREE.InterleavedBufferAttribute(buf, 4, 4));
+  g.setAttribute('iD', new THREE.InterleavedBufferAttribute(buf, 4, 8));
+  g.setAttribute('iC', new THREE.InstancedBufferAttribute(a, 4));
+  g.setAttribute('iE', new THREE.InstancedBufferAttribute(b, 4));
+  g.instanceCount = n;
+  const blank = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
+  blank.needsUpdate = true;
+  const mesh = new THREE.Mesh(
+    g,
+    new THREE.ShaderMaterial({
+      uniforms: { uCityMap: { value: blank }, uCityRect: { value: new THREE.Vector4() }, uCityGround: { value: 0 }, uWindL: { value: new THREE.Vector2() }, ...uniforms },
+      vertexShader: figureVert,
+      fragmentShader: figureFrag,
+    }),
+  );
+  mesh.frustumCulled = false;
+  return mesh;
 }
 
 // ------------------------------------------------------------------ the crowd
@@ -967,6 +1193,8 @@ export class People {
   private readonly dynA: Float32Array;
   private readonly stat: THREE.InstancedBufferAttribute;
   private readonly statA: Float32Array;
+  private readonly statB: Float32Array;
+  private readonly stat2: THREE.InstancedBufferAttribute;
   private readonly blank: THREE.DataTexture;
   private readonly fallback: Uniforms;
   private readonly windL = new THREE.Vector2();
@@ -1078,6 +1306,9 @@ export class People {
     this.statA = new Float32Array(MAXP * 4);
     this.stat = new THREE.InstancedBufferAttribute(this.statA, 4);
     this.stat.setUsage(THREE.DynamicDrawUsage);
+    this.statB = new Float32Array(MAXP * 4);
+    this.stat2 = new THREE.InstancedBufferAttribute(this.statB, 4);
+    this.stat2.setUsage(THREE.DynamicDrawUsage);
     const iA = new THREE.InterleavedBufferAttribute(this.dyn, 4, 0);
     const iB = new THREE.InterleavedBufferAttribute(this.dyn, 4, 4);
     const iD = new THREE.InterleavedBufferAttribute(this.dyn, 4, 8);
@@ -1086,6 +1317,7 @@ export class People {
     this.figGeo.setAttribute('iA', iA);
     this.figGeo.setAttribute('iB', iB);
     this.figGeo.setAttribute('iC', this.stat);
+    this.figGeo.setAttribute('iE', this.stat2);
     this.figGeo.setAttribute('iD', iD);
     this.figGeo.instanceCount = 0;
     this.figMat = new THREE.ShaderMaterial({ uniforms: own(), vertexShader: figureVert, fragmentShader: figureFrag });
@@ -1720,16 +1952,13 @@ export class People {
     this.fac[i] = c.dF[best];
     this.resetStuck(i);
 
-    // colour
-    let r = this.rand() * PAL_TOTAL;
-    let p = 0;
-    for (; p < PALETTE.length - 1; p++) {
-      r -= PALETTE[p][3];
-      if (r <= 0) break;
-    }
-    const lum = 0.9 + this.rand() * 0.2;
+    // cloth and silhouette. Children are always the plain wide cone; an elder walks slowly.
     const o = i * 4;
-    for (let k = 0; k < 3; k++) this.statA[o + k] = PALETTE[p][k] * lum * (0.95 + this.rand() * 0.1);
+    const banded = dress(c.site.kind, () => this.rand(), this.statA, this.statB, o);
+    const sr = this.rand();
+    const shape = kid ? 0 : sr < 0.35 ? 0 : sr < 0.65 ? 1 : sr < 0.77 ? 2 : SHAPES - 1;
+    if (shape === 2) this.pref[i] *= 0.7;
+    this.statB[o + 3] = shape + (banded ? 0.5 : 0);
     this.statA[o + 3] = this.seed[i];
     if (i < this.dirtyLo) this.dirtyLo = i;
     if (i > this.dirtyHi) this.dirtyHi = i;
@@ -1958,6 +2187,9 @@ export class People {
       this.stat.clearUpdateRanges();
       this.stat.addUpdateRange(this.dirtyLo * 4, (this.dirtyHi - this.dirtyLo + 1) * 4);
       this.stat.needsUpdate = true;
+      this.stat2.clearUpdateRanges();
+      this.stat2.addUpdateRange(this.dirtyLo * 4, (this.dirtyHi - this.dirtyLo + 1) * 4);
+      this.stat2.needsUpdate = true;
       this.dirtyLo = MAXP;
       this.dirtyHi = -1;
     }

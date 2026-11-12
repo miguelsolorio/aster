@@ -174,7 +174,8 @@ float figShadow(vec3 p) {
   vec3 q = p + uSunDir * t;
   float y = q.y - uFigPos.y;
   if (y < -0.1 || y > 1.85) return 0.0;
-  float r = mix(0.42, 0.16, clamp(y / 1.8, 0.0, 1.0));
+  // thin legs below the hem, then the robe narrowing to the head and hood
+  float r = mix(0.06, mix(0.3, 0.13, clamp((y - 0.4) / 1.25, 0.0, 1.0)), smoothstep(0.3, 0.46, y));
   float d = distance(q.xz, uFigPos.xz);
   float soft = 0.05 + t * 0.02;
   float ends = smoothstep(-0.1, -0.02, y) * (1.0 - smoothstep(1.75, 1.85, y));
