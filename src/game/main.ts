@@ -271,6 +271,11 @@ function start() {
       audio.setPaused(true);
     },
     onVolume: (v) => audio.setVolume(v),
+    onMusic: (v) => audio.setMusicVolume(v),
+    onEffects: (v) => audio.setEffectsVolume(v),
+    onLevelPreview: (active) => audio.setPreview(active),
+    // A sand footstep: the effect heard most, so the fairest yardstick.
+    onEffectsSample: () => audio.footstep(0.8, false, false),
     onQuality(q) {
       auto.setTier(q);
       applyTier();
