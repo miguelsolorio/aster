@@ -222,7 +222,7 @@ function start() {
       canvas.toBlob((blob) => {
         if (!blob) return;
         // On a phone, hand the picture to the share sheet when the browser allows it.
-        const name = `desertscape-${Date.now()}.png`;
+        const name = `aster-${Date.now()}.png`;
         if (touch.used && typeof navigator.canShare === 'function') {
           const file = new File([blob], name, { type: 'image/png' });
           if (navigator.canShare({ files: [file] })) {
@@ -612,6 +612,6 @@ try {
   start();
 } catch (err) {
   console.error(err);
-  uiHost.textContent = 'Desertscape needs WebGL 2, which this browser could not start.';
+  uiHost.textContent = 'Aster needs WebGL 2, which this browser could not start.';
   uiHost.style.cssText = 'display:grid;place-items:center;color:#efe6d8;font:16px system-ui;padding:24px;text-align:center';
 }

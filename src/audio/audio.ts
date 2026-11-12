@@ -1,4 +1,4 @@
-// Desertscape audio: fully synthesised generative ambient score, wind and
+// Aster audio: fully synthesised generative ambient score, wind and
 // footsteps, built on the Web Audio API with no samples and no libraries.
 //
 // Signal flow

@@ -1,4 +1,4 @@
-// Uber-shaders for Desertscape. GLSL1-style source for THREE.ShaderMaterial
+// Uber-shaders for Aster. GLSL1-style source for THREE.ShaderMaterial
 // (three converts to GLSL ES 3.00 on WebGL2). Uniform names follow the
 // contract in ./types.ts. All colours are display-space vec3.
 

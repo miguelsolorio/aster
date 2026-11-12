@@ -14,8 +14,8 @@ export interface UIHooks {
   onCapture(): void;
 }
 
-const KEY_VOLUME = 'desertscape.volume';
-const KEY_QUALITY = 'desertscape.quality';
+const KEY_VOLUME = 'aster.volume';
+const KEY_QUALITY = 'aster.quality';
 const CONTROLS = ['WASD glide', 'Mouse look', 'Shift boost', 'Space leap, hold to rise, let go to glide', 'In the air: WASD steer, Shift drop', 'Esc menu'];
 const TOUCH_CONTROLS = [
   'Left thumb: glide (push to the edge to boost)',
@@ -88,7 +88,6 @@ export class UI {
   private readonly captureBtn: HTMLButtonElement;
   private readonly hideBtn: HTMLButtonElement;
   private readonly beginEl: HTMLElement;
-  private readonly titleControls: HTMLElement;
   private readonly panelControls: HTMLElement;
   private readonly photoHint: HTMLElement;
   private readonly pauseBtn: HTMLButtonElement;
@@ -115,38 +114,36 @@ export class UI {
     this.quality =
       storedQ === 'mobile' || storedQ === 'low' || storedQ === 'high' ? storedQ : (initial?.quality ?? 'high');
 
-    const host = el('div', 'ds-ui');
+    const host = el('div', 'aster-ui');
     host.dataset.state = 'title';
     this.host = host;
 
     // Title card
-    const title = el('div', 'ds-layer ds-title is-on');
-    title.appendChild(el('h1', 'ds-title__name', 'Desertscape'));
-    title.appendChild(el('p', 'ds-title__line', 'Walk anywhere. There is nowhere you need to be.'));
-    this.beginEl = el('p', 'ds-title__begin', 'Click to begin');
+    const title = el('div', 'aster-layer aster-title is-on');
+    title.appendChild(el('h1', 'aster-title__name', 'Aster'));
+    title.appendChild(el('p', 'aster-title__line', 'The desert is your map'));
+    this.beginEl = el('p', 'aster-title__begin', 'Click to begin');
     title.appendChild(this.beginEl);
-    this.titleControls = controlsList('ds-title__controls');
-    title.appendChild(this.titleControls);
     this.title = title;
 
     // Menu
-    const menu = el('div', 'ds-layer ds-menu');
-    const panel = el('div', 'ds-panel');
+    const menu = el('div', 'aster-layer aster-menu');
+    const panel = el('div', 'aster-panel');
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'true');
-    panel.setAttribute('aria-labelledby', 'ds-menu-title');
-    const h = el('h2', 'ds-panel__title', 'Paused');
-    h.id = 'ds-menu-title';
+    panel.setAttribute('aria-labelledby', 'aster-menu-title');
+    const h = el('h2', 'aster-panel__title', 'Paused');
+    h.id = 'aster-menu-title';
     panel.appendChild(h);
 
-    const volField = el('div', 'ds-field');
-    const volHead = el('div', 'ds-field__head');
+    const volField = el('div', 'aster-field');
+    const volHead = el('div', 'aster-field__head');
     const volLabel = el('label', undefined, 'Volume');
-    volLabel.htmlFor = 'ds-volume';
-    this.volumeOut = el('span', 'ds-field__value');
+    volLabel.htmlFor = 'aster-volume';
+    this.volumeOut = el('span', 'aster-field__value');
     volHead.append(volLabel, this.volumeOut);
-    const slider = el('input', 'ds-range');
-    slider.id = 'ds-volume';
+    const slider = el('input', 'aster-range');
+    slider.id = 'aster-volume';
     slider.type = 'range';
     slider.min = '0';
     slider.max = '100';
@@ -155,14 +152,14 @@ export class UI {
     volField.append(volHead, slider);
     panel.appendChild(volField);
 
-    const gfx = el('div', 'ds-field');
-    const gfxHead = el('div', 'ds-field__head');
+    const gfx = el('div', 'aster-field');
+    const gfxHead = el('div', 'aster-field__head');
     const gfxLabel = el('span', undefined, 'Graphics');
-    gfxLabel.id = 'ds-gfx-label';
+    gfxLabel.id = 'aster-gfx-label';
     gfxHead.appendChild(gfxLabel);
-    const seg = el('div', 'ds-seg');
+    const seg = el('div', 'aster-seg');
     seg.setAttribute('role', 'radiogroup');
-    seg.setAttribute('aria-labelledby', 'ds-gfx-label');
+    seg.setAttribute('aria-labelledby', 'aster-gfx-label');
     const mk = (q: Quality, label: string): HTMLButtonElement => {
       const b = el('button', undefined, label);
       b.type = 'button';
@@ -175,32 +172,32 @@ export class UI {
     gfx.append(gfxHead, seg);
     panel.appendChild(gfx);
 
-    const actions = el('div', 'ds-actions');
-    this.resumeBtn = el('button', 'ds-btn ds-btn--primary', 'Resume');
+    const actions = el('div', 'aster-actions');
+    this.resumeBtn = el('button', 'aster-btn aster-btn--primary', 'Resume');
     this.resumeBtn.type = 'button';
-    const photoBtn = el('button', 'ds-btn', 'Photo mode');
+    const photoBtn = el('button', 'aster-btn', 'Photo mode');
     photoBtn.type = 'button';
     actions.append(this.resumeBtn, photoBtn);
     panel.appendChild(actions);
-    this.panelControls = controlsList('ds-panel__controls');
+    this.panelControls = controlsList('aster-panel__controls');
     panel.appendChild(this.panelControls);
     menu.appendChild(panel);
     this.menu = menu;
     this.panel = panel;
 
     // Photo bar
-    const photo = el('div', 'ds-layer ds-photo');
-    const bar = el('div', 'ds-bar');
+    const photo = el('div', 'aster-layer aster-photo');
+    const bar = el('div', 'aster-bar');
     bar.setAttribute('role', 'toolbar');
     bar.setAttribute('aria-label', 'Photo mode');
-    this.captureBtn = el('button', 'ds-btn ds-btn--primary', 'Capture');
+    this.captureBtn = el('button', 'aster-btn aster-btn--primary', 'Capture');
     this.captureBtn.type = 'button';
-    this.hideBtn = el('button', 'ds-btn', 'Hide figure');
+    this.hideBtn = el('button', 'aster-btn', 'Hide figure');
     this.hideBtn.type = 'button';
     this.hideBtn.setAttribute('aria-pressed', 'false');
-    const done = el('button', 'ds-btn', 'Done');
+    const done = el('button', 'aster-btn', 'Done');
     done.type = 'button';
-    const hint = el('p', 'ds-bar__hint');
+    const hint = el('p', 'aster-bar__hint');
     this.photoHint = hint;
     this.fillPhotoHint();
     bar.append(this.captureBtn, this.hideBtn, done, hint);
@@ -209,18 +206,18 @@ export class UI {
     this.bar = bar;
 
     // Toast
-    const toast = el('div', 'ds-toast');
+    const toast = el('div', 'aster-toast');
     toast.setAttribute('role', 'status');
     toast.setAttribute('aria-live', 'polite');
     this.toastEl = toast;
 
     // Touch-only affordances (hidden unless setTouch(true))
-    const pause = el('button', 'ds-pause');
+    const pause = el('button', 'aster-pause');
     pause.type = 'button';
     pause.setAttribute('aria-label', 'Pause');
-    pause.append(el('span', 'ds-pause__bar'), el('span', 'ds-pause__bar'));
+    pause.append(el('span', 'aster-pause__bar'), el('span', 'aster-pause__bar'));
     this.pauseBtn = pause;
-    const rotate = el('div', 'ds-rotate');
+    const rotate = el('div', 'aster-rotate');
     rotate.setAttribute('aria-hidden', 'true');
     rotate.innerHTML =
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2" transform="rotate(90 12 12)"/><path d="M4 8a8 8 0 0 1 3-3.5M4 4v4h4"/></svg>';
@@ -296,7 +293,6 @@ export class UI {
     this.touch = on;
     this.host.classList.toggle('is-touch', on);
     this.beginEl.textContent = on ? 'Tap to begin' : 'Click to begin';
-    fillControls(this.titleControls, on ? TOUCH_CONTROLS : CONTROLS);
     fillControls(this.panelControls, on ? TOUCH_CONTROLS : CONTROLS);
     this.fillPhotoHint();
     this.syncPause();
@@ -415,7 +411,7 @@ export class UI {
   private syncVolume(): void {
     const pct = Math.round(this.volume * 100);
     this.slider.value = String(pct);
-    this.slider.style.setProperty('--ds-fill', `${pct}%`);
+    this.slider.style.setProperty('--aster-fill', `${pct}%`);
     this.slider.setAttribute('aria-valuetext', `${pct} percent`);
     this.volumeOut.textContent = String(pct);
   }
