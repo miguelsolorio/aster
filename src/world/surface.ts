@@ -656,16 +656,19 @@ vec2 sfCaverns(vec2 p, float h) {
     float cl = cc.y * smoothstep(cd.x + 3.0, cd.x + 17.0, u);
     float er = cc.x + cc.z;
     float hw = cc.x + cc.z * smoothstep(cc.w - 2.0 * er - 4.0, cc.w - er, u);
-    float m = (1.0 - smoothstep(hw, hw + mix(5.0, 1.5, rk), abs(v - cl))) * smoothstep(-1.0, 3.0, u) * (1.0 - smoothstep(cc.w, cc.w + 2.0, u));
+    float sd = hw + mix(5.0, 1.5, rk);
+    float lat = abs(v - cl);
+    float o = cb.z * cb.z * (3.0 - 2.0 * cb.z);
+    // Rock, and out of the sun, from under the roof to a stride past the walls: so a wall is
+    // dark to its full height however coarsely the mesh steps up it. (The rest is under the roof's sand.)
+    float under = rk * o * (1.0 - smoothstep(sd + 0.2, sd + 1.6, lat)) * (1.0 - smoothstep(cc.w + 2.2, cc.w + 3.6, u));
+    rock = max(rock, under);
+    sfCave = max(sfCave, under * (1.0 + smoothstep(cb.w + 1.0, cb.w + 14.0, u)));
+    float m = (1.0 - smoothstep(hw, sd, lat)) * smoothstep(-1.0, 3.0, u) * (1.0 - smoothstep(cc.w, cc.w + 2.0, u));
     if (m <= 0.0) continue;
     float tgt = cb.y + (cb.x - cb.y) * (1.0 - smoothstep(2.0, 2.0 + cd.x, u));
     if (cd.y > 0.0) tgt -= 0.75 * (1.0 - smoothstep(cd.y - 2.5, cd.y, length(vec2(u - (cc.w - er), v - cl))));
-    float o = cb.z * cb.z * (3.0 - 2.0 * cb.z);
     h = mix(h, min(h, mix(h, tgt, m)), o);
-    float under = rk * o * smoothstep(0.0, 0.12, m);
-    rock = max(rock, under);
-    // (the walls count as under the roof to their full height, not by how far the cut has bitten)
-    sfCave = max(sfCave, under * (1.0 + smoothstep(cb.w + 1.0, cb.w + 14.0, u)));
   }
   return vec2(h, rock);
 }
@@ -1117,7 +1120,11 @@ export function createWorld(seed: number): DesertWorld {
       cavFrame(o, ddx, ddz);
       const u = cf.u;
       const len = cav[o + 9];
-      const m = (1 - smoothstep(cf.hw, cf.hw + 5 + (1.5 - 5) * cf.rk, Math.abs(cf.v))) * smoothstep(-1, 3, u) * (1 - smoothstep(len, len + 2, u));
+      const sd = cf.hw + 5 + (1.5 - 5) * cf.rk;
+      const lat = Math.abs(cf.v);
+      const k = open * open * (3 - 2 * open);
+      out.rock = Math.max(out.rock, cf.rk * k * (1 - smoothstep(sd + 0.2, sd + 1.6, lat)) * (1 - smoothstep(len + 2.2, len + 3.6, u)));
+      const m = (1 - smoothstep(cf.hw, sd, lat)) * smoothstep(-1, 3, u) * (1 - smoothstep(len, len + 2, u));
       if (m <= 0) continue;
       const top = cav[o + 4];
       const floor = cav[o + 5];
@@ -1127,10 +1134,8 @@ export function createWorld(seed: number): DesertWorld {
         // (v is measured from the bent centre line, which has finished bending by the end chamber)
         tgt -= 0.75 * (1 - smoothstep(pool - 2.5, pool, Math.hypot(u - (len - cav[o + 6] - cav[o + 8]), cf.v)));
       }
-      const k = open * open * (3 - 2 * open);
       const h = out.h;
       out.h = h + (Math.min(h, h + (tgt - h) * m) - h) * k;
-      out.rock = Math.max(out.rock, cf.rk * k * smoothstep(0, 0.12, m));
     }
   }
 

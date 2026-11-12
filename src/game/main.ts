@@ -517,6 +517,8 @@ function start() {
     return Math.abs(t - y) < 0.3 && t > world.height(x, z) + 0.4 ? discoveries.solidKind : -1;
   };
   player.hard = (x, z, y) => propUnder(x, z, y) >= 0;
+  // The roof over a cavern is the sand it always was, though the floor under it is rock.
+  player.soft = (x, z, y) => y > world.cavernCeil(x, z) - 0.3;
   // Water, wherever it lies: a river painted on its bed, a city's pool, an oasis in the dunes.
   // Fills `water` with the height of the surface and how deep it stands over the ground.
   const water = { y: 0, depth: 0 };
@@ -628,7 +630,7 @@ function start() {
       audio.splash(0.3);
       return;
     }
-    const hard = st.onRock > 0.5 || world.sample(x, z, probe).rock > 0.5;
+    const hard = st.onRock > 0.5 || (world.sample(x, z, probe).rock > 0.5 && !player.soft?.(x, z, st.pos.y));
     if (hard) {
       audio.strike('rock', 0);
       return;

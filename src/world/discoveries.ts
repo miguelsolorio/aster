@@ -1454,13 +1454,18 @@ function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: F
   const du = (cv.len + 4 - u0) / NU;
   const uAt = (i: number) => u0 + i * du;
   const vAt = (u: number, j: number) => cavLine(cv, u) - WC + (j / NV) * 2 * WC;
-  // the sand itself, a hand's width proud of the ground, tucked under it round the rim
+  // the sand itself, a hand's width proud of the ground, tucked under it round the rim (and
+  // along the brow to either side of the opening, where the ground is uncut)
+  const lift = (i: number, j: number) => {
+    if (j === 0 || j === NV || i === NU) return -0.04;
+    return i === 0 && Math.abs(vAt(u0, j) - cavLine(cv, u0)) > cavHalf(cv, u0) + 1 ? -0.04 : 0.05;
+  };
   const top = (i: number, j: number) => {
     const u = uAt(i);
     const v = vAt(u, j);
     face(u, v, F);
     c.at(u, v);
-    rk.vert(c.lx, F.y + (j === 0 || j === NV || i === NU ? -0.04 : 0.05), c.lz, F.nx, F.ny, F.nz, F.rock, F.salt, 0);
+    rk.vert(c.lx, F.y + lift(i, j), c.lz, F.nx, F.ny, F.nz, F.rock, F.salt, 0);
   };
   // the underside: broken rock a little above the ceiling's height, never above the sand
   const lowY = (i: number, j: number) => {
@@ -1489,8 +1494,8 @@ function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: F
       low(i, j); low(i + 1, j); low(i, j + 1);
       low(i + 1, j); low(i + 1, j + 1); low(i, j + 1);
       if (i === 0) {
-        const ya = face(u0, vAt(u0, j), F).y + 0.05;
-        const yb = face(u0, vAt(u0, j + 1), F).y + 0.05;
+        const ya = face(u0, vAt(u0, j), F).y + lift(0, j);
+        const yb = face(u0, vAt(u0, j + 1), F).y + lift(0, j + 1);
         brow(j, lowY(0, j)); brow(j + 1, lowY(0, j + 1)); brow(j, ya);
         brow(j, ya); brow(j + 1, lowY(0, j + 1)); brow(j + 1, yb);
       }
