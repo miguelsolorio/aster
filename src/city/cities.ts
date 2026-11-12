@@ -46,6 +46,7 @@ export class Cities {
     this.blank.needsUpdate = true;
     u.uCityA = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
     u.uCityB = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
+    u.uCityC = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
     u.uCityMap = { value: this.blank };
     u.uCityRect = { value: new THREE.Vector4() };
     u.uCityGround = { value: 0 };
@@ -61,11 +62,26 @@ export class Cities {
     const near = this.world.cities.near(x, z, this.sites);
     const a = this.u.uCityA.value as THREE.Vector4[];
     const b = this.u.uCityB.value as THREE.Vector4[];
+    const c = this.u.uCityC.value as THREE.Vector4[];
     for (let i = 0; i < MAX_SITES; i++) {
       const s = near[i];
       a[i].set(s.cx, s.cz, s.radius, s.groundY);
       b[i].set(s.phase1, s.phase2, s.falloff, 0);
+      const t = this.tracks(s);
+      c[i].set(t[0], t[1], 0, 0);
     }
+  }
+
+  private trackCache = new Map<number, [number, number]>();
+  /** Bearings from a city toward its two nearest neighbours. */
+  private tracks(s: CitySite): [number, number] {
+    let t = this.trackCache.get(s.id);
+    if (!t) {
+      const n = this.world.cities.near(s.cx, s.cz, []);
+      t = [Math.atan2(n[1].cz - s.cz, n[1].cx - s.cx), Math.atan2(n[2].cz - s.cz, n[2].cx - s.cx)];
+      this.trackCache.set(s.id, t);
+    }
+    return t;
   }
 
   /** Absolute height of the roof over (x, z) in the loaded city, or -Infinity on open ground. */

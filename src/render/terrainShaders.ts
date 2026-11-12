@@ -126,6 +126,31 @@ uniform vec3 uFogCol;
 ${CITY_SITES_GLSL}
 ${CITY_SHADOW_GLSL}
 
+uniform vec4 uCityC[4]; // bearings (radians) of the two worn tracks leaving each city
+
+// Faint tracks worn into the sand, leading out of a city toward its neighbours and fading away.
+float cityTracks(vec2 p) {
+  float m = 0.0;
+  for (int i = 0; i < 4; i++) {
+    vec4 a = uCityA[i];
+    if (a.z <= 0.0) continue;
+    vec2 d = p - a.xy;
+    float dist = length(d);
+    if (dist < a.z * 0.85 || dist > a.z + 2200.0) continue;
+    float ang = atan(d.y, d.x);
+    float fade = 1.0 - smoothstep(a.z + 800.0, a.z + 2200.0, dist);
+    for (int k = 0; k < 2; k++) {
+      float ta = k == 0 ? uCityC[i].x : uCityC[i].y;
+      float da = ang - ta;
+      da = atan(sin(da), cos(da));
+      if (abs(da) > 0.5) continue;
+      float lat = da * dist + sin(dist * 0.011 + ta * 7.0) * 14.0 + sin(dist * 0.031 + ta * 3.0) * 4.0;
+      m = max(m, (1.0 - smoothstep(2.0, 4.2, abs(lat))) * fade);
+    }
+  }
+  return m;
+}
+
 uniform vec2 uInnerCenter; // centre of the next finer level
 uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
 
@@ -215,6 +240,7 @@ void main() {
   float rock = clamp(vMask.x, 0.0, 1.0) * (1.0 - pave);
   float salt = clamp(vMask.y, 0.0, 1.0) * (1.0 - rock) * (1.0 - pave);
   float sandW = (1.0 - rock) * (1.0 - salt) * (1.0 - pave);
+  float track = cityTracks(p.xz) * sandW;
 
   // ---- every screen-space derivative up front, in uniform control flow
   // Ripples are set in the sand by the prevailing wind, so their direction is
@@ -260,7 +286,7 @@ void main() {
   float dk = mix(0.45, 1.0, clamp(uDetail, 0.0, 1.0));
 
   // ---- sand ripples, two scales (analytic derivative along the wind)
-  float rip = sandW * (1.0 - smoothstep(0.35, 0.75, 1.0 - n0.y));
+  float rip = sandW * (1.0 - 0.85 * track) * (1.0 - smoothstep(0.35, 0.75, 1.0 - n0.y));
   if (rip > 0.001 && dist < 360.0) {
     vec2 g = vec2(0.0);
     float k1 = 6.2831853 / 0.5;
@@ -396,6 +422,8 @@ void main() {
     saltCol *= 0.97 + 0.05 * vnoise(p.xz * 0.02);
   }
 
+  // trodden sand is a little darker and flatter than the dunes around it
+  sandCol *= 1.0 - 0.13 * track;
   vec3 col = mix(mix(sandCol, saltCol, salt), rockCol, rock);
 
   // ---- city ground: pale packed earth with a faint, worn paving pattern
