@@ -5,7 +5,8 @@
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import { WORLD_SCALE } from './scale';
-import { TERRAIN } from './surface';
+import { TERRAIN, type Cave, type Massif } from './surface';
+import { CITY_CELL } from '../city/placement';
 
 const CELL = 900 * WORLD_SCALE;
 const MARGIN = 150; // keeps sites at least 300 m apart
@@ -790,6 +791,78 @@ function buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: 
   }
 }
 
+/** A small cairn with a lantern on it: what waits at the back of a cave. */
+function buildCairn(c: Ctx, u: number, v: number): void {
+  const st = c.stone;
+  const tk = c.r(0.9, 1.05);
+  let y = c.g(u, v) - 0.3;
+  const layers = 4 + Math.floor(c.rng() * 2);
+  for (let i = 0; i < layers; i++) {
+    const r = THREE.MathUtils.lerp(1.1, 0.45, i / layers) * c.r(0.9, 1.1);
+    const hh = c.r(0.45, 0.6);
+    const k = c.r(0.88, 1.08);
+    st.set(tk * k, tk * k * 0.97, tk * k * 0.93, 0, 0.08 * r);
+    c.prim(UNIT_BLOB, u + c.r(-0.12, 0.12), y + hh * 0.6, v + c.r(-0.12, 0.12), r, hh * 0.75, r * c.r(0.85, 1.1), c.rng() * 6);
+    y += hh;
+  }
+  st.set(0.45, 0.38, 0.3, 2, 0);
+  c.prim(UNIT_BOX, u, y + 0.08, v, 0.5, 0.1, 0.5);
+  c.prim(UNIT_CONE, u, y + 0.75, v, 0.42, 0.3, 0.42, Math.PI / 4);
+  st.set(1, 1, 1, 3, 0);
+  c.prim(UNIT_BOX, u, y + 0.38, v, 0.3, 0.44, 0.3);
+  c.glow(u, y + 0.38, v, 1.2);
+  c.glow(u, y + 0.38, v, 6);
+}
+
+/**
+ * The rock over a cave. The terrain cuts the cave as an open slot; this caps it, from where the
+ * mountain stands a ceiling's height above the floor to the back wall. The frame's u axis runs
+ * into the mountain from the mouth. top gives the mountainside as it would be uncut, and floor
+ * the cave floor, both relative to the site's base.
+ */
+function buildCaveRoof(c: Ctx, top: (u: number, v: number) => number, floor: (u: number) => number): void {
+  const st = c.stone;
+  const HALF = TERRAIN.caveHalf + 2.6;
+  const NV = 6;
+  const STEP = 2.5;
+  const u0 = TERRAIN.caveRoofFrom - 2;
+  const NU = Math.ceil((TERRAIN.caveLen + 4 - u0) / STEP);
+  c.foot = TERRAIN.caveLen;
+  const P = new THREE.Vector3();
+  const put = (u: number, v: number, y: number) => {
+    c.at(u, v);
+    P.set(c.lx, y, c.lz);
+    st.vert(P.x, P.y, P.z);
+  };
+  const topY = (u: number, v: number) => top(u, v) + 0.35;
+  // the underside is level across the cave, and never above the mountainside
+  const lowY = (u: number, v: number) => Math.min(floor(u) + TERRAIN.caveHeight, topY(u, v) - 0.5);
+  for (let i = 0; i < NU; i++) {
+    const ua = u0 + i * STEP;
+    const ub = ua + STEP;
+    for (let j = 0; j < NV; j++) {
+      const va = -HALF + (j / NV) * 2 * HALF;
+      const vb = -HALF + ((j + 1) / NV) * 2 * HALF;
+      const k = c.r(0.9, 1.06);
+      // the mountainside over the cave
+      st.set(0.84 * k, 0.72 * k, 0.58 * k, 0, 0.12);
+      put(ua, va, topY(ua, va)); put(ua, vb, topY(ua, vb)); put(ub, va, topY(ub, va));
+      put(ub, va, topY(ub, va)); put(ua, vb, topY(ua, vb)); put(ub, vb, topY(ub, vb));
+      // the ceiling
+      st.set(0.5 * k, 0.38 * k, 0.3 * k, 0, 0.3);
+      put(ua, va, lowY(ua, va)); put(ub, va, lowY(ub, va)); put(ua, vb, lowY(ua, vb));
+      put(ub, va, lowY(ub, va)); put(ub, vb, lowY(ub, vb)); put(ua, vb, lowY(ua, vb));
+      // the brow over the mouth
+      if (i === 0) {
+        st.set(0.62 * k, 0.47 * k, 0.37 * k, 0, 0.1);
+        put(ua, va, lowY(ua, va)); put(ua, vb, lowY(ua, vb)); put(ua, va, topY(ua, va));
+        put(ua, va, topY(ua, va)); put(ua, vb, lowY(ua, vb)); put(ua, vb, topY(ua, vb));
+      }
+    }
+  }
+  buildCairn(c, TERRAIN.caveLen - 7, 0);
+}
+
 function buildArch(c: Ctx): void {
   const st = c.stone;
   const tk = c.r(0.9, 1.1);
@@ -1282,6 +1355,7 @@ export class Discoveries {
     const pcx = Math.floor(px / CELL);
     const pcz = Math.floor(pz / CELL);
     const span = Math.ceil(BUILD_R / CELL);
+    if (this.scanMassifs(px, pz)) return;
     for (let b = 0; b < maxBuilds; b++) {
       let best = Infinity;
       let bcx = 0;
@@ -1304,6 +1378,57 @@ export class Discoveries {
       if (best === Infinity) return;
       this.buildSite(bcx, bcz);
     }
+  }
+
+  /**
+   * Builds the nearest unbuilt find that belongs to a massif: a lantern on its summit and the
+   * roof over its cave. Returns whether it built one.
+   */
+  private scanMassifs(px: number, pz: number): boolean {
+    const w = this.world as Partial<{
+      massif(gi: number, gj: number): Massif | null;
+      cave(gi: number, gj: number): Cave | null;
+      uncarved(x: number, z: number): number;
+    }>;
+    if (!w.massif || !w.cave || !w.uncarved) return false;
+    const gi0 = Math.round(px / CITY_CELL);
+    const gj0 = Math.round(pz / CITY_CELL);
+    for (let gj = gj0 - 1; gj <= gj0 + 1; gj++) {
+      for (let gi = gi0 - 1; gi <= gi0 + 1; gi++) {
+        const m = w.massif(gi, gj);
+        if (!m) continue;
+        const id = (gi + 32768) * 65536 + (gj + 32768);
+        const seed = Math.floor(hash4(gi, gj, this.world.seed | 0, 11) * 4294967296);
+        const summitKey = -(id * 2 + 1);
+        // (inside the build radius only: anything further is dropped again on the next scan)
+        if (!this.isBuilt(summitKey) && Math.hypot(m.x - px, m.z - pz) < BUILD_R) {
+          const ctx = new Ctx(this.world, m.x, m.z, this.world.height(m.x, m.z), mulberry32(seed), 0);
+          ctx.stone.salt = id & 1023;
+          buildLantern(ctx);
+          this.finishSite(summitKey, 'summit', m.x, m.z, ctx.baseY, ctx);
+          return true;
+        }
+        const caveKey = -(id * 2 + 2);
+        const cv = w.cave(gi, gj)!;
+        if (!this.isBuilt(caveKey) && Math.hypot(cv.x - px, cv.z - pz) < BUILD_R) {
+          // the frame's u axis runs into the mountain
+          const ctx = new Ctx(this.world, cv.x, cv.z, this.world.height(cv.x, cv.z), mulberry32(seed ^ 0x5f3a), Math.atan2(-cv.dz, cv.dx));
+          ctx.stone.salt = (id * 7) & 1023;
+          const uncarved = w.uncarved;
+          buildCaveRoof(
+            ctx,
+            (u, v) => {
+              ctx.at(u, v);
+              return uncarved(cv.x + ctx.lx, cv.z + ctx.lz) - ctx.baseY;
+            },
+            (u) => ctx.g(u, 0),
+          );
+          this.finishSite(caveKey, 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6, ctx.baseY, ctx);
+          return true;
+        }
+      }
+    }
+    return false;
   }
 
   /** Distance to the nearest river, if this world has rivers. */
@@ -1426,10 +1551,15 @@ export class Discoveries {
       case 'sundial': buildSundial(ctx, onSalt); break;
       default: buildShell(ctx); break;
     }
+    this.finishSite(cellKey(cx, cz), kind, x, z, baseY, ctx);
+  }
+
+  /** Turns what a builder made into meshes and records the site. */
+  private finishSite(key: number, kind: string, x: number, z: number, baseY: number, ctx: Ctx): void {
 
     const group = new THREE.Group();
     group.name = `site:${kind}`;
-    group.position.set(x, baseY, z);
+    group.position.set(ctx.x, baseY, ctx.z); // (x, z) is where the site counts as reached, which a cave puts inside it
     const sg = ctx.stone.build();
     if (sg) group.add(new THREE.Mesh(sg, this.stoneMat));
     const fg = ctx.fronds.build();
@@ -1469,7 +1599,7 @@ export class Discoveries {
     }
     this.group.add(group);
     this.sites.push({
-      key: cellKey(cx, cz),
+      key,
       x,
       z,
       kind,

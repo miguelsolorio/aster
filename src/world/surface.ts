@@ -80,12 +80,30 @@ export const TERRAIN = {
   riverWade: 0.45, // how deep you stand in it: the water is painted on a flat bed
   riverBank: 1, // height of the flat valley floor above the water (m)
   riverFloor: 46, // half-width of the flat valley floor (m)
+  // Caves: one level slot cut into each massif's flank, half way out along a ridgeline. The
+  // discoveries cap it with a rock roof.
+  caveLen: 46, // how far it runs into the mountain (m)
+  caveHalf: 5, // half-width (m)
+  caveRoofFrom: 12, // metres in from the mouth where the roof starts
+  caveHeight: 7, // floor to ceiling (m)
+  // Spires: pillars of the old ground left standing where a river has cut a gorge.
+  spireCell: 380, // one candidate per cell of this size (m)
+  spireMax: 80, // tallest a spire stands above the water (m)
+  spireP: 0.5, // chance a cell has one (it only shows if it lands in a gorge)
   riverCityNear: 800, // rivers fade out between these distances from a city centre
   riverCityFar: 1100,
 } as const;
 
 /** Tallest ground the terrain can produce (m); shadows stop marching above it. */
 export const MAX_TERRAIN_H = 1000;
+
+/** A cave: the middle of its mouth, and the unit direction it runs into the mountain. */
+export interface Cave {
+  x: number;
+  z: number;
+  dx: number;
+  dz: number;
+}
 
 /** A lone peak: centre, base radius and cone height in metres. */
 export interface Massif {
@@ -118,6 +136,10 @@ const K_CITY = 20; // buttes around canyon cities
 const K_MASSIF = 30; // .. 32
 const MASSIF_SALT = 0x3a55;
 const K_RIVER = 40; // .. 41
+const SPIRE_SALT = 0x7c1d;
+const SPIRE_P = Math.round(TERRAIN.spireP * 256);
+/** Height of the ideal cone at the cave mouth, as a fraction of the massif's height. */
+const CAVE_C0 = Math.pow(1 - Math.sqrt(0.25 + 0.002), TERRAIN.massifPow);
 /** How far from a river the ground can be reshaped (m). */
 const RIVER_REACH = TERRAIN.riverFloor + 520;
 const MASSIF_P = Math.round(TERRAIN.massifP * 1024);
@@ -276,6 +298,8 @@ ${NOISE_GLSL}
 // river (m, clamped) and how present the river is there (0 where it fades out by a city or massif).
 float sfRiverD;
 float sfRiverS;
+// Likewise: 1 under the roof of a cave, 0 in the open.
+float sfCave;
 
 // Integer hash of a grid cell (matches cellHash in placement.ts).
 uint sfCell(uint a, uint b, uint c) {
@@ -317,6 +341,7 @@ float sfPass(vec2 p, float wob) {
 vec4 surfaceBase(vec2 p) {
   uint sk = sfMix(uint(int(uSeed)) ^ ${SEED_SALT >>> 0}u);
   vec2 q = p * 0.001; // kilometres
+  sfCave = 0.0;
 
   // regions
   float rM = sfNoise(q * vec2(${F(1 / T.mtnRegionKmX)}, ${F(1 / T.mtnRegionKmZ)}) + vec2(31.7, -12.3), sk + ${KOFF(K_MTN)}u);
@@ -386,10 +411,20 @@ vec4 surfaceBase(vec2 p) {
       float n1 = sfNoise(lq * 0.9 + vec2(3.1, -1.7), sk + ${KOFF(K_MASSIF)}u);
       float n2 = sfNoise(lq * 2.6 + vec2(-5.2, 2.4), sk + ${KOFF(K_MASSIF + 1)}u);
       float gn = 1.0 - min(1.0, abs(sfNoise(lq * 5.0 + vec2(1.3, 8.8), sk + ${KOFF(K_MASSIF + 2)}u)));
+      // the cave sits half way out along one ridgeline; around it the cone is left smooth
+      vec2 un = ju / length(ju);
+      vec2 ce = vec2(0.5 * un.x - ${F(Math.fround(Math.sqrt(0.75)))} * un.y, ${F(Math.fround(Math.sqrt(0.75)))} * un.x + 0.5 * un.y);
+      vec2 cv = d - ce * (0.5 * mR);
+      float cal = -dot(cv, ce); // metres into the mountain from the mouth
+      float clt = dot(cv, vec2(-ce.y, ce.x)); // metres to the side
+      float ck = smoothstep(70.0, 150.0, length(cv));
+      n1 *= ck;
+      n2 *= ck;
+      gn *= ck;
       float t = dl / (mR * (1.0 + 0.16 * n1 + 0.07 * n2));
       float mf = pow(max(0.0, 1.0 - sqrt(t * t + 0.002)), ${F(T.massifPow)});
       float c = dot(d, ju) / (length(ju) * max(dl, 1.0));
-      float lg = smoothstep(-0.45, 0.1, c * (4.0 * c * c - 3.0));
+      float lg = smoothstep(-0.45, 0.1, c * (4.0 * c * c - 3.0)) * ck;
       float mH = ${F(T.massifHMin)} + ${F(T.massifHMax - T.massifHMin)} * js;
       // the ridgelines meet at the summit, so gullies and benches fade out below it
       float su = 1.0 - smoothstep(0.72, 0.88, mf);
@@ -398,6 +433,9 @@ vec4 surfaceBase(vec2 p) {
       float zf = floor(zk);
       float zt = (zf + smoothstep(0.55, 1.0, zk - zf)) * ${F(T.massifLedge)};
       mz += (zt - mz) * 0.5 * lg * su * smoothstep(0.02, 0.1, mf);
+      float sl = (1.0 - smoothstep(${F(T.caveHalf)}, ${F(T.caveHalf + 1.5)}, abs(clt))) * smoothstep(-1.0, 1.5, cal) * (1.0 - smoothstep(${F(T.caveLen)}, ${F(T.caveLen + 2)}, cal));
+      mz = mix(mz, min(mz, mH * ${F(CAVE_C0)}), sl);
+      sfCave = sl * smoothstep(${F(T.caveRoofFrom - 3)}, ${F(T.caveRoofFrom + 1)}, cal);
       mt = mt * (1.0 - smoothstep(0.0, 0.3, mf)) + mz;
       m = max(m, smoothstep(0.0, 0.08, mf));
       mfo = mf;
@@ -439,8 +477,19 @@ vec4 surfaceBase(vec2 p) {
       float ramp = smoothstep(0.3, 0.55, wnz);
       float ww = mix(clamp(4.0 * dep, 120.0, 500.0), clamp(0.8 * dep, 30.0, 400.0) * (1.0 + 3.0 * ramp), steep);
       float w = smoothstep(${F(T.riverFloor)}, ${F(T.riverFloor)} + ww, rd);
-      h = mix(h, min(h, mix(fy, h, w)), rs);
+      float carved = min(h, mix(fy, h, w));
       float rkc = mix(steep * smoothstep(0.03, 0.25, w), rock, smoothstep(0.85, 1.0, w));
+      // spires: a pillar of the old ground left standing at the foot of the cliffs
+      vec2 sg = floor(p / ${F(T.spireCell)});
+      uint sh = sfCell(uint(int(sg.x)), uint(int(sg.y)), uint(int(uSeed)) ^ ${SPIRE_SALT}u);
+      if ((sh & 255u) < ${SPIRE_P}u && steep > 0.0) {
+        vec2 sc = (sg + 0.2 + 0.6 * vec2(float((sh >> 8u) & 1023u), float((sh >> 18u) & 1023u)) / 1023.0) * ${F(T.spireCell)};
+        float sr = 9.0 + 5.0 * float((sh >> 28u) & 15u) / 15.0;
+        float sm = (1.0 - smoothstep(sr - 3.0, sr, length(p - sc))) * smoothstep(22.0, 30.0, rd) * (1.0 - smoothstep(64.0, 78.0, rd)) * steep;
+        carved = mix(carved, max(carved, min(h - 6.0, ${F(T.waterY + T.spireMax)})), sm);
+        rkc = max(rkc, sm);
+      }
+      h = mix(h, carved, rs);
       rock = mix(rock, rkc, rs);
       salt *= mix(1.0, w, rs);
       green = rs * (1.0 - smoothstep(${F(T.riverHalf)}, ${F(T.riverFloor + 12)}, rd));
@@ -482,6 +531,12 @@ export interface DesertWorld extends World {
   readonly cities: CityIndex;
   /** The desert as it would be with no cities. */
   base(x: number, z: number, out: SurfaceSample): SurfaceSample;
+  /** The cave cut into the massif at corner (gi, gj), if there is a massif there. */
+  cave(gi: number, gj: number): Cave | null;
+  /** The height of the cave ceiling over (x, z), or Infinity where there is no cave roof. */
+  caveCeil(x: number, z: number): number;
+  /** The ground as it would be with no cave cut into it: the top of a cave's roof. */
+  uncarved(x: number, z: number): number;
   /** Distance to the centre line of the nearest river (m). Rivers fade out near cities and on massifs. */
   river(x: number, z: number): number;
   /** The massif at the corner (gi, gj) of the city grid, at world (gi, gj) * CITY_CELL, if any. */
@@ -563,6 +618,23 @@ export function createWorld(seed: number): DesertWorld {
     return pk;
   }
   const mScratch = { x: 0, z: 0, r: 0, h: 0, jx: 0, jz: 0, ux: 0, uz: 0 };
+  let caveOn = true; // false while sampling the mountain as it would be with no cave cut into it
+  const cvS = { x: 0, z: 0, along: 0, lat: 0, ex: 0, ez: 0 };
+  /** Where a point (dx, dz from the massif's centre) lies in the frame of its cave. Mirrors the GLSL. */
+  function caveFrame(ms: typeof mScratch, dx: number, dz: number): void {
+    const ul = Math.hypot(ms.ux, ms.uz);
+    const unx = ms.ux / ul;
+    const unz = ms.uz / ul;
+    const S60 = Math.fround(Math.sqrt(0.75));
+    const ex = 0.5 * unx - S60 * unz;
+    const ez = S60 * unx + 0.5 * unz;
+    cvS.ex = ex;
+    cvS.ez = ez;
+    cvS.x = dx - ex * (0.5 * ms.r);
+    cvS.z = dz - ez * (0.5 * ms.r);
+    cvS.along = -(cvS.x * ex + cvS.z * ez);
+    cvS.lat = cvS.x * -ez + cvS.z * ex;
+  }
   /** The massif at a cell corner, if there is one. Mirrors the GLSL. */
   function massifAt(gi: number, gj: number, out: typeof mScratch): boolean {
     const mh = cellHash(gi, gj, gridSeed ^ MASSIF_SALT);
@@ -646,19 +718,29 @@ export function createWorld(seed: number): DesertWorld {
       if (dl < ms.r * 1.25) {
         const lx = f(f(dx * 0.001) + f(ms.jx * 37));
         const lz = f(f(dz * 0.001) + f(ms.jz * 37));
-        const n1 = noise(lx * 0.9 + 3.1, lz * 0.9 - 1.7, kMa);
-        const n2 = noise(lx * 2.6 - 5.2, lz * 2.6 + 2.4, kMb);
-        const gn = 1 - Math.min(1, Math.abs(noise(lx * 5 + 1.3, lz * 5 + 8.8, kMc)));
+        let n1 = noise(lx * 0.9 + 3.1, lz * 0.9 - 1.7, kMa);
+        let n2 = noise(lx * 2.6 - 5.2, lz * 2.6 + 2.4, kMb);
+        let gn = 1 - Math.min(1, Math.abs(noise(lx * 5 + 1.3, lz * 5 + 8.8, kMc)));
+        // the cave (mirrors the GLSL)
+        caveFrame(ms, dx, dz);
+        const ck = smoothstep(70, 150, Math.hypot(cvS.x, cvS.z));
+        n1 *= ck;
+        n2 *= ck;
+        gn *= ck;
         const t = dl / (ms.r * (1 + 0.16 * n1 + 0.07 * n2));
         const mf = Math.pow(Math.max(0, 1 - Math.sqrt(t * t + 0.002)), T.massifPow);
         const c = (dx * ms.ux + dz * ms.uz) / (Math.hypot(ms.ux, ms.uz) * Math.max(dl, 1));
-        const lg = smoothstep(-0.45, 0.1, c * (4 * c * c - 3));
+        const lg = smoothstep(-0.45, 0.1, c * (4 * c * c - 3)) * ck;
         const su = 1 - smoothstep(0.72, 0.88, mf);
         let mz = ms.h * mf + T.massifGully * gn * gn * 4 * mf * (1 - mf) * (0.35 + 0.65 * lg * su);
         const zk = mz / T.massifLedge;
         const zf = Math.floor(zk);
         const zt = (zf + smoothstep(0.55, 1, zk - zf)) * T.massifLedge;
         mz += (zt - mz) * 0.5 * lg * su * smoothstep(0.02, 0.1, mf);
+        if (caveOn) {
+          const sl = (1 - smoothstep(T.caveHalf, T.caveHalf + 1.5, Math.abs(cvS.lat))) * smoothstep(-1, 1.5, cvS.along) * (1 - smoothstep(T.caveLen, T.caveLen + 2, cvS.along));
+          mz = mz + (Math.min(mz, ms.h * CAVE_C0) - mz) * sl;
+        }
         mt = mt * (1 - smoothstep(0, 0.3, mf)) + mz;
         m = Math.max(m, smoothstep(0, 0.08, mf));
         mfo = mf;
@@ -694,9 +776,22 @@ export function createWorld(seed: number): DesertWorld {
         const wRock = Math.min(400, Math.max(30, 0.8 * dep)) * (1 + 3 * ramp);
         const ww = wSand + (wRock - wSand) * steep;
         const w = smoothstep(T.riverFloor, T.riverFloor + ww, rd);
-        h = h + (Math.min(h, fy + (h - fy) * w) - h) * rs;
+        let carved = Math.min(h, fy + (h - fy) * w);
         const rk0 = steep * smoothstep(0.03, 0.25, w);
-        const rkc = rk0 + (rock - rk0) * smoothstep(0.85, 1, w);
+        let rkc = rk0 + (rock - rk0) * smoothstep(0.85, 1, w);
+        // spires (mirrors the GLSL)
+        const sgx = Math.floor(f(px / T.spireCell));
+        const sgz = Math.floor(f(pz / T.spireCell));
+        const sh = cellHash(sgx, sgz, gridSeed ^ SPIRE_SALT);
+        if ((sh & 255) < SPIRE_P && steep > 0) {
+          const scx = (sgx + 0.2 + (0.6 * ((sh >>> 8) & 1023)) / 1023) * T.spireCell;
+          const scz = (sgz + 0.2 + (0.6 * ((sh >>> 18) & 1023)) / 1023) * T.spireCell;
+          const sr = 9 + (5 * ((sh >>> 28) & 15)) / 15;
+          const sm = (1 - smoothstep(sr - 3, sr, Math.hypot(px - scx, pz - scz))) * smoothstep(22, 30, rd) * (1 - smoothstep(64, 78, rd)) * steep;
+          carved = carved + (Math.max(carved, Math.min(h - 6, T.waterY + T.spireMax)) - carved) * sm;
+          rkc = Math.max(rkc, sm);
+        }
+        h = h + (carved - h) * rs;
         rock = rock + (rkc - rock) * rs;
         salt *= 1 + (w - 1) * rs;
         green = rs * (1 - smoothstep(T.riverHalf, T.riverFloor + 12, rd));
@@ -734,6 +829,31 @@ export function createWorld(seed: number): DesertWorld {
     cities,
     base,
     river: (x: number, z: number): number => riverDist(f(x * 0.001), f(z * 0.001)),
+    cave(gi: number, gj: number): Cave | null {
+      const ms = mScratch;
+      if (!massifAt(gi, gj, ms)) return null;
+      caveFrame(ms, 0, 0);
+      return { x: ms.x + cvS.ex * 0.5 * ms.r, z: ms.z + cvS.ez * 0.5 * ms.r, dx: -cvS.ex, dz: -cvS.ez };
+    },
+    caveCeil(x: number, z: number): number {
+      const px = f(x);
+      const pz = f(z);
+      const ms = mScratch;
+      if (!massifAt(Math.floor(f(f(px / CITY_CELL) + 0.5)), Math.floor(f(f(pz / CITY_CELL) + 0.5)), ms)) return Infinity;
+      caveFrame(ms, px - ms.x, pz - ms.z);
+      const a = cvS.along;
+      if (Math.abs(cvS.lat) > T.caveHalf + 0.8 || a < T.caveRoofFrom || a > T.caveLen + 1.5) return Infinity;
+      // level across the width: the floor on the centre line at this distance in
+      const mx = ms.x + cvS.ex * (0.5 * ms.r - a);
+      const mz = ms.z + cvS.ez * (0.5 * ms.r - a);
+      return height(mx, mz) + T.caveHeight;
+    },
+    uncarved(x: number, z: number): number {
+      caveOn = false;
+      const h = height(x, z);
+      caveOn = true;
+      return h;
+    },
     massif(gi: number, gj: number): Massif | null {
       return massifAt(gi, gj, mScratch) ? { x: mScratch.x, z: mScratch.z, r: mScratch.r, h: mScratch.h } : null;
     },

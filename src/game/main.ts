@@ -243,7 +243,12 @@ function start() {
   applyTier();
   discoveries.onReach = () => audio.chime();
   cities.onReach = () => audio.chime();
-  player.roof = (x, z, y) => cities.roofAt(x, z, y);
+  // Roofs you can land on: buildings, and the rock over a cave once you are above its ceiling.
+  const caveRoofAt = (x: number, z: number, y: number) => {
+    const ceil = world.caveCeil(x, z);
+    return ceil < Infinity && y > ceil - 0.3 ? world.uncarved(x, z) : -Infinity;
+  };
+  player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y));
   // Pools and rivers are waded: you stand a little below the surface.
   const wadeS = { h: 0, rock: 0, salt: 0, green: 0 };
   player.dip = (x, z) => {
@@ -252,7 +257,8 @@ function start() {
     return (world.sample(x, z, wadeS).green ?? 0) > 0.6 ? TERRAIN.riverWade : 0;
   };
   // What the camera must stay above: sand, or a roof.
-  const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z, camera.position.y));
+  const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z, camera.position.y), inCave ? -Infinity : caveRoofAt(x, z, camera.position.y));
+  let inCave = false; // the wanderer is under a cave roof, so the camera stays under it too
 
   // ---- input
   const keys = new Set<string>();
@@ -442,6 +448,15 @@ function start() {
     input.drop = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.dropHeld);
     jumpQueued = false;
     player.update(dt, input, camYaw, events);
+    // A cave has a ceiling: you cannot rise through the rock.
+    {
+      const ceil = world.caveCeil(st.pos.x, st.pos.z);
+      inCave = ceil < Infinity && st.pos.y < ceil - 0.3;
+      if (inCave && st.pos.y > ceil - 1.9) {
+        st.pos.y = ceil - 1.9;
+        if (st.vel.y > 0) st.vel.y = 0;
+      }
+    }
 
     // Riding leaves one clean line in the sand; carving widens it and throws spray to the outside.
     if (st.sliding && st.grounded && st.onRock < 0.5) {
@@ -525,6 +540,7 @@ function start() {
     }
     camera.position.copy(camTarget).addScaledVector(tmp2, dist);
     camera.position.y = Math.max(camera.position.y, topAt(camera.position.x, camera.position.z) + 0.7);
+    if (inCave) camera.position.y = Math.min(camera.position.y, world.caveCeil(camera.position.x, camera.position.z) - 0.4);
     camera.lookAt(camTarget);
     const fov = 50 + Math.min(14, st.speed * 0.55);
     if (Math.abs(camera.fov - fov) > 0.05) {

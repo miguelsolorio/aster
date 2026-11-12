@@ -97,11 +97,13 @@ uniform float uLower;      // metres to sink this level (0 for the finest)
 varying vec3 vW;
 varying vec3 vN;
 varying vec4 vMask; // rock, salt, signed distance to the river (m), river presence 0..1
+varying float vCave; // 1 under a cave roof
 
 void main() {
   vec2 xz = uLevelCenter + position.xz * uCell;
   vec4 s = surface(xz);
   vec2 river = vec2(sfRiverD, sfRiverS); // read now: the next calls overwrite them
+  vCave = sfCave;
   float hx = surfaceH(xz + vec2(uCell, 0.0));
   float hz = surfaceH(xz + vec2(0.0, uCell));
   vN = normalize(vec3(s.x - hx, uCell, s.x - hz));
@@ -179,6 +181,7 @@ uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
 varying vec3 vW;
 varying vec3 vN;
 varying vec4 vMask;
+varying float vCave;
 
 ${LOOK}
 ${COMMON}
@@ -414,6 +417,8 @@ void main() {
   // ---- light
   float l = mix(clamp(ndl * 1.25, 0.0, 1.0), smoothstep(-0.02, 0.12, ndl), TERM_SHARP);
   l *= shadow;
+  // under a cave roof no sun reaches the floor, whatever the heightmap says
+  l *= 1.0 - 0.94 * clamp(vCave, 0.0, 1.0);
   l *= cityShadow(p, uSunDir);
   l *= 1.0 - fs * 0.85;
   l *= 1.0 - tr * 0.22;
