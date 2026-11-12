@@ -68,7 +68,7 @@ export const TERRAIN = {
   // low side of the salt-region noise (the high side is the pans).
   platLo: -0.42, // region noise below this: full plateau
   platHi: -0.2, // region noise above this: none
-  platH: 62, // how far a plateau stands above the desert (m)
+  platH: 85, // how far a plateau stands above the desert (m)
   // Rivers: the zero line of a winding noise field. Every river lies at one water level, below
   // all natural ground, so the water is flat and can be drawn as a single sheet.
   riverKm: 4.3, // wavelength of the field: sets how far apart rivers are
