@@ -723,6 +723,7 @@ function runnels(ctx: ExtraCtx, chains: Chain[], soft: SoftIndex, w: Writer, ww:
   w.tint = 128;
 }
 
+
 // ------------------------------------------------------------------ the aqueduct
 
 const SPAN = 12; // pier spacing
@@ -732,23 +733,47 @@ const DW = 1.25; // deck half width
 const CW = 0.62; // half the water channel on the deck
 const KH = 0.45; // kerbs above the deck slab
 const DT = 0.6; // deck slab
-const SLOPE = 0.004; // the deck rises this much per metre away from the city
+const DB = KH + DT; // walking surface to deck underside
+const SLOPE = 0.004; // a level aqueduct rises this much per metre away from the city
 const CH = 3.5; // cistern half size
 const SH = 2.6; // spring house half size
+// Where the ground falls away (a hill town's mound), the deck comes down in level runs joined by
+// stepped cascades instead of standing on ever taller piers.
+const HMAX = 16; // tallest pier before the deck steps down
+const HT = 10; // pier height a cascade aims for
+const DROPMAX = 7.5; // most one cascade drops over a span
+const RISE = 0.5; // a walkable step
+const FALL = 0.002; // stepped runs fall this much per metre away from the city
+const TOWER = 0.5; // a drop tower is this much longer than its pier, each way
+
+interface Run {
+  /** From t on, the walking surface is k + slope * (u - t). */
+  t: number;
+  k: number;
+}
 
 interface Route {
   dx: number;
   dz: number;
   tc: number; // cistern centre
   gc: number; // ground at the cistern
-  h: number; // walking surface above the cistern's ground
+  stepped: boolean;
+  runs: Run[];
   piers: number[];
   pierG: number[];
   pierH: number[]; // half thickness along
+  /** casc[p]: the span from pier p - 1 to pier p is a cascade. */
+  casc: boolean[];
   te: number; // face of the spring house
   len: number;
   maxH: number;
   score: number;
+}
+
+function runAt(runs: Run[], slope: number, t: number): number {
+  let r = runs[0];
+  for (let i = 1; i < runs.length && runs[i].t <= t; i++) r = runs[i];
+  return r.k + slope * (t - r.t);
 }
 
 function aqueduct(
@@ -758,10 +783,12 @@ function aqueduct(
   if (site.radius <= 450) return null;
   const rng = ctx.rng(0xa9ed);
   const L = 400 + 300 * rng();
-  const LMAX = L + 150;
-  const STEP = 2;
+  const LMAX = Math.max(L, Math.min(700, L + 150));
+  const STEP = 2; // SPAN is a whole number of these
+  const PER = SPAN / STEP;
   const NS = Math.ceil((LMAX + 4 * SH) / STEP) + 2;
   const R = site.radius;
+  const hill = site.kind === 'hill';
   const ends = chains.map((c) => Math.atan2(c.z[c.z.length - 1], c.x[c.x.length - 1]));
 
   // The deck runs along a local axis, so every solid is an exact axis-aligned box.
@@ -801,59 +828,92 @@ function aqueduct(
       gHi[i] = hi;
       gLo[i] = lo;
     }
-    for (const h of [7.5, 10.5, 14]) {
-      const r = walk(dx, dz, tc, gc, h, gHi, gLo);
-      r.score = gap * 1.2 + (Math.min(r.len, L) / L) * 2 - (h - 7.5) * 0.04 - Math.max(0, r.maxH - 24) * 0.12 + rng() * 0.15;
+    // A hill town keeps the lowest deck that still clears a head under the first arches and steps
+    // down its mound; elsewhere a level deck, stepped only if it would stand too tall.
+    for (const h of hill ? [5.5] : [7.5, 10.5, 14]) {
+      let r = walk(dx, dz, tc, gc, h, gHi, gLo, hill);
+      if (!hill && r.maxH > 18) r = walk(dx, dz, tc, gc, h, gHi, gLo, true);
+      r.score = gap * 1.2 + (Math.min(r.len, L) / L) * 2 - (h - 7.5) * 0.04 - Math.max(0, r.maxH - HMAX) * 0.15 + rng() * 0.15;
       if (!best || r.score > best.score) best = r;
     }
   }
   if (!best || best.len < 60) return null;
 
-  function walk(dx: number, dz: number, tc: number, gc: number, h: number, gHi: Float32Array, gLo: Float32Array): Route {
+  function walk(
+    dx: number, dz: number, tc: number, gc: number, h: number, gHi: Float32Array, gLo: Float32Array, stepped: boolean,
+  ): Route {
     const ts = tc + CH;
-    const K = (t: number) => gc + h + SLOPE * (t - ts);
-    // It ends where the ground rises to meet the deck, or else (past the seeded length) where it stands lowest.
+    const slope = stepped ? -FALL : SLOPE;
+    const runs: Run[] = [{ t: ts, k: gc + h }];
+    const K = (t: number) => {
+      const r = runs[runs.length - 1];
+      return r.k + slope * (t - r.t);
+    };
+    const piers: number[] = [];
+    const pierG: number[] = [];
+    const pierH: number[] = [];
+    const casc: boolean[] = [];
     let te = -1;
     for (let i = 1; i < NS; i++) {
       const t = ts + i * STEP;
       if (t - ts > LMAX) break;
+      if (i % PER === 0) {
+        const g = Math.min(gLo[i - 1], gLo[i], gLo[Math.min(NS - 1, i + 1)]);
+        let H = K(t) - DB - g;
+        let c = false;
+        if (stepped && H > HMAX && piers.length > 0) {
+          // come down over the span ending here, but stay clear of the ground just beyond
+          let ahead = -Infinity;
+          for (let j = i; j <= Math.min(NS - 1, i + PER); j++) ahead = Math.max(ahead, gHi[j]);
+          const drop = Math.min(DROPMAX, H - HT, K(t) - (ahead + 3.5));
+          if (drop >= RISE) {
+            runs.push({ t, k: K(t) - drop });
+            H -= drop;
+            c = true;
+          }
+        }
+        piers.push(t);
+        pierG.push(g);
+        pierH.push(clamp(PH + 0.015 * H, PH, 1.3));
+        casc.push(c);
+      }
       if (K(t) - gHi[i] < 2.0) {
         // back up to where it meets the slope (a cliff can climb metres between samples)
         te = t - STEP;
         for (let u = t - STEP + 0.25; u < t; u += 0.25) {
           let g = -Infinity;
           for (const s of [-DW, 0, DW]) g = Math.max(g, ctx.groundAt(dx * u - dz * s, dz * u + dx * s));
-          if (K(u) - g < 2.0) break;
+          if (runAt(runs, slope, u) - g < 2.0) break;
           te = u;
         }
         break;
       }
     }
     if (te < 0) {
+      // past the seeded length, end where the deck stands lowest
       let low = Infinity;
       for (let i = Math.ceil(L / STEP); i * STEP <= LMAX && i < NS; i++) {
-        const c = K(ts + i * STEP) - gLo[i];
+        const t = ts + i * STEP;
+        const c = runAt(runs, slope, t) - gLo[i];
         if (c < low) {
           low = c;
-          te = ts + i * STEP;
+          te = t;
         }
       }
     }
-    const piers: number[] = [];
-    const pierG: number[] = [];
-    const pierH: number[] = [];
-    let maxH = 0;
-    for (let k = 1; ts + SPAN * k + 1.3 + 3 < te; k++) {
-      const t = ts + SPAN * k;
-      const i = Math.round((t - ts) / STEP);
-      const g = Math.min(gLo[i - 1], gLo[i], gLo[Math.min(NS - 1, i + 1)]);
-      const H = K(t) - KH - DT - g;
-      piers.push(t);
-      pierG.push(g);
-      pierH.push(clamp(PH + 0.015 * H, PH, 1.3));
-      maxH = Math.max(maxH, H);
+    // nothing within a short span of the spring house
+    while (piers.length > 0 && piers[piers.length - 1] + 1.3 + 3 > te) {
+      piers.pop();
+      pierG.pop();
+      pierH.pop();
+      casc.pop();
     }
-    return { dx, dz, tc, gc, h, piers, pierG, pierH, te, len: te - ts, maxH, score: 0 };
+    while (runs.length > 1 && runs[runs.length - 1].t > te - 1) runs.pop();
+    // a pier at the head of a cascade becomes a drop tower
+    for (let p = 0; p + 1 < piers.length; p++) if (casc[p + 1]) pierH[p] += TOWER;
+    let maxH = 0;
+    piers.forEach((t, p) => (maxH = Math.max(maxH, runAt(runs, slope, t) - DB - pierG[p])));
+    return { dx, dz, tc, gc, stepped, runs, piers, pierG, pierH, casc, te, len: te - ts, maxH, score: 0 };
   }
 
   // ---------------------------------------------------------------- geometry
@@ -861,15 +921,24 @@ function aqueduct(
   const { dx, dz } = r;
   const px = -dz, pz = dx;
   const ts = r.tc + CH;
-  const K = (t: number) => r.gc + r.h + SLOPE * (t - ts);
-  const B = (t: number) => K(t) - KH - DT;
+  const slope = r.stepped ? -FALL : SLOPE;
+  const Kat = (t: number) => runAt(r.runs, slope, t);
+  // cascade spans, centre to centre: inside one the deck's underside is the lower level's
+  const cascades: Array<{ a: number; b: number; ku: number; kl: number }> = [];
+  for (let p = 1; p < r.piers.length; p++) {
+    if (r.casc[p]) cascades.push({ a: r.piers[p - 1], b: r.piers[p], ku: Kat(r.piers[p - 1]), kl: Kat(r.piers[p]) });
+  }
+  const B = (t: number) => {
+    for (const c of cascades) if (t > c.a && t < c.b) return c.kl - DB;
+    return Kat(t) - DB;
+  };
   const ga = (t: number) => ctx.groundAt(dx * t, dz * t);
   const shc = r.te + SH;
   let gs = Infinity;
   for (const u of [-SH, 0, SH]) for (const v of [-SH, SH]) gs = Math.min(gs, ctx.groundAt(dx * (shc + u) + px * v, dz * (shc + u) + pz * v));
   let gcm = Infinity;
   for (const u of [-CH, 0, CH]) for (const v of [-CH, CH]) gcm = Math.min(gcm, ctx.groundAt(dx * (r.tc + u) + px * v, dz * (r.tc + u) + pz * v));
-  gs = Math.min(gs, K(r.te) - 2.5); // into the slope where it rises steeply
+  gs = Math.min(gs, Kat(r.te) - 2.5); // into the slope where it rises steeply
   const base = Math.min(gcm, gs, ...r.pierG) - 0.6;
 
   const w = new Writer(2048, 4096);
@@ -890,12 +959,16 @@ function aqueduct(
     const xa = X(t0, s0), xb = X(t1, s1), za = Z(t0, s0), zb = Z(t1, s1);
     o.box(Math.min(xa, xb), y0, Math.min(za, zb), Math.max(xa, xb), y1, Math.max(za, zb), mask);
   };
-  const solid = (t0: number, t1: number, hs: number, y0: number, y1: number) => {
+  const solid = (t0: number, t1: number, s0: number, s1: number, y0: number, y1: number) => {
     const tm = (t0 + t1) / 2, ht = Math.abs(t1 - t0) / 2;
-    solids.push({ x: dx * tm, z: dz * tm, hw: dx !== 0 ? ht : hs, hd: dx !== 0 ? hs : ht, y0, y1 });
+    const sm = (s0 + s1) / 2, hs = Math.abs(s1 - s0) / 2;
+    solids.push({ x: X(tm, sm), z: Z(tm, sm), hw: dx !== 0 ? ht : hs, hd: dx !== 0 ? hs : ht, y0, y1 });
   };
   const segs = ctx.density < 0.5 ? 6 : 8;
-  const tEnd = r.te;
+  // water runs downhill: toward the city on a level deck, away from it down the cascades
+  const S = 1.4;
+  const along = (t: number) => (r.stepped ? (t - ts) * S : (r.te - t) * S);
+  const speed = 0.9;
 
   // supports: the cistern face, the piers, the spring house face
   const sup: Array<{ t: number; lo: number; hi: number; g: number }> = [{ t: r.tc, lo: r.tc - CH, hi: ts, g: gcm }];
@@ -917,6 +990,7 @@ function aqueduct(
     const rise = H >= A + 1.8 ? A : Math.min(A, H - 1.2);
     const arch = rise >= 1.0 && A >= 1.5;
     const spring = Bm - 0.7 - rise;
+    let y0span: number;
     if (arch) {
       for (const sg of [-1, 1]) {
         for (let k = 0; k < segs; k++) {
@@ -936,7 +1010,7 @@ function aqueduct(
       // the faces of the piers either side of the opening, up to the springing
       if (i > 0 && spring > L0.g) q(a, -PW, L0.g - 0.5, a, PW, L0.g - 0.5, a, PW, spring, a, -PW, spring, 1, 0, 0);
       if (i + 2 < sup.length && spring > L1.g) q(b, -PW, L1.g - 0.5, b, PW, L1.g - 0.5, b, PW, spring, b, -PW, spring, -1, 0, 0);
-      solid(L0.t, L1.t, DW, spring + rise, K(Math.max(L0.t, L1.t)));
+      y0span = spring + rise;
       // very tall piers are braced by a lower tier of arches, as on the great viaducts
       if (i > 0 && i + 2 < sup.length && spring - gmax > 18) {
         const s2 = gmax + (spring - gmax) * 0.42;
@@ -950,49 +1024,101 @@ function aqueduct(
           q(t0, -PW, y0, t1, -PW, y1, t1, PW, y1, t0, PW, y0, -Math.cos(fm), -Math.sin(fm), 0);
         }
         q(a, -PW, top, b, -PW, top, b, PW, top, a, PW, top, 0, 1, 0);
-        solid(a, b, PW, s2 + A, top);
+        solid(a, b, -PW, PW, s2 + A, top);
       }
     } else {
       // too low for an arch: a plain wall down to the ground
       for (const sg of [-1, 1]) q(a, sg * PW, gmn - 0.5, b, sg * PW, gmn - 0.5, b, sg * PW, B(b), a, sg * PW, B(a), 0, 0, sg);
-      solid(L0.t, L1.t, DW, gmn - 1, K(Math.max(L0.t, L1.t)));
+      y0span = gmn - 1;
     }
 
-    // the deck over this span (support centre to support centre, clipped to the end walls)
+    // The deck over this span (support centre to support centre, clipped to the end walls), as
+    // pieces: one sloping piece, or the treads of a cascade with risers of at most RISE.
     const d0 = Math.max(L0.t, ts), d1 = Math.min(L1.t, r.te);
-    for (const sg of [-1, 1]) {
-      q(d0, sg * DW, B(d0), d1, sg * DW, B(d1), d1, sg * DW, K(d1), d0, sg * DW, K(d0), 0, 0, sg);
-      q(d0, sg * PW, B(d0), d1, sg * PW, B(d1), d1, sg * DW, B(d1), d0, sg * DW, B(d0), 0, -1, 0);
-      q(d0, sg * CW, K(d0), d1, sg * CW, K(d1), d1, sg * DW, K(d1), d0, sg * DW, K(d0), 0, 1, 0);
-      q(d0, sg * CW, K(d0) - 0.16, d1, sg * CW, K(d1) - 0.16, d1, sg * CW, K(d1), d0, sg * CW, K(d0), 0, 0, -sg);
+    const cas = cascades.find((c) => c.a === L0.t && c.b === L1.t);
+    // piece j runs from pt[j] to pt[j + 1]; a cascade's first tread runs over the drop tower
+    const pt = [d0];
+    const lv: number[] = [];
+    if (cas) {
+      const n = Math.ceil((cas.ku - cas.kl) / RISE - 1e-6);
+      const c0 = L0.hi; // the tower's downstream face
+      for (let j = 0; j <= n; j++) {
+        pt.push(c0 + ((d1 - c0) * j) / (n + 1) + (d1 - c0) / (n + 1));
+        lv.push(cas.ku - ((cas.ku - cas.kl) * j) / n);
+      }
+    } else pt.push(d1);
+    const n = pt.length - 1;
+    let farLo = Infinity, farHi = -Infinity;
+    for (let j = 0; j < n; j++) {
+      const t0 = pt[j], t1 = pt[j + 1];
+      const k0 = cas ? lv[j] : Kat(t0), k1 = cas ? lv[j] : Kat(t1);
+      const b0 = cas ? cas.kl - DB : B(t0), b1 = cas ? cas.kl - DB : B(t1);
+      farLo = Math.min(farLo, b0, b1);
+      farHi = Math.max(farHi, k0, k1);
+      for (const sg of [-1, 1]) {
+        q(t0, sg * DW, b0, t1, sg * DW, b1, t1, sg * DW, k1, t0, sg * DW, k0, 0, 0, sg);
+        q(t0, sg * PW, b0, t1, sg * PW, b1, t1, sg * DW, b1, t0, sg * DW, b0, 0, -1, 0);
+        q(t0, sg * CW, k0, t1, sg * CW, k1, t1, sg * DW, k1, t0, sg * DW, k0, 0, 1, 0);
+        q(t0, sg * CW, k0 - 0.16, t1, sg * CW, k1 - 0.16, t1, sg * CW, k1, t0, sg * CW, k0, 0, 0, -sg);
+      }
+      const v0 = ww.vert(X(t0, -CW), k0 - 0.16, Z(t0, -CW), along(t0), -CW * S, speed);
+      ww.vert(X(t1, -CW), k1 - 0.16, Z(t1, -CW), along(t1), -CW * S, speed);
+      ww.vert(X(t1, CW), k1 - 0.16, Z(t1, CW), along(t1), CW * S, speed);
+      ww.vert(X(t0, CW), k0 - 0.16, Z(t0, CW), along(t0), CW * S, speed);
+      ww.quad(v0, v0 + 1, v0 + 2, v0 + 3);
+      solid(t0, t1, -DW, DW, y0span, Math.max(k0, k1));
+      if (cas && j + 1 < n) {
+        // the riser down to the next tread: stone at the kerbs, a little fall of water between
+        const kn = lv[j + 1];
+        for (const sg of [-1, 1]) q(t1, sg * CW, kn, t1, sg * DW, kn, t1, sg * DW, k1, t1, sg * CW, k1, 1, 0, 0);
+        const fa = along(t1);
+        const f0 = ww.vert(X(t1, -CW), k1 - 0.16, Z(t1, -CW), fa, -CW * S, speed * 2);
+        ww.vert(X(t1, -CW), kn - 0.16, Z(t1, -CW), fa + (k1 - kn) * S * 1.5, -CW * S, speed * 2);
+        ww.vert(X(t1, CW), kn - 0.16, Z(t1, CW), fa + (k1 - kn) * S * 1.5, CW * S, speed * 2);
+        ww.vert(X(t1, CW), k1 - 0.16, Z(t1, CW), fa, CW * S, speed * 2);
+        ww.quad(f0, f0 + 1, f0 + 2, f0 + 3);
+      }
     }
-    const S = 1.4;
-    const v0 = ww.vert(X(d0, -CW), K(d0) - 0.16, Z(d0, -CW), (tEnd - d0) * S, -CW * S, 0.9);
-    ww.vert(X(d1, -CW), K(d1) - 0.16, Z(d1, -CW), (tEnd - d1) * S, -CW * S, 0.9);
-    ww.vert(X(d1, CW), K(d1) - 0.16, Z(d1, CW), (tEnd - d1) * S, CW * S, 0.9);
-    ww.vert(X(d0, CW), K(d0) - 0.16, Z(d0, CW), (tEnd - d0) * S, CW * S, 0.9);
-    ww.quad(v0, v0 + 1, v0 + 2, v0 + 3);
+    tbox(far, d0, d1, -DW, DW, farLo - 1.0, farHi, 1 | 2 | 4 | 8 | 16 | 32);
   }
 
-  // piers: the long sides from the ground up to the deck
+  // piers: the long sides from the ground up to the deck; drop towers at the head of each cascade
   r.piers.forEach((t, i) => {
     const g = r.pierG[i];
     const ph = r.pierH[i];
-    for (const sg of [-1, 1]) q(t - ph, sg * PW, g - 0.5, t + ph, sg * PW, g - 0.5, t + ph, sg * PW, B(t + ph), t - ph, sg * PW, B(t - ph), 0, 0, sg);
+    const tower = i + 1 < r.piers.length && r.casc[i + 1];
+    if (tower) {
+      const top = Kat(t);
+      const tw = DW + 0.35;
+      tbox(w, t - ph, t + ph, -tw, tw, g - 0.5, top);
+      tbox(w, t - ph - 0.12, t + ph + 0.12, -tw - 0.12, tw + 0.12, top - 0.35, top - 0.1, 1 | 2 | 8 | 16 | 32);
+      for (const u of [-1, 1])
+        for (const v of [-1, 1]) {
+          const mt = t + u * (ph - 0.3), ms = v * (tw - 0.25);
+          tbox(w, mt - 0.3, mt + 0.3, ms - 0.25, ms + 0.25, top, top + 0.7, 1 | 2 | 4 | 16 | 32);
+          solid(mt - 0.3, mt + 0.3, ms - 0.25, ms + 0.25, top - 1, top + 0.7);
+        }
+      solid(t - ph, t + ph, -tw, tw, g - 1, top);
+      tbox(far, t - ph, t + ph, -tw, tw, g - 0.5, top + 0.7, 1 | 2 | 4 | 16 | 32);
+    } else {
+      for (const sg of [-1, 1]) q(t - ph, sg * PW, g - 0.5, t + ph, sg * PW, g - 0.5, t + ph, sg * PW, B(t + ph), t - ph, sg * PW, B(t - ph), 0, 0, sg);
+      solid(t - ph, t + ph, -PW, PW, g - 1, B(t));
+      tbox(far, t - ph, t + ph, -PW, PW, g - 0.5, B(t), 1 | 2 | 16 | 32);
+    }
     // a plinth at the foot; tall piers stand on a broad footing
     const H = B(t) - g;
     const fo = H > 12 ? 0.35 : 0.2;
-    tbox(w, t - ph - fo, t + ph + fo, -PW - fo, PW + fo, g - 0.5, g + (H > 12 ? H * 0.3 : 0.35), 1 | 2 | 4 | 16 | 32);
-    solid(t - ph, t + ph, PW, g - 1, B(t));
-    ctx.claim(dx * t, dz * t, 1.6);
-    tbox(far, t - ph, t + ph, -PW, PW, g - 0.5, B(t), 1 | 2 | 16 | 32);
+    const fs = (tower ? DW + 0.35 : PW) + fo;
+    tbox(w, t - ph - fo, t + ph + fo, -fs, fs, g - 0.5, g + (H > 12 ? H * 0.3 : 0.35), 1 | 2 | 4 | 16 | 32);
+    ctx.claim(dx * t, dz * t, tower ? 2.2 : 1.6);
   });
 
   // the cistern tower on the rim
-  const ct = K(ts) + 2.6;
+  const k0 = Kat(ts);
+  const ct = k0 + 2.6;
   w.tint = 160;
   tbox(w, r.tc - CH, r.tc + CH, -CH, CH, gcm - 0.6, ct);
-  tbox(w, r.tc - CH - 0.15, r.tc + CH + 0.15, -CH - 0.15, CH + 0.15, K(ts) - 0.2, K(ts) + 0.15, 1 | 2 | 4 | 8 | 16 | 32);
+  tbox(w, r.tc - CH - 0.15, r.tc + CH + 0.15, -CH - 0.15, CH + 0.15, k0 - 0.2, k0 + 0.15, 1 | 2 | 4 | 8 | 16 | 32);
   tbox(w, r.tc - CH - 0.2, r.tc + CH + 0.2, -CH - 0.2, CH + 0.2, ct - 0.3, ct, 1 | 2 | 8 | 16 | 32);
   for (const u of [-1, 0, 1])
     for (const v of [-1, 0, 1]) {
@@ -1010,8 +1136,8 @@ function aqueduct(
   emitters.push({ x: dx * r.tc, z: dz * r.tc, kind: 'water', gain: 0.5, reach: 30 });
   tbox(far, r.tc - CH, r.tc + CH, -CH, CH, gcm - 0.6, ct + 0.8);
 
-  // the spring house where the water comes out of the ground
-  const st = K(r.te) + 1.1;
+  // the spring house at the far end
+  const st = Kat(r.te) + 1.1;
   w.tint = 175;
   tbox(w, shc - SH, shc + SH, -SH, SH, gs - 0.6, st);
   tbox(w, shc - SH - 0.15, shc + SH + 0.15, -SH - 0.15, SH + 0.15, st - 0.25, st, 1 | 2 | 8 | 16 | 32);
@@ -1025,12 +1151,7 @@ function aqueduct(
   ctx.claim(dx * shc, dz * shc, SH * 1.45);
   emitters.push({ x: dx * shc, z: dz * shc, kind: 'water', gain: 0.5, reach: 30 });
   tbox(far, shc - SH, shc + SH, -SH, SH, gs - 0.6, st + 1.2);
-
-  // far: the deck as a band in 60 m pieces
-  for (let t = ts; t < r.te - 0.01; t += 60) {
-    const t1 = Math.min(r.te, t + 60);
-    tbox(far, t, t1, -DW, DW, B(t1) - 1.0, K(t1), 1 | 2 | 4 | 8 | 16 | 32);
-  }
+  for (const c of cascades) emitters.push({ x: dx * (c.a + c.b) * 0.5, z: dz * (c.a + c.b) * 0.5, kind: 'water', gain: 0.45, reach: 25 });
 
   // shift both meshes so their local y is height above their lowest foot (the masonry shader
   // reads local y as height above the plateau for its dust line)
