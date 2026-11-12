@@ -4,7 +4,12 @@ import type { DesertWorld } from '../world/surface';
 import { MAX_SITES } from './cityGlsl';
 import { buildCity, type CityMeshes } from './build';
 import { planCity } from './plan';
-import type { CityPlan, CitySite } from './types';
+import type { CityKind, CityPlan, CitySite } from './types';
+import type { FrameState } from '../game/contract';
+import { EMITTER_KINDS, SolidIndex, createExtraCtx, type EmitterKind, type Extra, type ExtraCtx } from './extras';
+import { EXTRAS } from './extrasList';
+
+const KIND_ID: Record<CityKind, number> = { hill: 1, canyon: 2, oasis: 3, trade: 4 };
 
 const FAR_IN = 9000; // skyline appears (distance to the city's edge)
 const FAR_OUT = 11000;
@@ -19,6 +24,10 @@ interface Loaded {
   holder: THREE.Group;
   map: THREE.DataTexture | null;
   reached: boolean;
+  /** Plants, water, furniture and the rest: built one per scan after the city loads. */
+  extras: Extra[];
+  ctx: ExtraCtx | null;
+  solids: SolidIndex;
 }
 
 /**
@@ -66,9 +75,9 @@ export class Cities {
     for (let i = 0; i < MAX_SITES; i++) {
       const s = near[i];
       a[i].set(s.cx, s.cz, s.radius, s.groundY);
-      b[i].set(s.phase1, s.phase2, s.falloff, 0);
+      b[i].set(s.phase1, s.phase2, s.falloff, KIND_ID[s.kind]);
       const t = this.tracks(s);
-      c[i].set(t[0], t[1], 0, 0);
+      c[i].set(t[0], t[1], s.aveA, s.aveB);
     }
   }
 
@@ -100,7 +109,7 @@ export class Cities {
   }
 
   /** Absolute height of the roof over (x, z) in the loaded city, or -Infinity on open ground. */
-  roofAt(x: number, z: number): number {
+  roofAt(x: number, z: number, y = Infinity): number {
     const c = this.active;
     if (!c) return -Infinity;
     const s = c.site;
@@ -109,11 +118,71 @@ export class Cities {
     const co = Math.cos(s.rot);
     const si = Math.sin(s.rot);
     const p = c.plan;
-    const i = Math.floor(co * dx + si * dz + p.gridHalf);
-    const j = Math.floor(-si * dx + co * dz + p.gridHalf);
-    if (i < 0 || j < 0 || i >= p.gridSize || j >= p.gridSize) return -Infinity;
+    const lx = co * dx + si * dz;
+    const lz = -si * dx + co * dz;
+    const top = s.groundY + c.solids.topAt(lx, lz, y - s.groundY);
+    const i = Math.floor(lx + p.gridHalf);
+    const j = Math.floor(lz + p.gridHalf);
+    if (i < 0 || j < 0 || i >= p.gridSize || j >= p.gridSize) return top;
     const h = p.grid[j * p.gridSize + i];
-    return h > 0 ? s.groundY + h : -Infinity;
+    return h > 0 ? Math.max(top, s.groundY + h) : top;
+  }
+
+  /** 1 on desktop, 0.7 low, 0.35 phones. Changing it rebuilds the extras of every loaded city. */
+  setDensity(d: number) {
+    if (d === this.density) return;
+    this.density = d;
+    for (const c of this.loaded.values()) this.dropExtras(c);
+  }
+
+  /** Per-frame work of the city the player is in, and how loud each kind of ambient sound is here (0..1). */
+  frame(f: FrameState): Record<EmitterKind, number> {
+    const amb = this.ambience;
+    for (const k of EMITTER_KINDS) amb[k] = 0;
+    const c = this.active;
+    if (!c) return amb;
+    const s = c.site;
+    const dx = f.player.pos.x - s.cx;
+    const dz = f.player.pos.z - s.cz;
+    const co = Math.cos(s.rot);
+    const si = Math.sin(s.rot);
+    this.local.set(co * dx + si * dz, f.player.pos.y - s.groundY, -si * dx + co * dz);
+    for (const e of c.extras) {
+      e.update?.(f, this.local);
+      for (const m of e.emitters) {
+        const d = Math.hypot(m.x - this.local.x, m.z - this.local.z);
+        const v = m.gain * Math.max(0, 1 - d / (m.reach ?? 40));
+        if (v > 0) amb[m.kind] = Math.min(1, Math.hypot(amb[m.kind], v));
+      }
+    }
+    return amb;
+  }
+
+  private density = 1;
+  private local = new THREE.Vector3();
+  private ambience: Record<EmitterKind, number> = { water: 0, leaves: 0, mill: 0, fire: 0, birds: 0 };
+
+  private dropExtras(c: Loaded) {
+    for (const e of c.extras) {
+      c.meshes.near.remove(e.near);
+      if (e.far) c.meshes.far.remove(e.far);
+      e.dispose();
+    }
+    c.extras = [];
+    c.ctx = null;
+    c.solids = new SolidIndex();
+  }
+
+  /** Builds the next missing extra of a city. Returns true if it did some work. */
+  private buildExtra(c: Loaded): boolean {
+    if (c.extras.length >= EXTRAS.length) return false;
+    c.ctx ??= createExtraCtx(c.plan, this.u, this.density, (x, z) => this.world.height(x, z), this.tracks(c.site));
+    const e = EXTRAS[c.extras.length](c.ctx);
+    c.extras.push(e);
+    c.meshes.near.add(e.near);
+    if (e.far) c.meshes.far.add(e.far);
+    for (const s of e.solids) c.solids.add(s);
+    return true;
   }
 
   private load(site: CitySite): Loaded {
@@ -125,7 +194,7 @@ export class Cities {
     holder.add(meshes.near, meshes.far);
     meshes.near.visible = false;
     this.group.add(holder);
-    const entry: Loaded = { site, plan, meshes, holder, map: null, reached: this.reachedIds.has(site.id) };
+    const entry: Loaded = { site, plan, meshes, holder, map: null, reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex() };
     this.loaded.set(site.id, entry);
     return entry;
   }
@@ -152,13 +221,20 @@ export class Cities {
     }
     this.scanT = 0.4;
 
+    let built = false;
     // Bring cities into range one at a time so a single frame never builds two.
     for (const site of this.sites) {
       const d = Math.hypot(site.cx - pos.x, site.cz - pos.z) - site.radius;
       if (d < FAR_IN && !this.loaded.has(site.id)) {
         this.load(site);
+        built = true;
         break;
       }
+    }
+    // Then fill in their extras, nearest city first, one piece per scan.
+    if (!built) {
+      const order = [...this.loaded.values()].sort((p, q) => Math.hypot(p.site.cx - pos.x, p.site.cz - pos.z) - Math.hypot(q.site.cx - pos.x, q.site.cz - pos.z));
+      for (const c of order) if (this.buildExtra(c)) break;
     }
     // Every loaded city, wherever it is: drop the far ones, and choose skyline or full detail.
     for (const c of this.loaded.values()) {
@@ -166,6 +242,7 @@ export class Cities {
       const d = Math.hypot(site.cx - pos.x, site.cz - pos.z) - site.radius;
       if (d > FAR_OUT) {
         this.group.remove(c.holder);
+        this.dropExtras(c);
         c.meshes.dispose();
         c.map?.dispose();
         this.loaded.delete(site.id);

@@ -21,10 +21,13 @@ export interface CityMeshes {
 
 const STOREY = 3.2;
 /** Walls start a little below the plateau so the terrain blend never shows a seam. */
-const FOOT = -0.5;
+export const FOOT = -0.5;
 /** Water level of the pool, relative to the plateau. The terrain must dip below it inside the rim. */
 export const POOL_LEVEL = 0.06; // just above the plateau: the terrain is not carved under the pool
 const EPS = 1e-4;
+/** Garden beds: top of the stone kerb and of the soil inside it (plants stand on the soil). */
+const BED_RIM = 0.38;
+export const BED_SOIL = BED_RIM - 0.08;
 
 // ------------------------------------------------------------------ hashing
 
@@ -55,7 +58,7 @@ const clamp = (x: number, a: number, b: number): number => (x < a ? a : x > b ? 
  * Growable typed-array mesh: position f32x3, normal i8x3 (normalized), aInfo u8x4
  * (material, tint, window seed, stripes/sway; read as 0..255 floats), aUv u8x2 (normalized).
  */
-class Writer {
+export class Writer {
   pos: Float32Array;
   nrm: Int8Array;
   info: Uint8Array;
@@ -275,7 +278,7 @@ function setBounds(g: THREE.BufferGeometry, pos: Float32Array): void {
 
 // ------------------------------------------------------------------ glows
 
-class Glows {
+export class Glows {
   readonly d: number[] = [];
   get count(): number {
     return this.d.length / 7;
@@ -504,7 +507,7 @@ function overlaps(holes: Hole[], u0: number, u1: number, y0: number, y1: number,
 // ------------------------------------------------------------------ round shapes
 
 /** Smooth dome of radius r and height hgt on base y0; point 0 = round, up to ~0.5 = pointed. */
-function dome(w: Writer, cx: number, cz: number, r: number, y0: number, hgt: number, segs: number, rings: number, point: number): void {
+export function dome(w: Writer, cx: number, cz: number, r: number, y0: number, hgt: number, segs: number, rings: number, point: number): void {
   const nv = (rings + 1) * (segs + 1);
   w.reserve(nv, rings * segs * 6);
   const base = w.nv;
@@ -546,7 +549,7 @@ function dome(w: Writer, cx: number, cz: number, r: number, y0: number, hgt: num
 }
 
 /** Smooth vertical cylinder wall (no caps). */
-function cylinder(w: Writer, cx: number, cz: number, r: number, y0: number, y1: number, segs: number): void {
+export function cylinder(w: Writer, cx: number, cz: number, r: number, y0: number, y1: number, segs: number): void {
   w.reserve((segs + 1) * 2, segs * 6);
   const base = w.nv;
   for (let i = 0; i <= segs; i++) {
@@ -563,7 +566,7 @@ function cylinder(w: Writer, cx: number, cz: number, r: number, y0: number, y1: 
 }
 
 /** Flat ring (annulus) facing up or down. */
-function annulus(w: Writer, cx: number, cz: number, r0: number, r1: number, y: number, segs: number, up: boolean): void {
+export function annulus(w: Writer, cx: number, cz: number, r0: number, r1: number, y: number, segs: number, up: boolean): void {
   for (let i = 0; i < segs; i++) {
     const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
     const c0 = Math.cos(a0), s0 = Math.sin(a0), c1 = Math.cos(a1), s1 = Math.sin(a1);
@@ -572,7 +575,7 @@ function annulus(w: Writer, cx: number, cz: number, r0: number, r1: number, y: n
 }
 
 /** Faceted tapering prism from radius r0 at y0 to r1 at y1 (r1 = 0 makes a pyramid). Flat-shaded. */
-function taper(w: Writer, cx: number, cz: number, r0: number, r1: number, y0: number, y1: number, sides: number, rot: number): void {
+export function taper(w: Writer, cx: number, cz: number, r0: number, r1: number, y0: number, y1: number, sides: number, rot: number): void {
   for (let k = 0; k < sides; k++) {
     const a0 = rot + (k / sides) * Math.PI * 2, a1 = rot + ((k + 1) / sides) * Math.PI * 2;
     const am = (a0 + a1) / 2;
@@ -587,7 +590,7 @@ function taper(w: Writer, cx: number, cz: number, r0: number, r1: number, y0: nu
 }
 
 /** Flat polygon cap (fan), facing up. */
-function polyCap(w: Writer, cx: number, cz: number, r: number, y: number, sides: number, rot: number): void {
+export function polyCap(w: Writer, cx: number, cz: number, r: number, y: number, sides: number, rot: number): void {
   for (let k = 0; k < sides; k++) {
     const a0 = rot + (k / sides) * Math.PI * 2, a1 = rot + ((k + 1) / sides) * Math.PI * 2;
     w.tri(cx, y, cz, cx + Math.cos(a0) * r, y, cz + Math.sin(a0) * r, cx + Math.cos(a1) * r, y, cz + Math.sin(a1) * r, 0, 1, 0);
@@ -595,7 +598,7 @@ function polyCap(w: Writer, cx: number, cz: number, r: number, y: number, sides:
 }
 
 /** A small faceted orb on a needle. */
-function finial(w: Writer, cx: number, y: number, cz: number, s: number): void {
+export function finial(w: Writer, cx: number, y: number, cz: number, s: number): void {
   taper(w, cx, cz, s * 0.12, s * 0.06, y, y + s * 0.6, 4, Math.PI / 4);
   const yc = y + s * 0.85;
   const r = s * 0.28;
@@ -634,7 +637,7 @@ interface Layout {
   turrets: { s: number; hgt: number } | null;
 }
 
-function layoutOf(plan: CityPlan, b: Building, i: number): Layout {
+export function layoutOf(plan: CityPlan, b: Building, i: number): Layout {
   const seed = plan.site.seed | 0;
   const H = (k: number): number => hashU(seed, i, k);
   const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2, z0 = b.z - b.d / 2, z1 = b.z + b.d / 2;
@@ -780,7 +783,7 @@ class NearBuilder {
     w.extra = 0;
     if (!b.solid || b.roof === 'canopy' || b.roof === 'none') {
       if (b.roof === 'canopy') this.canopy(b, rng);
-      else if (b.role === 'garden') this.garden(b, rng);
+      else if (b.role === 'garden') this.garden(b);
       else if (b.role === 'stall') this.stall(b, rng);
       else if (b.solid && b.h > 0.2) this.plainBox(b, i);
       return;
@@ -1395,129 +1398,19 @@ class NearBuilder {
     c.extra = 0;
   }
 
-  private garden(b: Building, rng: () => number): void {
+  /** A raised bed: stone kerb and soil. What grows in it comes from the plants extra (extra/plants.ts). */
+  private garden(b: Building): void {
     const w = this.w;
     const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2, z0 = b.z - b.d / 2, z1 = b.z + b.d / 2;
-    const rimH = 0.38, t = 0.25;
+    const t = 0.25;
     w.mat = MAT.stone;
-    w.box(x0, FOOT, z0, x1, rimH, z0 + t);
-    w.box(x0, FOOT, z1 - t, x1, rimH, z1);
-    w.box(x0, FOOT, z0 + t, x0 + t, rimH, z1 - t, 1 | 2 | 4);
-    w.box(x1 - t, FOOT, z0 + t, x1, rimH, z1 - t, 1 | 2 | 4);
+    w.box(x0, FOOT, z0, x1, BED_RIM, z0 + t);
+    w.box(x0, FOOT, z1 - t, x1, BED_RIM, z1);
+    w.box(x0, FOOT, z0 + t, x0 + t, BED_RIM, z1 - t, 1 | 2 | 4);
+    w.box(x1 - t, FOOT, z0 + t, x1, BED_RIM, z1 - t, 1 | 2 | 4);
     w.mat = MAT.soil;
-    w.quad(x0 + t, rimH - 0.08, z0 + t, x1 - t, rimH - 0.08, z0 + t, x1 - t, rimH - 0.08, z1 - t, x0 + t, rimH - 0.08, z1 - t, 0, 1, 0);
+    w.quad(x0 + t, BED_SOIL, z0 + t, x1 - t, BED_SOIL, z0 + t, x1 - t, BED_SOIL, z1 - t, x0 + t, BED_SOIL, z1 - t, 0, 1, 0);
     w.mat = MAT.plaster;
-    const area = (b.w - 2 * t) * (b.d - 2 * t);
-    if (area <= 0.5) return;
-    const n = clamp(Math.round(area / 7), 1, 16);
-    let palms = 0;
-    const gy = rimH - 0.08;
-    for (let k = 0; k < n; k++) {
-      const x = x0 + t + 0.4 + rng() * Math.max(0, b.w - 2 * t - 0.8);
-      const z = z0 + t + 0.4 + rng() * Math.max(0, b.d - 2 * t - 0.8);
-      if (area > 14 && palms < 3 && rng() < 0.35) {
-        palms++;
-        this.palm(x, gy, z, 2.6 + rng() * 2.4, rng);
-      } else {
-        this.shrub(x, gy, z, 0.35 + rng() * 0.45, rng);
-      }
-    }
-  }
-
-  private palm(x: number, y: number, z: number, hgt: number, rng: () => number): void {
-    const p = this.plants;
-    const lean = rng() * Math.PI * 2;
-    const lx = Math.cos(lean) * hgt * 0.12, lz = Math.sin(lean) * hgt * 0.12;
-    const tx = x + lx, tz = z + lz, ty = y + hgt;
-    // trunk in two lengths, leaning more toward the top
-    p.mat = MAT.wood;
-    p.tint = 90 + Math.floor(rng() * 60);
-    const mx = x + lx * 0.35, mz = z + lz * 0.35, my = y + hgt * 0.5;
-    const seg = (ax: number, ay: number, az: number, ra: number, bx: number, by: number, bz: number, rb: number, s0: number, s1: number): void => {
-      for (let k = 0; k < 5; k++) {
-        const a0 = (k / 5) * Math.PI * 2, a1 = ((k + 1) / 5) * Math.PI * 2;
-        const c0 = Math.cos(a0), q0 = Math.sin(a0), c1 = Math.cos(a1), q1 = Math.sin(a1);
-        p.extra = Math.round(s0 * 255);
-        p.reserve(4, 6);
-        const i0 = p.vert(ax + c0 * ra, ay, az + q0 * ra, c0, 0, q0, 0, 0);
-        const i1 = p.vert(ax + c1 * ra, ay, az + q1 * ra, c1, 0, q1, 1, 0);
-        p.extra = Math.round(s1 * 255);
-        const i2 = p.vert(bx + c1 * rb, by, bz + q1 * rb, c1, 0, q1, 1, 1);
-        const i3 = p.vert(bx + c0 * rb, by, bz + q0 * rb, c0, 0, q0, 0, 1);
-        p.index3(i0, i2, i1);
-        p.index3(i0, i3, i2);
-      }
-    };
-    seg(x, y - 0.1, z, 0.17, mx, my, mz, 0.14, 0, 0.25);
-    seg(mx, my, mz, 0.14, tx, ty, tz, 0.11, 0.25, 0.45);
-    // fronds: drooping ribbons
-    p.mat = MAT.plant;
-    p.tint = 100 + Math.floor(rng() * 120);
-    const nf = 7 + Math.floor(rng() * 3);
-    const S = 4;
-    for (let f = 0; f < nf; f++) {
-      const a = (f / nf) * Math.PI * 2 + rng() * 0.4;
-      const L = 1.8 + rng() * 0.9;
-      const dx = Math.cos(a), dz = Math.sin(a);
-      const sx = -dz, sz = dx; // across the frond
-      const lift = 0.35 + rng() * 0.35;
-      p.reserve((S + 1) * 2, S * 6);
-      const st = p.nv;
-      for (let k = 0; k <= S; k++) {
-        const s = k / S;
-        const r = L * s;
-        const yy = ty + lift * Math.sin(s * Math.PI * 0.9) - s * s * 1.1;
-        const wd = 0.32 * Math.sin(Math.PI * (s * 0.85 + 0.1));
-        const cx = tx + dx * r, cz = tz + dz * r;
-        // normal: up, tilted outward as the frond droops
-        const tilt = s * 0.8;
-        const nx = dx * tilt, ny = 1, nz = dz * tilt;
-        const nl = Math.hypot(nx, ny, nz);
-        p.extra = Math.round((0.45 + 0.55 * s) * 255);
-        p.vert(cx + sx * wd, yy - wd * 0.25, cz + sz * wd, nx / nl, ny / nl, nz / nl, 0, s);
-        p.vert(cx - sx * wd, yy - wd * 0.25, cz - sz * wd, nx / nl, ny / nl, nz / nl, 1, s);
-      }
-      for (let k = 0; k < S; k++) {
-        const i0 = st + k * 2;
-        p.index3(i0, i0 + 1, i0 + 2);
-        p.index3(i0 + 1, i0 + 3, i0 + 2);
-      }
-    }
-    p.extra = 0;
-  }
-
-  private shrub(x: number, y: number, z: number, r: number, rng: () => number): void {
-    const p = this.plants;
-    p.mat = MAT.plant;
-    p.tint = 60 + Math.floor(rng() * 150);
-    const n = 6;
-    const rot = rng() * 6.28;
-    p.reserve(n * 2 + 1, n * 9);
-    const st = p.nv;
-    const top = y + r * (1.0 + rng() * 0.4);
-    p.extra = 0;
-    for (let k = 0; k < n; k++) {
-      const a = rot + (k / n) * Math.PI * 2;
-      const c = Math.cos(a), s = Math.sin(a);
-      p.vert(x + c * r * 0.6, y - 0.05, z + s * r * 0.6, c * 0.9, -0.3, s * 0.9, 0, 0);
-    }
-    p.extra = 60;
-    for (let k = 0; k < n; k++) {
-      const a = rot + ((k + 0.5) / n) * Math.PI * 2;
-      const c = Math.cos(a), s = Math.sin(a);
-      const rr = r * (0.85 + 0.3 * rng());
-      p.vert(x + c * rr, y + r * 0.5, z + s * rr, c * 0.8, 0.45, s * 0.8, 0, 0.5);
-    }
-    p.extra = 90;
-    const tip = p.vert(x, top, z, 0, 1, 0, 0, 1);
-    for (let k = 0; k < n; k++) {
-      const k1 = (k + 1) % n;
-      const b0 = st + k, b1 = st + k1, m0 = st + n + k, mp = st + n + ((k + n - 1) % n);
-      p.index3(b0, m0, b1);
-      p.index3(b0, mp, m0);
-      p.index3(m0, tip, st + n + k1);
-    }
-    p.extra = 0;
   }
 
   private stall(b: Building, rng: () => number): void {

@@ -64,8 +64,8 @@ export class Player {
   private side: -1 | 1 = 1;
   private pull = 0;
 
-  /** Optional: absolute height of a roof over (x, z), or -Infinity where the ground is open. */
-  roof: ((x: number, z: number) => number) | null = null;
+  /** Optional: absolute height of a roof over (x, z) for feet at height y, or -Infinity where the ground is open. */
+  roof: ((x: number, z: number, y: number) => number) | null = null;
 
   constructor(private world: World) {}
 
@@ -75,7 +75,7 @@ export class Player {
   /** The surface you can stand on: the terrain (or a pool bed), or a roof above it. */
   private top(x: number, z: number): number {
     const h = this.world.height(x, z) - (this.dip ? this.dip(x, z) : 0);
-    return this.roof ? Math.max(h, this.roof(x, z)) : h;
+    return this.roof ? Math.max(h, this.roof(x, z, this.state.pos.y)) : h;
   }
 
   place(x: number, z: number) {
