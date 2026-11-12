@@ -259,8 +259,10 @@ function start() {
   discoveries.onReach = () => audio.chime();
   cities.onReach = () => audio.chime();
   // Roofs you can land on: buildings, and the rock over a cave once you are above its ceiling.
+  // (rock ceilings: the caves in the massifs, and the caps over the springs)
+  const ceilAt = (x: number, z: number) => Math.min(world.caveCeil(x, z), discoveries.capCeil(x, z));
   const caveRoofAt = (x: number, z: number, y: number) => {
-    const ceil = world.caveCeil(x, z);
+    const ceil = ceilAt(x, z);
     return ceil < Infinity && y > ceil - 0.3 ? world.uncarved(x, z) : -Infinity;
   };
   player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y));
@@ -465,7 +467,7 @@ function start() {
     player.update(dt, input, camYaw, events);
     // A cave has a ceiling: you cannot rise through the rock.
     {
-      const ceil = world.caveCeil(st.pos.x, st.pos.z);
+      const ceil = ceilAt(st.pos.x, st.pos.z);
       inCave = ceil < Infinity && st.pos.y < ceil - 0.3;
       if (inCave && st.pos.y > ceil - 1.9) {
         st.pos.y = ceil - 1.9;
@@ -555,7 +557,7 @@ function start() {
     }
     camera.position.copy(camTarget).addScaledVector(tmp2, dist);
     camera.position.y = Math.max(camera.position.y, topAt(camera.position.x, camera.position.z) + 0.7);
-    if (inCave) camera.position.y = Math.min(camera.position.y, world.caveCeil(camera.position.x, camera.position.z) - 0.4);
+    if (inCave) camera.position.y = Math.min(camera.position.y, ceilAt(camera.position.x, camera.position.z) - 0.4);
     camera.lookAt(camTarget);
     const fov = 50 + Math.min(14, st.speed * 0.55);
     if (Math.abs(camera.fov - fov) > 0.05) {

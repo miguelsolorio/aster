@@ -561,7 +561,14 @@ void main() {
     col = mix(col, grassCol, 0.72 * grow * low * smoothstep(0.0, 0.15, bank));
     // wet sand at the water's edge
     col *= 1.0 - 0.3 * (1.0 - smoothstep(${TERRAIN.riverHalf}.0, ${TERRAIN.riverHalf + 5}.0, rd)) * smoothstep(0.3, 0.6, bank);
-    float wa = (1.0 - smoothstep(${TERRAIN.riverHalf - 1.2}, ${TERRAIN.riverHalf + 0.3}, rd)) * smoothstep(0.35, 0.7, vMask.w) * (1.0 - pave);
+    // The water ends cleanly: at a spring it starts at the lip of the notch in the headwall, no
+    // wider than the notch, and spreads to the river's full width by the pool.
+    float hw = mix(${TERRAIN.springHalf - 1.5}, ${TERRAIN.riverHalf - 1.2}, smoothstep(${TERRAIN.springLip + 0.02}, 0.97, vMask.w));
+    float wa = (1.0 - smoothstep(hw, hw + 1.5, rd)) * smoothstep(${TERRAIN.springLip}, ${TERRAIN.springLip + 0.03}, vMask.w) * (1.0 - pave);
+    // the notch itself: dark inside, wet at the bottom. It stops at the notch's back wall, so
+    // none of it shows on the cliff above the rock that caps the notch.
+    float mouth = (1.0 - smoothstep(${TERRAIN.springHalf - 1.5}, ${TERRAIN.springHalf + 0.5}, rd)) * smoothstep(${TERRAIN.springBack - 0.045}, ${TERRAIN.springBack - 0.01}, vMask.w) * (1.0 - smoothstep(${TERRAIN.springLip}, ${TERRAIN.springLip + 0.03}, vMask.w)) * smoothstep(${TERRAIN.waterY + 8}.0, ${TERRAIN.waterY + 14}.0, p.y);
+    col = mix(col, mix(uShade * 0.16, uTop * vec3(0.3, 0.5, 0.48), 0.25), 0.94 * mouth);
     if (wa > 0.001) {
       vec3 V = toCam / max(dist, 1e-4);
       vec2 wq = p.xz * 0.3;
@@ -634,6 +641,32 @@ void main() {
   col = mix(col, uFogCol, 1.0 - exp(-dist * uFog * hazeAt(p.y)));
 
   gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// ---------------------------------------------------------------- ROCK CAPS
+
+// The rock over a cave or a spring's notch is a small mesh of its own (the ground cannot
+// overhang). It is drawn with terrainFrag, fed the same values the ground would give it, so the
+// cliff carries on across it unbroken.
+export const rockCapVert = /* glsl */ `
+precision highp float;
+
+attribute vec2 aMask; // rock, salt
+attribute float aCave; // 1 on faces inside the hollow
+
+varying vec3 vW;
+varying vec3 vN;
+varying vec4 vMask;
+varying float vCave;
+
+void main() {
+  vec3 wp = (modelMatrix * vec4(position, 1.0)).xyz;
+  vW = wp;
+  vN = normal;
+  vMask = vec4(aMask, 300.0, 0.0); // far from any river
+  vCave = aCave;
+  gl_Position = projectionMatrix * vec4(mat3(viewMatrix) * (wp - cameraPosition), 1.0);
 }
 `;
 
