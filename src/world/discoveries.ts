@@ -1792,13 +1792,15 @@ export class Discoveries {
     const W = Math.abs(bend) + half + bulge + 5;
     // Dunes leave few places level enough, so a handful of spots around the cell's own are
     // tried, each with the cavern lying six ways, and the first that fits is the one.
-    for (let k = 0; k < 30; k++) {
+    for (let k = 0; k < 48; k++) {
       const spot = Math.floor(k / 6);
       const x = Math.fround(x0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 40 + spot) - 0.5) * 240));
       const z = Math.fround(z0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 50 + spot) - 0.5) * 240));
       if (k % 6 === 0) {
         w.sample(x, z, q);
-        if (q.rock > 0.08 || q.salt > 0.25) {
+        // (and the spot itself must be close to level, or the dip that marks it could not be seen)
+        const tilt = Math.max(Math.abs(w.height(x + 6, z) - w.height(x - 6, z)), Math.abs(w.height(x, z + 6) - w.height(x, z - 6)));
+        if (q.rock > 0.08 || q.salt > 0.25 || tilt > 1.3) {
           k += 5;
           continue;
         }

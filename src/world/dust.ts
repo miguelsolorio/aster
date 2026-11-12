@@ -63,8 +63,10 @@ void main() {
   float fadeOut = 1.0 - smoothstep(0.08, 1.0, u);
   vec3 vd = normalize(wp - cameraPosition);
   float back = pow(max(dot(vd, uSunDir), 0.0), 3.0);
-  vAlpha = aAlpha * fadeIn * fadeOut * fadeOut * (1.0 + 1.8 * back) * (1.0 - 0.5 * uNight);
-  vec3 col = mix(uShade, uLit, 0.7 + 0.3 * back);
+  // (an alpha above 2 marks dust hanging low and thick enough to read dark against the sand under it)
+  float low = step(2.0, aAlpha);
+  vAlpha = (aAlpha - 2.0 * low) * fadeIn * fadeOut * mix(fadeOut, 1.0, low) * (1.0 + 1.8 * back * (1.0 - low)) * (1.0 - 0.5 * uNight);
+  vec3 col = mix(mix(uShade, uLit, 0.7 + 0.3 * back), uShade * 0.9, low);
   float fog = (1.0 - exp(-dist * uFog)) * 0.6;
   vCol = mix(col, uFogCol, fog);
 }
@@ -260,7 +262,7 @@ export class Dust {
    * as it does everywhere else. Call every frame with dt; (x, y, z) is the middle of the patch.
    */
   wisp(x: number, y: number, z: number, radius: number, dt: number): void {
-    if (Math.random() > dt * 7 * this.density) return;
+    if (Math.random() > dt * 9 * this.density) return;
     const a = Math.random() * Math.PI * 2;
     const r = Math.sqrt(Math.random()) * radius;
     // a slow turn about the middle, barely rising
@@ -269,8 +271,8 @@ export class Dust {
       x + Math.cos(a) * r, y + 0.06 + Math.random() * 0.2, z + Math.sin(a) * r,
       -Math.sin(a) * sp, 0.05 + Math.random() * 0.1, Math.cos(a) * sp,
       3.5 + Math.random() * 2.5,
-      0.16 + Math.random() * 0.14,
-      0.2, 0.0, SPINDRIFT_ALPHA * 0.8,
+      0.3 + Math.random() * 0.25,
+      0.2, 0.0, 2 + 0.3,
     );
   }
 
