@@ -7,6 +7,7 @@ import { HeightBake } from '../world/heightBake';
 import { Clipmap } from '../world/clipmap';
 import { TrailField } from '../world/trailField';
 import { Dust } from '../world/dust';
+import { Splash } from '../world/splash';
 import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
 import { Cities } from '../city/cities';
@@ -135,12 +136,13 @@ function start() {
   const clipmap = new Clipmap(u);
   const dust = new Dust(world, u);
   const discoveries = new Discoveries(world, u);
+  const splash = new Splash(u);
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, u);
   const waymarks = new Waymarks(world, world.cities, u);
   const people = new People(u);
   const massifs = new Massifs(world, u);
-  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, dust.group, massifs.group);
+  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, dust.group, splash.group, massifs.group);
 
   const figure = new Figure(u);
   scene.add(figure.group);
@@ -176,6 +178,7 @@ function start() {
     applyQuality(QUALITY[auto.tier], { uniforms: u, clipmap, bake, dust });
     people.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     cities.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
+    splash.setDensity(auto.tier === 'mobile' ? 0.5 : auto.tier === 'low' ? 0.75 : 1);
     resize();
   }
   function resize() {
@@ -265,13 +268,58 @@ function start() {
     const ceil = ceilAt(x, z);
     return ceil < Infinity && y > ceil - 0.3 ? world.uncarved(x, z) : -Infinity;
   };
-  player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y));
-  // Pools and rivers are waded: you stand a little below the surface.
+  // (and the things found out in the desert: standing stones, fallen columns, the great bones)
+  player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y), discoveries.topAt(x, z, y));
+  // What the feet are on when it is not the ground: 0 stone, 1 bone, 2 wood, or -1 for the ground itself.
+  const propUnder = (x: number, z: number, y: number) => {
+    const t = discoveries.topAt(x, z, y);
+    return Math.abs(t - y) < 0.3 && t > world.height(x, z) + 0.4 ? discoveries.solidKind : -1;
+  };
+  player.hard = (x, z, y) => propUnder(x, z, y) >= 0;
+  // Water, wherever it lies: a river painted on its bed, a city's pool, an oasis in the dunes.
+  // Fills `water` with the height of the surface and how deep it stands over the ground.
+  const water = { y: 0, depth: 0 };
   const wadeS = { h: 0, rock: 0, salt: 0, green: 0 };
-  player.dip = (x, z) => {
+  const smooth = (a: number, b: number, v: number) => {
+    const t = Math.min(1, Math.max(0, (v - a) / (b - a)));
+    return t * t * (3 - 2 * t);
+  };
+  const waterAt = (x: number, z: number): boolean => {
     const pool = cities.poolDepthAt(x, z);
-    if (pool > 0 || world.river(x, z) > TERRAIN.riverHalf) return pool;
-    return (world.sample(x, z, wadeS).green ?? 0) > 0.6 ? TERRAIN.riverWade : 0;
+    if (pool > 0) {
+      water.y = world.height(x, z);
+      water.depth = pool;
+      return true;
+    }
+    const rd = world.river(x, z);
+    if (rd < TERRAIN.riverHalf) {
+      // the same edge the ground paints its water to: narrower where the river runs out at a spring
+      const green = world.sample(x, z, wadeS).green ?? 0;
+      const half = TERRAIN.springHalf - 1.5 + (TERRAIN.riverHalf - 1.2 - (TERRAIN.springHalf - 1.5)) * smooth(TERRAIN.springLip + 0.02, 0.97, green);
+      if (green > 0.6 && rd < half + 0.75) {
+        water.y = wadeS.h;
+        water.depth = TERRAIN.riverWade;
+        return true;
+      }
+    }
+    const oasis = discoveries.poolAt(x, z);
+    if (oasis > -Infinity) {
+      const h = world.height(x, z);
+      if (oasis > h + 0.03) {
+        water.y = oasis;
+        water.depth = oasis - h;
+        return true;
+      }
+    }
+    return false;
+  };
+  // Pools and rivers are waded: you stand a little below the surface. (An oasis lies over
+  // the sand, so its bed is the ground already.)
+  player.dip = (x, z) => (waterAt(x, z) && water.y - world.height(x, z) < 0.01 ? water.depth : 0);
+  // Whether the wanderer's feet are in water now; `water` then holds the surface.
+  const wading = () => {
+    const p = player.state.pos;
+    return waterAt(p.x, p.z) && p.y < water.y - 0.02 && p.y > water.y - water.depth - 0.5;
   };
   // What the camera must stay above: sand, or a roof.
   const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z, camera.position.y), inCave ? -Infinity : caveRoofAt(x, z, camera.position.y));
@@ -384,6 +432,8 @@ function start() {
   const tmp2 = new THREE.Vector3();
   const sliders: Array<{ x: number; z: number; life: number }> = [];
   let slideStampDist = 0;
+  let wakeDist = 0;
+  let wakeSound = 0;
   let cityNear = 0;
   let bustle = 0;
   let airCam = 0;
@@ -400,6 +450,19 @@ function start() {
       const rock = player.state.onRock > 0.5;
       const ox = -Math.sin(heading) * 0.17 * side;
       const oz = Math.cos(heading) * 0.17 * side;
+      const run = player.state.running;
+      // A foot in water throws it up and leaves a ring; nothing of the bed is disturbed.
+      if (wading()) {
+        splash.burst(x + ox, water.y, z + oz, player.state.vel.x, player.state.vel.z, run ? 0.3 : 0.14);
+        splash.ring(x + ox, water.y, z + oz, run ? 1.4 : 1, 1.1);
+        audio.splash(run ? 0.36 : 0.22);
+        return;
+      }
+      const prop = rock ? propUnder(x, z, player.state.pos.y) : -1;
+      if (prop >= 0) {
+        audio.knock(run ? 0.9 : 0.6, prop === 1);
+        return;
+      }
       if (!rock) {
         trail.stamp(x + ox, z + oz, 0.13, 0.95, heading, 1.9);
         tmp.set(x + ox, player.state.pos.y + 0.05, z + oz);
@@ -411,6 +474,20 @@ function start() {
       audio.footstep(player.state.running ? 0.9 : 0.6, rock);
     },
     jump() {
+      const p = player.state.pos;
+      if (wading()) {
+        splash.burst(p.x, water.y, p.z, player.state.vel.x, player.state.vel.z, 0.4);
+        splash.ring(p.x, water.y, p.z, 1.6, 1.2);
+        audio.splash(0.35);
+        buzz(8);
+        return;
+      }
+      const prop = propUnder(p.x, p.z, p.y);
+      if (prop >= 0) {
+        audio.knock(1, prop === 1);
+        buzz(8);
+        return;
+      }
       if (player.state.onRock < 0.5) {
         tmp.copy(player.state.pos);
         tmp2.set(0, 2, 0);
@@ -422,6 +499,22 @@ function start() {
     },
     land(strength: number) {
       const p = player.state.pos;
+      // Into water: a crown of spray and two rings, the second wider and slower.
+      if (wading()) {
+        splash.burst(p.x, water.y, p.z, player.state.vel.x, player.state.vel.z, 0.4 + 0.6 * strength);
+        splash.ring(p.x, water.y, p.z, 1.6 + 1.6 * strength, 1.2);
+        splash.ring(p.x, water.y, p.z, 2.6 + 3 * strength, 2);
+        audio.splash(0.45 + 0.55 * strength);
+        buzz(6 + Math.round(strength * 18));
+        return;
+      }
+      // Onto a stone or a bone: no sand to throw, and a harder sound.
+      const prop = propUnder(p.x, p.z, p.y);
+      if (prop >= 0) {
+        audio.thud(strength, prop === 1);
+        buzz(8 + Math.round(strength * 22));
+        return;
+      }
       if (player.state.onRock < 0.5) {
         trail.stamp(p.x, p.z, 0.35 + strength * 0.6, 1);
         tmp2.copy(player.state.vel).multiplyScalar(0.3).setY(2 + strength * 3);
@@ -464,7 +557,30 @@ function start() {
     input.lift = playing && (keys.has('Space') || touch.flyHeld);
     input.drop = playing && touch.dropHeld;
     jumpQueued = false;
-    player.update(dt, input, camYaw, events);
+    // Near the things found in the desert a fast move is taken in short steps, so a rib a
+    // hand's width across is not stepped clean over between two frames.
+    {
+      const near = dt > 0 && discoveries.nearSolids(st.pos.x, st.pos.z, 15);
+      const steps = near ? Math.min(8, Math.max(1, Math.ceil((Math.hypot(st.vel.x, st.vel.y, st.vel.z) * dt) / 0.3))) : 1;
+      const h = dt / steps;
+      for (let i = 0; i < steps; i++) {
+        if (i > 0) input.jump = false;
+        // You cannot rise through a stone you are under: slow to meet its underside, and stay below it.
+        let under = Infinity;
+        if (near && !st.grounded) {
+          under = discoveries.ceilAt(st.pos.x, st.pos.z, st.pos.y) - 1.9;
+          if (st.vel.y > 0 && st.pos.y + st.vel.y * h > under) st.vel.y = Math.max(0, (under - st.pos.y) / h);
+        }
+        player.update(h, input, camYaw, events);
+        if (near && !st.grounded) {
+          under = discoveries.ceilAt(st.pos.x, st.pos.z, Math.min(st.pos.y, under)) - 1.9;
+          if (st.pos.y > under) {
+            st.pos.y = under;
+            if (st.vel.y > 0) st.vel.y = 0;
+          }
+        }
+      }
+    }
     // A cave has a ceiling: you cannot rise through the rock.
     {
       const ceil = ceilAt(st.pos.x, st.pos.z);
@@ -476,7 +592,25 @@ function start() {
     }
 
     // Riding leaves one clean line in the sand; carving widens it and throws spray to the outside.
-    if (st.sliding && st.grounded && st.onRock < 0.5) {
+    const wet = st.grounded && wading();
+    if (wet && st.speed > 0.6) {
+      // Moving through water: a ring every stride's length, and riding through it throws spray.
+      wakeDist += st.speed * dt;
+      if (wakeDist > 0.8) {
+        wakeDist = 0;
+        splash.ring(st.pos.x, water.y, st.pos.z, 0.8 + Math.min(1.6, st.speed * 0.08), 1.1);
+        if (st.sliding) {
+          const k = Math.min(1, st.speed / 30);
+          splash.burst(st.pos.x, water.y, st.pos.z, st.vel.x, st.vel.z, 0.12 + 0.4 * k);
+          wakeSound += 0.8;
+          if (wakeSound > 2.4) {
+            wakeSound = 0;
+            audio.splash(0.2 + 0.3 * k);
+          }
+        }
+      }
+    }
+    if (st.sliding && st.grounded && st.onRock < 0.5 && !wet) {
       const carve = Math.min(1, Math.abs(player.turn) * st.speed * 0.045);
       slideStampDist += st.speed * dt;
       if (slideStampDist > 0.16) {
@@ -520,7 +654,11 @@ function start() {
       if (slideStampDist > 0.5) {
         slideStampDist = 0;
         const near = 1 - player.alt / 2;
-        if (world.sample(st.pos.x, st.pos.z, probe).rock < 0.5) {
+        if (waterAt(st.pos.x, st.pos.z) && st.pos.y - water.y < 2) {
+          // skimming water: it is the surface that answers, not the sand
+          splash.ring(st.pos.x, water.y, st.pos.z, 1.2 + near, 1.3);
+          if (Math.random() < 0.6 * near) splash.burst(st.pos.x, water.y, st.pos.z, st.vel.x, st.vel.z, 0.12 * near);
+        } else if (world.sample(st.pos.x, st.pos.z, probe).rock < 0.5) {
           trail.stamp(st.pos.x, st.pos.z, 0.55, 0.22 * near, Math.atan2(st.vel.z, st.vel.x), 2);
           if (Math.random() < 0.5 * near) {
             tmp.set(st.pos.x, st.pos.y - player.alt + 0.05, st.pos.z);
@@ -572,6 +710,7 @@ function start() {
     clipmap.update(camera.position);
     trail.update(dt, st.pos.x, st.pos.z);
     dust.update(frame);
+    splash.update(frame);
     discoveries.update(frame);
     massifs.update(frame, clipmap.levelCount);
     wildlife.update(frame);
@@ -616,6 +755,8 @@ function start() {
           for (let i = 0; i < Math.round(sec * 60); i++) update(1 / 60);
           render();
         },
+        // one step of the simulation with nothing drawn (for checking movement frame by frame)
+        step: (dt: number) => update(dt),
         freeze: (f: boolean) => (frozen = f),
         // switch the look without touching the saved choice
         look: (id: string) => {
@@ -624,7 +765,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, trail, renderer, discoveries, splash, waterAt, water, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let frozen = false;

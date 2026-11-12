@@ -9,6 +9,7 @@ import { STYLE_GLSL } from '../render/styleGlsl';
 import { TERRAIN, type Cave, type Massif } from './surface';
 import { rockCapVert, terrainFrag } from '../render/terrainShaders';
 import { CITY_CELL } from '../city/placement';
+import { Solids, type SolidKind } from './solids';
 
 const CELL = 900 * WORLD_SCALE;
 const MARGIN = 150; // keeps sites at least 300 m apart
@@ -266,6 +267,7 @@ const _q = new THREE.Quaternion();
 const _e = new THREE.Euler();
 const _p = new THREE.Vector3();
 const _s = new THREE.Vector3();
+const _mi = new THREE.Matrix4();
 
 class StoneBuilder {
   pos: number[] = [];
@@ -393,6 +395,10 @@ class Ctx {
   readonly fronds = new FrondBuilder();
   readonly pools: { y: number; r: number }[] = [];
   readonly glows: number[] = []; // x, y, z, size
+  /** What the wanderer walks into and stands on: one shape per stone, drum and length of bone. */
+  readonly solids = new Solids();
+  /** Off while building things you pass straight through (scrub, paving flush with the ground). */
+  solid = true;
   foot = 20;
   cy = 1;
   sy = 0;
@@ -437,6 +443,14 @@ class Ctx {
     _s.set(sx, sy, sz);
     _m.compose(_p, _q, _s);
     this.stone.geo(geo, _m);
+    // too slight to stand on or be stopped by: lantern posts, cross bars
+    if (!this.solid || geo === UNIT_CONE || Math.min(sx, sy, sz) < 0.25) return;
+    _mi.copy(_m).invert();
+    const kind = this.stone.k === 1 ? 1 : this.stone.k === 2 ? 2 : 0;
+    if (geo === UNIT_BLOB) this.solids.addPrim('ball', _m, _mi, kind);
+    else if (geo === UNIT_CYL) this.solids.addPrim('cyl', _m, _mi, kind);
+    else if (geo === UNIT_SLAB) this.solids.addPrim('box', _m, _mi, kind, 0.45, 0.45);
+    else this.solids.addPrim('box', _m, _mi, kind);
   }
 
   /** Converts frame points (u, y, v) to local points in place. */
@@ -452,6 +466,11 @@ class Ctx {
   tube(pts: THREE.Vector3[], radii: number[], sides: number, capEnd: boolean, flat = 1, tints?: number[]): void {
     const n = pts.length;
     if (n < 2) return;
+    if (this.solid) {
+      const kind: SolidKind = this.stone.k === 1 ? 1 : this.stone.k === 2 ? 2 : 0;
+      const wide = Math.sqrt(flat);
+      for (let i = 0; i < n - 1; i++) this.solids.addCapsule(pts[i], pts[i + 1], (radii[i] + radii[i + 1]) * 0.5 * wide, kind);
+    }
     const rings: number[] = [];
     const t = new THREE.Vector3();
     const prevT = new THREE.Vector3();
@@ -723,7 +742,9 @@ function buildOasis(c: Ctx): void {
     const u = Math.cos(a) * d;
     const v = Math.sin(a) * d;
     const s = c.r(0.8, 2);
+    c.solid = false; // scrub: you brush through it
     c.prim(UNIT_BLOB, u, c.g(u, v) + s * 0.25, v, s * 1.3, s * 0.7, s * 1.2, c.rng() * 6);
+    c.solid = true;
   }
 
   // palms
@@ -829,7 +850,9 @@ function buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: 
     const k = c.r(0.85, 1.1);
     st.set(0.5 * k, 0.62 * k, 0.38 * k, 2, 0.15);
     const s = c.r(0.7, 1.9);
+    c.solid = false; // scrub: you brush through it
     c.prim(UNIT_BLOB, u, c.g(u, v) + s * 0.25, v, s * 1.3, s * 0.7, s * 1.2, c.rng() * 6);
+    c.solid = true;
     i++;
   }
 }
@@ -1084,7 +1107,13 @@ function buildBones(c: Ctx): void {
   }
   const spineLocal = c.toLocal(spine.map((p) => p.clone()));
   st.set(1.0 * tk, 0.95 * tk, 0.84 * tk, 1, 0.12);
+  // The back is somewhere to land and to walk the length of, so what you stand on is one
+  // unbroken run as high as the vertebrae, not the dips between them. The fins standing
+  // along it are solid: you walk round them.
+  c.solid = false;
   c.tube(spineLocal, sr, 6, true);
+  c.solid = true;
+  for (let i = 0; i < nV; i++) c.solids.addCapsule(spineLocal[i], spineLocal[i + 1], (sr[i] + sr[i + 1]) * 0.5 * 1.42, 1);
   for (let i = 0; i <= nV; i++) {
     const p = spine[i];
     const s = sr[i] * c.r(1.3, 1.6);
@@ -1217,7 +1246,9 @@ function buildSundial(c: Ctx, onSalt: boolean): void {
       st.set(tk * k, tk * k * 0.98, tk * k * 0.94, 0, 0.04);
       const g = c.g(u, v);
       const sink = c.rng() < 0.2 ? c.r(0.2, 0.5) : 0;
+      c.solid = false; // paving, flush with the ground
       c.prim(UNIT_BOX, u, g - 0.15 - sink, v, step * 0.94, 0.6, step * 0.94, c.r(-0.03, 0.03), c.r(-0.04, 0.04), c.r(-0.04, 0.04));
+      c.solid = true;
     }
   }
   // gnomon: a tall triangular blade, vertical edge at the centre, slope running out along +u
@@ -1320,6 +1351,13 @@ interface Site {
   kind: string;
   group: THREE.Group;
   reachR: number;
+  /** Where the site's own frame sits: the group's position. */
+  ox: number;
+  oy: number;
+  oz: number;
+  solids: Solids | null;
+  /** Still water at the site: surface height (absolute) and radius around (ox, oz). */
+  pools: { y: number; r: number }[];
 }
 
 export class Discoveries {
@@ -1672,6 +1710,66 @@ export class Discoveries {
     return Infinity;
   }
 
+  /**
+   * Top of the highest stone or bone over (x, z) that feet at height y are not underneath, or
+   * -Infinity on open ground. solidKind then says what it is: 0 stone, 1 bone, 2 wood.
+   */
+  topAt(x: number, z: number, y: number): number {
+    let top = -Infinity;
+    for (let i = 0; i < this.sites.length; i++) {
+      const s = this.sites[i];
+      const so = s.solids;
+      if (!so) continue;
+      const dx = x - s.ox;
+      const dz = z - s.oz;
+      if (dx * dx + dz * dz > so.reach * so.reach) continue;
+      const t = so.topAt(dx, dz, y - s.oy) + s.oy;
+      if (t > top) {
+        top = t;
+        this.solidKind = so.kind;
+      }
+    }
+    return top;
+  }
+  solidKind: SolidKind = 0;
+
+  /** Underside of the lowest stone or bone that feet at height y are beneath, or Infinity under open sky. */
+  ceilAt(x: number, z: number, y: number): number {
+    let ceil = Infinity;
+    for (let i = 0; i < this.sites.length; i++) {
+      const s = this.sites[i];
+      const so = s.solids;
+      if (!so) continue;
+      const dx = x - s.ox;
+      const dz = z - s.oz;
+      if (dx * dx + dz * dz > so.reach * so.reach) continue;
+      ceil = Math.min(ceil, so.ceilAt(dx, dz, y - s.oy) + s.oy);
+    }
+    return ceil;
+  }
+
+  /** Whether (x, z) is within reach of any site's stones, give or take a margin. */
+  nearSolids(x: number, z: number, margin: number): boolean {
+    for (let i = 0; i < this.sites.length; i++) {
+      const s = this.sites[i];
+      if (s.solids && Math.hypot(x - s.ox, z - s.oz) < s.solids.reach + margin) return true;
+    }
+    return false;
+  }
+
+  /** Surface height of an oasis pool over (x, z), or -Infinity where there is none. */
+  poolAt(x: number, z: number): number {
+    for (let i = 0; i < this.sites.length; i++) {
+      const s = this.sites[i];
+      for (const p of s.pools) {
+        const dx = x - s.ox;
+        const dz = z - s.oz;
+        if (dx * dx + dz * dz < p.r * p.r) return p.y;
+      }
+    }
+    return -Infinity;
+  }
+
   /** Distance to the nearest river, if this world has rivers. */
   private riverAt(x: number, z: number): number {
     const river = (this.world as Partial<{ river(x: number, z: number): number }>).river;
@@ -1848,6 +1946,11 @@ export class Discoveries {
       kind,
       group,
       reachR: Math.max(25, ctx.foot * 0.6 + 15),
+      ox: ctx.x,
+      oy: baseY,
+      oz: ctx.z,
+      solids: ctx.solids.count > 0 ? ctx.solids : null,
+      pools: ctx.pools.map((p) => ({ y: baseY + p.y, r: p.r })),
     });
   }
 

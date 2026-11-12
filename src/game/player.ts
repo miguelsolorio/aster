@@ -14,6 +14,8 @@ const GLIDE_SPEED = 16; // forward speed in flight
 const GLIDE_BOOST = 45; // in flight with Shift
 const HOVER_SINK = 4.5; // sink with no direction held: he stops and settles down
 const MAX_SPEED = 48;
+const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
+const REACH = 0.38; // how far ahead of the feet a wall is felt
 const TAP_GRACE = 0.12; // in flight a press waits this long before climbing, so a double tap can drop instead
 const DOUBLE_TAP = 0.3; // two presses this close together in flight drop you
 
@@ -79,6 +81,7 @@ export class Player {
   private wish = new THREE.Vector2();
   private stepDist = 0;
   private side: -1 | 1 = 1;
+  private dodge: -1 | 1 = 1; // which way the figure last turned to get round something
   private holdT = 0; // how long jump has been held since leaving the ground
   private armed = true; // false just after a jump, until the hold is long enough to be a climb
   private flew = false; // a climb has happened this flight, so releasing glides
@@ -90,6 +93,9 @@ export class Player {
   /** Optional: absolute height of a roof over (x, z) for feet at height y, or -Infinity where the ground is open. */
   roof: ((x: number, z: number, y: number) => number) | null = null;
 
+  /** Optional: whether feet at (x, z, y) stand on something hard that is not the ground: a stone, a bone. */
+  hard: ((x: number, z: number, y: number) => boolean) | null = null;
+
   constructor(private world: World) {}
 
   /** Optional: how far the ground is sunk below the terrain at (x, z), e.g. the bed of a pool. */
@@ -99,6 +105,15 @@ export class Player {
   private top(x: number, z: number): number {
     const h = this.world.height(x, z) - (this.dip ? this.dip(x, z) : 0);
     return this.roof ? Math.max(h, this.roof(x, z, this.state.pos.y)) : h;
+  }
+
+  /**
+   * Whether standing at (x, z) and facing along (dx, dz) puts a wall in the way: anything
+   * above `step` under the feet, at arm's length, or between the two. The point between is
+   * what catches a thing thinner than the reach, which the far point alone would look past.
+   */
+  private walled(x: number, z: number, dx: number, dz: number, step: number): boolean {
+    return this.top(x, z) > step || this.top(x + dx * 0.5, z + dz * 0.5) > step || this.top(x + dx, z + dz) > step;
   }
 
   place(x: number, z: number) {
@@ -123,8 +138,9 @@ export class Player {
     const slope = Math.hypot(gx, gz);
     this.slope = slope;
     if (slope > 1e-4) this.downhill.set(-gx / slope, -gz / slope);
-    st.onRock = this.s.rock;
-    const rock = this.s.rock > 0.5;
+    // A stone or a bone underfoot is walked on like rock, whatever the ground beneath it is.
+    st.onRock = st.grounded && this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.s.rock;
+    const rock = st.onRock > 0.5;
 
     // Wish direction in world space, relative to the camera.
     const fx = -Math.sin(camYaw);
@@ -246,17 +262,18 @@ export class Player {
         let nx = pos.x + vel.x * dt;
         let nz = pos.z + vel.z * dt;
         let nh = this.top(nx, nz);
-        // A wall: anything more than a step higher than where you stand. Probe a body's
-        // width ahead so the figure stops short of it, and slide along it.
+        // A wall: anything more than waist high above where you stand. Lower than that is
+        // stepped up onto; higher has to be jumped. Look a body's width ahead so the figure
+        // stops short of it, and slide along it.
         const spd = Math.hypot(vel.x, vel.z);
-        const ox = spd > 1e-3 ? (vel.x / spd) * 0.38 : 0;
-        const oz = spd > 1e-3 ? (vel.z / spd) * 0.38 : 0;
-        const step = pos.y + 0.55;
-        if (this.top(nx + ox, nz + oz) > step) {
-          if (this.top(nx + ox, pos.z) <= step && this.top(nx + ox, pos.z + oz) <= step) {
+        const ox = spd > 1e-3 ? (vel.x / spd) * REACH : 0;
+        const oz = spd > 1e-3 ? (vel.z / spd) * REACH : 0;
+        const step = pos.y + STEP;
+        if (this.walled(nx, nz, ox, oz, step)) {
+          if (!this.walled(nx, pos.z, ox, 0, step) && this.top(nx + ox, pos.z + oz) <= step) {
             nz = pos.z;
             vel.z = 0;
-          } else if (this.top(pos.x, nz + oz) <= step && this.top(pos.x + ox, nz + oz) <= step) {
+          } else if (!this.walled(pos.x, nz, 0, oz, step) && this.top(pos.x + ox, nz + oz) <= step) {
             nx = pos.x;
             vel.x = 0;
           } else {
@@ -264,6 +281,32 @@ export class Player {
             nz = pos.z;
             vel.x = 0;
             vel.z = 0;
+          }
+          // Meeting something square on leaves no way along it by x or z alone. Turn aside
+          // instead, as little as clears it, and keep to the side already chosen so the
+          // figure walks round a post rather than dithering in front of it.
+          const dist = spd * dt;
+          if (spd > 0.3 && Math.hypot(nx - pos.x, nz - pos.z) < dist * 0.35) {
+            const ux = ox / REACH; // the way it was heading before the wall took that from it
+            const uz = oz / REACH;
+            turn: for (const a of [0.45, 0.9, 1.3]) {
+              for (const side of [this.dodge, -this.dodge]) {
+                const ca = Math.cos(a * side);
+                const sa = Math.sin(a * side);
+                const rx = ux * ca - uz * sa;
+                const rz = ux * sa + uz * ca;
+                const cx = pos.x + rx * dist;
+                const cz = pos.z + rz * dist;
+                if (this.walled(cx, cz, rx * REACH, rz * REACH, step)) continue;
+                this.dodge = side as -1 | 1;
+                nx = cx;
+                nz = cz;
+                const keep = spd * Math.cos(a * 0.7);
+                vel.x = rx * keep;
+                vel.z = rz * keep;
+                break turn;
+              }
+            }
           }
           nh = Math.min(this.top(nx, nz), step);
         }
@@ -277,7 +320,9 @@ export class Player {
           vel.y -= GRAVITY * dt;
         } else {
           pos.set(nx, nh, nz);
-          vel.y = follow;
+          // The ground's own rise is kept, so a crest taken fast throws you off it. A step
+          // up onto a roof, a stone or a bone is not a slope and throws nobody.
+          vel.y = follow > 0 && nh > w.height(nx, nz) + 0.05 ? 0 : follow;
         }
       }
 
@@ -423,7 +468,8 @@ export class Player {
           vel.x *= keep;
           vel.z *= keep;
         }
-        if (w.sample(pos.x, pos.z, this.s).rock > 0.5) {
+        st.onRock = this.hard?.(pos.x, pos.z, pos.y) ? 1 : w.sample(pos.x, pos.z, this.s).rock;
+        if (st.onRock > 0.5) {
           const sp = Math.hypot(vel.x, vel.z);
           const cap = input.run ? RUN : WALK;
           if (sp > cap) {

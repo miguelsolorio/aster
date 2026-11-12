@@ -512,6 +512,163 @@ export class AudioEngine {
     src.onended = () => disconnectAll(src, bp, pan, sg);
   }
 
+  /**
+   * Water thrown up by a foot or a landing: a slap of noise that falls in pitch, a wash after
+   * it, and a few drops falling back. 0.2 is a wading step, 1 a drop from the sky.
+   */
+  splash(strength: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    const s = clamp01(strength);
+    if (s <= 0.01) return;
+    const t = ctx.currentTime + 0.005;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.25, 0.25);
+    pan.connect(g.sfxBus);
+
+    // the slap
+    const src = ctx.createBufferSource();
+    src.buffer = g.noise;
+    src.playbackRate.value = rand(0.9, 1.15);
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.Q.value = 0.8;
+    bp.frequency.setValueAtTime(rand(2600, 3400), t);
+    bp.frequency.exponentialRampToValueAtTime(rand(700, 950), t + 0.12 + 0.2 * s);
+    const env = ctx.createGain();
+    const dec = 0.12 + 0.4 * s;
+    env.gain.setValueAtTime(EPS, t);
+    env.gain.exponentialRampToValueAtTime(0.02 + 0.09 * s, t + 0.008);
+    env.gain.exponentialRampToValueAtTime(EPS, t + 0.008 + dec);
+    src.connect(bp).connect(env).connect(pan);
+    src.start(t, Math.random() * (g.noise.duration - dec - 0.3));
+    src.stop(t + dec + 0.06);
+
+    // the wash: lower and slower, only for a real splash
+    const nodes: AudioNode[] = [src, bp, env, pan];
+    let last: AudioScheduledSourceNode = src;
+    let end = t + dec + 0.06;
+    if (s > 0.35) {
+      const w = ctx.createBufferSource();
+      w.buffer = g.noise;
+      w.playbackRate.value = rand(0.6, 0.8);
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = rand(900, 1300);
+      const we = ctx.createGain();
+      const wd = 0.35 + 0.6 * s;
+      we.gain.setValueAtTime(EPS, t);
+      we.gain.exponentialRampToValueAtTime(0.05 * s, t + 0.06);
+      we.gain.exponentialRampToValueAtTime(EPS, t + 0.06 + wd);
+      w.connect(lp).connect(we).connect(pan);
+      w.start(t, Math.random() * (g.noise.duration - wd - 0.3));
+      w.stop(t + wd + 0.1);
+      nodes.push(w, lp, we);
+      if (t + wd + 0.1 > end) {
+        end = t + wd + 0.1;
+        last = w;
+      }
+    }
+
+    // drops falling back
+    const drops = 1 + Math.round(s * 4 + Math.random());
+    for (let i = 0; i < drops; i++) {
+      const dt = t + 0.03 + Math.random() * (0.12 + 0.45 * s);
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      const f = rand(700, 1700);
+      o.frequency.setValueAtTime(f, dt);
+      o.frequency.exponentialRampToValueAtTime(f * rand(1.4, 1.9), dt + 0.06);
+      const de = ctx.createGain();
+      de.gain.setValueAtTime(0, dt);
+      de.gain.linearRampToValueAtTime((0.006 + 0.014 * s) * rand(0.5, 1), dt + 0.008);
+      de.gain.exponentialRampToValueAtTime(EPS, dt + 0.085);
+      o.connect(de).connect(pan);
+      o.start(dt);
+      o.stop(dt + 0.1);
+      nodes.push(o, de);
+      if (dt + 0.1 > end) {
+        end = dt + 0.1;
+        last = o;
+      }
+    }
+    last.onended = () => disconnectAll(...nodes);
+  }
+
+  /**
+   * A foot on something hard that is not the ground: a stone, or old bone. Bone is dry and
+   * hollow, a knock with a little ring in it; stone is the duller tap of rock underfoot.
+   */
+  knock(strength: number, bone: boolean): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    const s = clamp01(strength);
+    if (s <= 0.01) return;
+    const t = ctx.currentTime + 0.005;
+    // the contact itself
+    const src = ctx.createBufferSource();
+    src.buffer = g.noise;
+    src.playbackRate.value = rand(0.9, 1.1);
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = bone ? rand(2400, 3200) : rand(1300, 1900);
+    bp.Q.value = 1.2;
+    const ce = ctx.createGain();
+    ce.gain.setValueAtTime(EPS, t);
+    ce.gain.exponentialRampToValueAtTime(Math.max(0.04 * s, 2 * EPS), t + 0.002);
+    ce.gain.exponentialRampToValueAtTime(EPS, t + 0.002 + rand(0.02, 0.035));
+    src.connect(bp).connect(ce).connect(g.sfxBus);
+    src.start(t, Math.random() * (g.noise.duration - 0.4));
+    src.stop(t + 0.08);
+    // what it is made of: two partials that are not in tune with each other
+    const nodes: AudioNode[] = [src, bp, ce];
+    const base = bone ? rand(430, 560) : rand(150, 210);
+    const ratios = bone ? [1, 1.68] : [1, 1.31];
+    let last: OscillatorNode | null = null;
+    for (let i = 0; i < ratios.length; i++) {
+      const o = ctx.createOscillator();
+      o.type = bone ? 'triangle' : 'sine';
+      o.frequency.setValueAtTime(base * ratios[i] * 1.06, t);
+      o.frequency.exponentialRampToValueAtTime(base * ratios[i], t + 0.02);
+      const e = ctx.createGain();
+      const dec = (bone ? 0.11 : 0.07) / (1 + i * 0.6);
+      e.gain.setValueAtTime(EPS, t);
+      e.gain.exponentialRampToValueAtTime(Math.max((bone ? 0.03 : 0.035) * s / (1 + i), 2 * EPS), t + 0.003);
+      e.gain.exponentialRampToValueAtTime(EPS, t + 0.003 + dec);
+      o.connect(e).connect(g.sfxBus);
+      o.start(t);
+      o.stop(t + 0.2);
+      nodes.push(o, e);
+      last = o;
+    }
+    if (last) last.onended = () => disconnectAll(...nodes);
+  }
+
+  /** Coming down on stone or bone: the thump of a landing with no sand to soften it, and the knock of what you hit. */
+  thud(strength: number, bone: boolean): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    const s = clamp01(strength);
+    if (s <= 0.01) return;
+    const t = ctx.currentTime + 0.005;
+    const osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(rand(120, 140), t);
+    osc.frequency.exponentialRampToValueAtTime(60, t + 0.12);
+    const tg = ctx.createGain();
+    tg.gain.setValueAtTime(EPS, t);
+    tg.gain.exponentialRampToValueAtTime(0.03 + 0.11 * s, t + 0.004);
+    tg.gain.exponentialRampToValueAtTime(EPS, t + 0.25);
+    osc.connect(tg).connect(g.sfxBus);
+    osc.start(t);
+    osc.stop(t + 0.3);
+    osc.onended = () => disconnectAll(osc, tg);
+    this.knock(0.5 + 0.5 * s, bone);
+  }
+
   /** A soft rising figure of three or four bell notes in the current mode. */
   chime(): void {
     const ctx = this.ctx;
