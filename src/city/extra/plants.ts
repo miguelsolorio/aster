@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { BED_SOIL, POOL_LEVEL, Writer } from '../build';
 import { MAT, createMasonryMaterial } from '../cityShaders';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
-import type { Building, CityKind } from '../types';
+import type { Building, CityKind, CityPlan, Spot } from '../types';
 
 // Vegetation for the cities: tall fan-crowned trees (a slender ringed trunk, an onion-shaped
 // boot and a crown of broad serrated, pleated fans, sometimes with a straw skirt of dead fans
@@ -528,6 +528,88 @@ function facesOf(b: Building): Face[] {
   ];
 }
 
+/** Clear ground between a trunk (its edge) and the nearest person at a spot. */
+export const SPOT_CLEAR = 2.5;
+
+/**
+ * Furthest a person stands from a spot's centre, as people.ts lays out its slots: a ring of up
+ * to 10 round a gathering or well, a keeper and a row of browsers 1.4 m in front of a stall or
+ * market, a short row for the rest.
+ */
+export function spotRing(s: Spot): number {
+  const cap = Math.max(1, s.capacity);
+  switch (s.kind) {
+    case 'gather': return 0.6 + 0.11 * Math.min(cap, 10) + 0.15;
+    case 'well': return 1.35;
+    case 'market':
+    case 'stall': return Math.hypot(1.4, ((Math.max(1, cap - 1) - 1) / 2) * 0.85) + 0.1;
+    case 'gate': return Math.hypot(((Math.min(cap, 4) - 1) / 2) * 0.9, 0.6) + 0.1;
+    default: return ((Math.min(cap, 4) - 1) / 2) * 0.8 + 0.1;
+  }
+}
+
+function segDist2(px: number, pz: number, ax: number, az: number, bx: number, bz: number): number {
+  const ex = bx - ax, ez = bz - az;
+  const l2 = ex * ex + ez * ez || 1;
+  const t = clamp(((px - ax) * ex + (pz - az) * ez) / l2, 0, 1);
+  const dx = px - ax - ex * t, dz = pz - az - ez * t;
+  return dx * dx + dz * dz;
+}
+
+/**
+ * Market areas as padded boxes (x0, z0, x1, z1 each), from clusters of market canopies and stalls
+ * and the market / stall spots among them, plus the lines (ax, az, bx, bz) joining each market or
+ * stall spot to its nearest neighbour within 25 m.
+ */
+export function marketAreas(plan: CityPlan): { rects: number[]; lines: number[] } {
+  const boxes: number[][] = [];
+  for (const b of plan.buildings)
+    if (!b.solid && (b.role === 'market' || b.role === 'stall')) boxes.push([b.x - b.w / 2, b.z - b.d / 2, b.x + b.w / 2, b.z + b.d / 2]);
+  const ms = plan.spots.filter((s) => s.kind === 'market' || s.kind === 'stall');
+  // spots join a cluster only when they lie among its canopies
+  const near = (a: number[], b: number[], g: number): boolean => a[0] < b[2] + g && b[0] < a[2] + g && a[1] < b[3] + g && b[1] < a[3] + g;
+  let merged = true;
+  while (merged) {
+    merged = false;
+    for (let i = 0; i < boxes.length && !merged; i++)
+      for (let j = i + 1; j < boxes.length; j++)
+        if (near(boxes[i], boxes[j], 8)) {
+          const a = boxes[i], b = boxes[j];
+          boxes[i] = [Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.max(a[2], b[2]), Math.max(a[3], b[3])];
+          boxes.splice(j, 1);
+          merged = true;
+          break;
+        }
+  }
+  const rects: number[] = [];
+  for (const b of boxes) {
+    let [x0, z0, x1, z1] = b;
+    for (const s of ms)
+      if (s.x > x0 - 4 && s.x < x1 + 4 && s.z > z0 - 4 && s.z < z1 + 4) {
+        x0 = Math.min(x0, s.x);
+        z0 = Math.min(z0, s.z);
+        x1 = Math.max(x1, s.x);
+        z1 = Math.max(z1, s.z);
+      }
+    const p = 2 + spotRing({ x: 0, z: 0, kind: 'market', facing: 0, capacity: 6 });
+    rects.push(x0 - p, z0 - p, x1 + p, z1 + p);
+  }
+  const lines: number[] = [];
+  for (let i = 0; i < ms.length; i++) {
+    let best = -1, bd = 25 * 25;
+    for (let j = 0; j < ms.length; j++) {
+      if (j === i) continue;
+      const d = (ms[i].x - ms[j].x) ** 2 + (ms[i].z - ms[j].z) ** 2;
+      if (d < bd) {
+        bd = d;
+        best = j;
+      }
+    }
+    if (best >= 0) lines.push(ms[i].x, ms[i].z, ms[best].x, ms[best].z);
+  }
+  return { rects, lines };
+}
+
 const isBed = (b: Building): boolean => b.role === 'garden' && !b.solid && b.roof === 'none' && b.h >= 0.4;
 
 export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
@@ -539,14 +621,26 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const pool = plan.pool;
   const R = site.radius;
 
-  // Things trees keep off that ctx.free does not know about: where people linger, lamps,
-  // and the walk-through cloth shades and stalls.
+  // Things trees keep off that ctx.free does not know about: where people linger (the whole
+  // ring they stand in, plus SPOT_CLEAR), lamps, and the walk-through cloth shades and stalls.
   const keep = new Points();
-  for (const s of plan.spots) keep.add(s.x, s.z, 1.3);
+  for (const s of plan.spots) keep.add(s.x, s.z, spotRing(s) + SPOT_CLEAR);
   for (const l of plan.lamps) keep.add(l.x, l.z, 0.9);
   const shades = plan.buildings.filter((b) => !b.solid && (b.roof === 'canopy' || b.role === 'stall'));
   const underShade = (x: number, z: number, pad: number): boolean => {
     for (const b of shades) if (Math.abs(x - b.x) < b.w / 2 + pad && Math.abs(z - b.z) < b.d / 2 + pad) return true;
+    return false;
+  };
+  // Markets: the open middle between the canopies and the lines between neighbouring stalls are
+  // where people browse, so no trunk stands there.
+  const markets = marketAreas(plan);
+  const inMarket = (x: number, z: number): boolean => {
+    for (let i = 0; i < markets.rects.length; i += 4) {
+      const m = markets.rects;
+      if (x > m[i] && z > m[i + 1] && x < m[i + 2] && z < m[i + 3]) return true;
+    }
+    const L = markets.lines;
+    for (let i = 0; i < L.length; i += 4) if (segDist2(x, z, L[i], L[i + 1], L[i + 2], L[i + 3]) < SPOT_CLEAR * SPOT_CLEAR) return true;
     return false;
   };
   const flat = (x: number, z: number, g: number): boolean =>
@@ -572,7 +666,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     if (tx.length >= want) return false;
     if (ctx.streetGap(x, z) <= 0.6) return false;
     if (!ctx.free(x, z, 0.9)) return false;
-    if (keep.hit(x, z, 0.5) || underShade(x, z, 1.2)) return false;
+    if (keep.hit(x, z, 0.25) || underShade(x, z, 1.2) || inMarket(x, z)) return false;
     // keep crowns from crowding: the gap grows with both trees' heights
     const gi = Math.floor(x / TB), gj = Math.floor(z / TB);
     for (let j = gj - 1; j <= gj + 1; j++)
@@ -722,7 +816,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   let nShrubs = 0, nReeds = 0, nVines = 0, nPots = 0;
 
   const shrubAt = (x: number, z: number, r: number, inBed: boolean): boolean => {
-    if (ctx.streetGap(x, z) <= 0.4 || !ctx.free(x, z, r * 0.8) || underShade(x, z, 0.3) || keep.hit(x, z, 0.3)) return false;
+    if (ctx.streetGap(x, z) <= 0.4 || !ctx.free(x, z, r * 0.8) || underShade(x, z, 0.3) || keep.hit(x, z, 0.3) || inMarket(x, z)) return false;
     const y = inBed ? BED_SOIL : ctx.groundAt(x, z);
     const thorny = !inBed || rng() < 0.4;
     shrub(cellW(x, z), x, y, z, r, thorny, rng() < T.blossom, rng);
