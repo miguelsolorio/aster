@@ -27,7 +27,7 @@ import { WORLD_SCALE } from '../world/scale';
 import { Massifs } from '../world/massifs';
 import { Save } from './save';
 import { Talk, type Speaker } from './talk';
-import { TOWNSFOLK, TRAVELLER, type Line } from './lines';
+import { MINER, TOWNSFOLK, TRAVELLER, type Line } from './lines';
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
@@ -164,6 +164,8 @@ function start() {
   figure.board = player.board;
   figure.carpet = player.carpet;
   figure.pick = save.has('pick');
+  figure.lamp = save.data.items.lamp;
+  figure.relic = save.data.items.relic;
   scene.add(figure.group);
 
   // ---- a fire and its travellers, a short walk from where you begin, toward the city you face.
@@ -337,6 +339,83 @@ function start() {
     out.y = trav.y + (1.72 - 0.62 * trav.sit) * trav.h;
     out.pitch = 120 + trav.seed * 110;
   };
+  // ---- the miner of a canyon city: wants a lamp fetched, and gives the pick for it
+  const minerP = { x: 0, z: 0, h: 1, sit: 1 };
+  const setMiner = (out: Speaker) => {
+    out.kind = 'miner';
+    out.ref = null;
+    out.x = minerP.x;
+    out.z = minerP.z;
+    out.y = (cities.active?.site.groundY ?? player.state.pos.y) + 1.55;
+    out.pitch = 96;
+  };
+  // Directions as someone would give them: the sun rises in the east (+x) and stands to the south (+z) at noon.
+  const WAYS = ['east', 'north-east', 'north', 'north-west', 'west', 'south-west', 'south', 'south-east'];
+  const directions = (line: string, fx: number, fz: number, tx: number, tz: number) => {
+    const way = WAYS[((Math.round(Math.atan2(-(tz - fz), tx - fx) / (Math.PI / 4)) % 8) + 8) % 8];
+    const d = Math.hypot(tx - fx, tz - fz);
+    const far = d < 500 ? 'a short walk' : d < 1300 ? 'a fair walk' : d < 2800 ? 'a long walk' : d < 5000 ? 'a long walk, or a short ride' : 'a good ride';
+    return line.replace('{way}', way).replace('{far}', far);
+  };
+  // Where the lamp for a city lies: by a spring or in a cave where there is a mountain near,
+  // and otherwise out on open sand, a seeded way off.
+  const lampSpots = new Map<number, { x: number; z: number; kind: 'spring' | 'cave' | 'sand' }>();
+  const lampSpot = (site: { id: number; seed: number; cx: number; cz: number; radius: number }) => {
+    let s = lampSpots.get(site.id);
+    if (!s) {
+      const a = ((site.seed >>> 5) % 628) / 100;
+      s = discoveries.lampSpot(site.cx, site.cz) ?? { x: site.cx + Math.cos(a) * (site.radius + 700), z: site.cz + Math.sin(a) * (site.radius + 700), kind: 'sand' };
+      lampSpots.set(site.id, s);
+    }
+    return s;
+  };
+  const minerScript = () => {
+    const site = cities.active!.site;
+    const lamp = lampSpot(site);
+    const where = directions(lamp.kind === 'spring' ? MINER.lampSpring : lamp.kind === 'cave' ? MINER.lampCave : MINER.lampSand, minerP.x, minerP.z, lamp.x, lamp.z);
+    const cav = discoveries.nearestCavern(minerP.x, minerP.z);
+    if (save.data.roles.miner === 2) {
+      const pool = [...MINER.after, ...(save.data.items.relic ? [...MINER.relic, ...MINER.relic] : [])];
+      // until a first cavern has been opened, the miner goes on pointing at one
+      if (cav && save.data.opened.length === 0) pool.push(directions(MINER.remind, minerP.x, minerP.z, cav.x, cav.z), directions(MINER.remind, minerP.x, minerP.z, cav.x, cav.z));
+      return { lines: [(lastLine = pick(pool, lastLine))] };
+    }
+    if (save.data.items.lamp) {
+      // The lamp is here, asked for or not: the pick changes hands.
+      const last = cav ? directions(text(MINER.cavern), minerP.x, minerP.z, cav.x, cav.z) : text(MINER.noCavern);
+      return {
+        lines: [...MINER.gift.map(text), last],
+        done() {
+          save.setItem('lamp', false);
+          save.setRole('miner', 2);
+          save.give('pick');
+          figure.lamp = false;
+          figure.pick = true;
+          people.minerLamp = true;
+          audio.chime();
+          buzz(20);
+          syncKnown();
+        },
+      };
+    }
+    if (save.data.roles.miner === 1) return { lines: [MINER.pending, where] };
+    return {
+      lines: [...MINER.ask.map(text), where, MINER.askEnd],
+      done() {
+        save.setRole('miner', 1);
+      },
+    };
+  };
+  // Something small has been picked up: no sound, only the thing itself appearing at the hip.
+  const pickedUp = (x: number, y: number, z: number) => {
+    figure.flourish = 1;
+    tmp.set(x, y, z);
+    tmp2.set(0, 1.5, 0);
+    dust.puff(tmp, tmp2, 0.2);
+    buzz(12);
+  };
+  let lampT = 0;
+
   const setFolk = (out: Speaker) => {
     out.kind = 'townsfolk';
     out.ref = folk.id;
@@ -350,6 +429,10 @@ function start() {
     find(out) {
       const p = player.state.pos;
       if (!player.state.grounded) return false;
+      if (people.minerNear(3, minerP)) {
+        setMiner(out);
+        return true;
+      }
       if (caravans.nearestPerson(p.x, p.z, 3.4, trav) && Math.abs(trav.y - p.y) < 2) {
         setTraveller(out);
         return true;
@@ -361,6 +444,12 @@ function start() {
       return false;
     },
     hold(s) {
+      if (s.kind === 'miner') {
+        if (!people.minerNear(30, minerP)) return false;
+        people.holdMiner();
+        setMiner(s);
+        return true;
+      }
       if (s.kind === 'traveller') {
         caravans.hold(s.ref);
         caravans.personAt(s.ref, trav);
@@ -377,6 +466,7 @@ function start() {
         save.setTalked();
         syncKnown();
       }
+      if (s.kind === 'miner') return minerScript();
       if (s.kind === 'traveller') {
         if (!save.has('board')) {
           return {
@@ -401,6 +491,9 @@ function start() {
       const d = day.day;
       const hour = d < 0.2 || d > 0.82 ? TOWNSFOLK.night : d < 0.32 ? TOWNSFOLK.dawn : d > 0.7 ? TOWNSFOLK.dusk : d > 0.42 && d < 0.58 ? TOWNSFOLK.noon : [];
       const pool = [...TOWNSFOLK.any, ...(site ? TOWNSFOLK[site.kind] : []), ...hour, ...(save.has('board') ? [] : [...TOWNSFOLK.onFoot, ...TOWNSFOLK.onFoot])];
+      // a relic at the belt gets noticed, and in a canyon city someone with no pick is sent to the miner
+      if (save.data.items.relic) pool.push(...TOWNSFOLK.relic, ...TOWNSFOLK.relic);
+      if (site?.kind === 'canyon' && !save.has('pick')) pool.push(...TOWNSFOLK.noPick);
       return { lines: [(lastLine = pick(pool, lastLine))] };
     },
     voice: (pitch) => audio.murmur(pitch),
@@ -971,6 +1064,35 @@ function start() {
     dust.update(frame);
     splash.update(frame);
     discoveries.update(frame);
+    // Small things lying about are picked up by walking onto them.
+    if (playing && st.grounded) {
+      const rk = discoveries.relicNear(st.pos.x, st.pos.y, st.pos.z, 1.5);
+      if (rk >= 0) {
+        discoveries.takeRelic(rk);
+        save.take(rk);
+        save.setItem('relic', true);
+        figure.relic = true;
+        pickedUp(st.pos.x, st.pos.y + 1, st.pos.z);
+      }
+      if (discoveries.lampNear(st.pos.x, st.pos.z, 1.5)) {
+        discoveries.setLamp(null);
+        save.setItem('lamp', true);
+        figure.lamp = true;
+        pickedUp(st.pos.x, st.pos.y + 0.4, st.pos.z);
+      }
+    }
+    // The miner's lamp lies out in the desert until it is carried back: by the nearest canyon city's spring.
+    lampT -= dt;
+    if (lampT <= 0) {
+      lampT = 1;
+      people.minerLamp = save.data.roles.miner === 2;
+      let at: { x: number; z: number } | null = null;
+      if (save.data.roles.miner !== 2 && !save.data.items.lamp) {
+        const near = world.cities.near(st.pos.x, st.pos.z).find((c) => c.kind === 'canyon');
+        if (near) at = lampSpot(near);
+      }
+      discoveries.setLamp(at);
+    }
     // Over a sealed cavern the sand drifts slowly, where everywhere else the wind takes it.
     {
       const cv = discoveries.sealedNear(st.pos.x, st.pos.z, 110);
