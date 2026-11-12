@@ -90,8 +90,18 @@ export const TERRAIN = {
   spireCell: 380, // one candidate per cell of this size (m)
   spireMax: 80, // tallest a spire stands above the water (m)
   spireP: 0.5, // chance a cell has one (it only shows if it lands in a gorge)
-  riverCityNear: 800, // rivers fade out between these distances from a city centre
+  // Rivers bend round cities: the field is pushed away from zero by riverPush within
+  // riverClearNear of a city centre, easing to nothing by riverClearFar (under the 1.8 km a
+  // city keeps to its cell border).
+  riverPush: 0.9,
+  riverClearNear: 1100,
+  riverClearFar: 1750,
+  riverCityNear: 800, // a backstop: any river that still gets this close fades out
   riverCityFar: 1100,
+  // Where a river meets a massif it ends at a spring under a headwall, over this narrow band
+  // of the massif's foot (as a fraction of its height profile).
+  springLo: 0.04,
+  springHi: 0.07,
 } as const;
 
 /** Tallest ground the terrain can produce (m); shadows stop marching above it. */
@@ -281,14 +291,6 @@ vec3 sfNoiseD(vec2 p, uint key) {
   return vec3(v, g) * ${F(NSCALE)};
 }
 
-// Signed distance to the centre line of the nearest river (m), from kilometre coordinates:
-// positive on one bank, negative on the other, so it interpolates cleanly across the water.
-float sfRiver(vec2 q, uint sk) {
-  vec3 ra = sfNoiseD(q * ${F(1 / T.riverKm)} + vec2(13.7, -6.2), sk + ${KOFF(K_RIVER)}u);
-  vec3 rb = sfNoiseD(q * ${F(1 / T.meanderKm)} + vec2(-2.9, 21.4), sk + ${KOFF(K_RIVER + 1)}u);
-  vec2 rg = ra.yz * ${F(1 / T.riverKm)} + rb.yz * ${F(T.meander / T.meanderKm)};
-  return (ra.x + ${F(T.meander)} * rb.x) / max(length(rg), ${F(T.riverGradMin)}) * 1000.0;
-}
 `;
 
 export const SURFACE_GLSL = /* glsl */ `
@@ -314,6 +316,28 @@ vec2 sfCity(ivec2 c) {
   uint h0 = sfCell(uint(c.x), uint(c.y), uint(int(uSeed)));
   vec2 r = vec2(float(sfCell(h0, 1u, 0x51edu)), float(sfCell(h0, 2u, 0x51edu))) * ${F(1 / 4294967296)};
   return (vec2(c) + 0.24 + 0.52 * r) * ${F(CITY_CELL)};
+}
+
+// Signed distance to the centre line of the nearest river (m): positive on one bank, negative
+// on the other, so it interpolates cleanly across the water. q is p in kilometres.
+// Rivers never run up to a city and stop: around each city the field is pushed further from
+// zero, on whichever side of zero the city already stands, so the line bends round the town.
+float sfRiver(vec2 p, vec2 q, uint sk) {
+  vec3 ra = sfNoiseD(q * ${F(1 / T.riverKm)} + vec2(13.7, -6.2), sk + ${KOFF(K_RIVER)}u);
+  vec3 rb = sfNoiseD(q * ${F(1 / T.meanderKm)} + vec2(-2.9, 21.4), sk + ${KOFF(K_RIVER + 1)}u);
+  float rf = ra.x + ${F(T.meander)} * rb.x;
+  vec2 rg = ra.yz * ${F(1 / T.riverKm)} + rb.yz * ${F(T.meander / T.meanderKm)};
+  vec2 c = sfCity(ivec2(floor(p / ${F(CITY_CELL)})));
+  vec2 cq = c * 0.001;
+  float fc = sfNoise(cq * ${F(1 / T.riverKm)} + vec2(13.7, -6.2), sk + ${KOFF(K_RIVER)}u)
+    + ${F(T.meander)} * sfNoise(cq * ${F(1 / T.meanderKm)} + vec2(-2.9, 21.4), sk + ${KOFF(K_RIVER + 1)}u);
+  float sg = fc < 0.0 ? -${F(T.riverPush)} : ${F(T.riverPush)};
+  vec2 dc = p - c;
+  float r = length(dc);
+  float t = clamp((r - ${F(T.riverClearNear)}) / ${F(T.riverClearFar - T.riverClearNear)}, 0.0, 1.0);
+  rf += sg * (1.0 - t * t * (3.0 - 2.0 * t));
+  rg += dc * (sg * -6.0 * t * (1.0 - t) * ${F(1000 / (T.riverClearFar - T.riverClearNear))} / max(r, 1.0));
+  return rf / max(length(rg), ${F(T.riverGradMin)}) * 1000.0;
 }
 
 // How clear of a city-to-city line a point is: 0 on the line to a city in one of the four
@@ -460,13 +484,13 @@ vec4 surfaceBase(vec2 p) {
   // rivers: a flat floor at the water level, with cliffs where the ground is rock or plateau
   // and a broad gentle valley where it is sand
   float green = 0.0;
-  float rsd = sfRiver(q, sk);
+  float rsd = sfRiver(p, q, sk);
   float rd = abs(rsd);
   sfRiverD = clamp(rsd, -300.0, 300.0);
   sfRiverS = 0.0;
   if (rd < ${F(RIVER_REACH)}) {
     vec2 rc = sfCity(ivec2(floor(p / ${F(CITY_CELL)})));
-    float rs = smoothstep(${F(T.riverCityNear)}, ${F(T.riverCityFar)}, length(p - rc)) * (1.0 - smoothstep(0.02, 0.2, mfo));
+    float rs = smoothstep(${F(T.riverCityNear)}, ${F(T.riverCityFar)}, length(p - rc)) * (1.0 - smoothstep(${F(T.springLo)}, ${F(T.springHi)}, mfo));
     sfRiverS = rs;
     if (rs > 0.0) {
       // where a track crosses, the cliffs give way to a gentle valley and a ford
@@ -574,12 +598,40 @@ export function createWorld(seed: number): DesertWorld {
   const nA = new Float64Array(3);
   const nB = new Float64Array(3);
   /** Distance to the nearest river's centre line (m), from kilometre coordinates. Mirrors the GLSL. */
-  function riverDist(qx: number, qz: number): number {
+  const cR = { x: 0, z: 0 };
+  // The push is the same for every point in a city's cell, so remember the last cell's.
+  let pushCi = NaN;
+  let pushCj = NaN;
+  let pushSg = 0;
+  function riverDist(px: number, pz: number): number {
+    const qx = f(px * 0.001);
+    const qz = f(pz * 0.001);
     noiseD(qx * fRv + 13.7, qz * fRv - 6.2, kRa, nA);
     noiseD(qx * fMe - 2.9, qz * fMe + 21.4, kRb, nB);
-    const gx = nA[1] * (1 / T.riverKm) + nB[1] * (T.meander / T.meanderKm);
-    const gz = nA[2] * (1 / T.riverKm) + nB[2] * (T.meander / T.meanderKm);
-    return (Math.abs(nA[0] + T.meander * nB[0]) / Math.max(Math.hypot(gx, gz), T.riverGradMin)) * 1000;
+    let rf = nA[0] + T.meander * nB[0];
+    let gx = nA[1] * (1 / T.riverKm) + nB[1] * (T.meander / T.meanderKm);
+    let gz = nA[2] * (1 / T.riverKm) + nB[2] * (T.meander / T.meanderKm);
+    // rivers bend round cities (mirrors the GLSL)
+    const ci = Math.floor(f(px / CITY_CELL));
+    const cj = Math.floor(f(pz / CITY_CELL));
+    cityCentre(ci, cj, cR);
+    if (ci !== pushCi || cj !== pushCj) {
+      const cqx = f(cR.x * 0.001);
+      const cqz = f(cR.z * 0.001);
+      const fc = noise(cqx * fRv + 13.7, cqz * fRv - 6.2, kRa) + T.meander * noise(cqx * fMe - 2.9, cqz * fMe + 21.4, kRb);
+      pushSg = fc < 0 ? -T.riverPush : T.riverPush;
+      pushCi = ci;
+      pushCj = cj;
+    }
+    const dcx = px - cR.x;
+    const dcz = pz - cR.z;
+    const r = Math.hypot(dcx, dcz);
+    const t = clamp01((r - T.riverClearNear) / (T.riverClearFar - T.riverClearNear));
+    rf += pushSg * (1 - t * t * (3 - 2 * t));
+    const k = (pushSg * -6 * t * (1 - t) * (1000 / (T.riverClearFar - T.riverClearNear))) / Math.max(r, 1);
+    gx += dcx * k;
+    gz += dcz * k;
+    return (Math.abs(rf) / Math.max(Math.hypot(gx, gz), T.riverGradMin)) * 1000;
   }
   // The shaders read the seed as a float32 uniform, so the grid hashes use it rounded the same way.
   const gridSeed = Math.trunc(Math.fround(seed)) | 0;
@@ -763,10 +815,10 @@ export function createWorld(seed: number): DesertWorld {
 
     // rivers (mirrors the GLSL)
     let green = 0;
-    const rd = riverDist(qx, qz);
+    const rd = riverDist(px, pz);
     if (rd < RIVER_REACH) {
       cityCentre(Math.floor(f(px / CITY_CELL)), Math.floor(f(pz / CITY_CELL)), cA);
-      const rs = smoothstep(T.riverCityNear, T.riverCityFar, Math.hypot(px - cA.x, pz - cA.z)) * (1 - smoothstep(0.02, 0.2, mfo));
+      const rs = smoothstep(T.riverCityNear, T.riverCityFar, Math.hypot(px - cA.x, pz - cA.z)) * (1 - smoothstep(T.springLo, T.springHi, mfo));
       if (rs > 0) {
         if (steep > 0) steep *= passAt(px, pz, wnx);
         const fy = T.waterY + T.riverBank * smoothstep(T.riverHalf - 1, T.riverHalf + 6, rd);
@@ -828,7 +880,7 @@ export function createWorld(seed: number): DesertWorld {
     seed,
     cities,
     base,
-    river: (x: number, z: number): number => riverDist(f(x * 0.001), f(z * 0.001)),
+    river: (x: number, z: number): number => riverDist(f(x), f(z)),
     cave(gi: number, gj: number): Cave | null {
       const ms = mScratch;
       if (!massifAt(gi, gj, ms)) return null;

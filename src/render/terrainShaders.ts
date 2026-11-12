@@ -519,7 +519,9 @@ void main() {
     float grow = (1.0 - rock) * smoothstep(0.5, 0.74, fbm(p.xz * 0.11 + vec2(6.4, 1.9)) * (0.55 + 0.45 * bank) + 0.42 * bank * bank);
     vec3 grassCol = mix(uShade * (0.8 + 0.2 * amb), uLit, l) * vec3(0.56, 0.72, 0.36);
     grassCol *= 0.86 + 0.28 * vnoise(p.xz * 1.7);
-    col = mix(col, grassCol, 0.72 * grow * smoothstep(0.0, 0.15, bank));
+    // nothing grows up the headwall where a river springs from a mountain
+    float low = 1.0 - smoothstep(${TERRAIN.waterY + 4}.0, ${TERRAIN.waterY + 14}.0, p.y);
+    col = mix(col, grassCol, 0.72 * grow * low * smoothstep(0.0, 0.15, bank));
     // wet sand at the water's edge
     col *= 1.0 - 0.3 * (1.0 - smoothstep(${TERRAIN.riverHalf}.0, ${TERRAIN.riverHalf + 5}.0, rd)) * smoothstep(0.3, 0.6, bank);
     float wa = (1.0 - smoothstep(${TERRAIN.riverHalf - 1.2}, ${TERRAIN.riverHalf + 0.3}, rd)) * smoothstep(0.35, 0.7, vMask.w) * (1.0 - pave);
@@ -543,6 +545,14 @@ void main() {
       // shallows: the bed shows through near the bank
       float shal = smoothstep(${TERRAIN.riverHalf - 7}.0, ${TERRAIN.riverHalf}.0, rd);
       wcol = mix(wcol, col * 0.8, 0.35 * shal * c);
+      // above the water level this is the fall where the river springs from the mountainside:
+      // white water streaking down the rock
+      float fall = smoothstep(${TERRAIN.waterY + 0.4}, ${TERRAIN.waterY + 2}.0, p.y);
+      if (fall > 0.001) {
+        float streak = vnoise(vec2((p.x + p.z) * 0.9, p.y * 0.35 + uTime * 2.2)) * 0.6 + vnoise(vec2((p.x - p.z) * 2.3, p.y * 0.9 + uTime * 3.4)) * 0.4;
+        vec3 foam = mix(uShade * 1.5, uLit, 0.35 + 0.65 * l) * vec3(0.86, 0.95, 1.0) + vec3(0.12);
+        wcol = mix(wcol, mix(wcol * 1.15, foam, smoothstep(0.35, 0.7, streak)), fall);
+      }
       col = mix(col, wcol, wa);
     }
   }
