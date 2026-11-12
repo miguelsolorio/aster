@@ -2,9 +2,10 @@ import type { SurfaceSample } from '../game/contract';
 import type { CityKind, CitySite } from './types';
 import { CITY_REACH_EXTRA } from './cityGlsl';
 import { avenueBearings } from './plan';
+import { WORLD_SCALE } from '../world/scale';
 
-/** One city per cell, so neighbours are 8 to 12 km apart on average. */
-export const CITY_CELL = 10000;
+/** One city per cell, so neighbours are 6 to 9 km apart on average. */
+export const CITY_CELL = 10000 * WORLD_SCALE;
 
 type BaseSample = (x: number, z: number, out: SurfaceSample) => SurfaceSample;
 
@@ -202,9 +203,9 @@ export class CityIndex {
     if (site) return site;
     const h0 = hash(ci, cj, this.seed);
     const r = (n: number) => hash(h0, n, 0x51ed) / 4294967296;
-    // Keep the centre in the middle 56% of the cell so the plateau and its slopes never cross a border.
-    const cx = (ci + 0.22 + 0.56 * r(1)) * CITY_CELL;
-    const cz = (cj + 0.22 + 0.56 * r(2)) * CITY_CELL;
+    // Keep the centre in the middle 52% of the cell so the plateau and its slopes never cross a border.
+    const cx = (ci + 0.24 + 0.52 * r(1)) * CITY_CELL;
+    const cz = (cj + 0.24 + 0.52 * r(2)) * CITY_CELL;
     const radius = 320 + 280 * r(3);
 
     // Read the raw terrain around the centre to decide what kind of place this is.

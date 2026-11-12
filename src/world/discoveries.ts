@@ -1,11 +1,12 @@
 // Rare things to stumble on: ruins, oases, arches, standing stones, great bones,
 // lantern towers, sundial plazas and half-buried shells. Placement is a
-// deterministic jittered grid (900 m cells, about one in three occupied); sites
+// deterministic jittered grid (675 m cells, about one in three occupied); sites
 // are built lazily near the player and disposed when far away.
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
+import { WORLD_SCALE } from './scale';
 
-const CELL = 900;
+const CELL = 900 * WORLD_SCALE;
 const MARGIN = 150; // keeps sites at least 300 m apart
 const SITE_P = 0.34;
 const BUILD_R = 2500;
@@ -1192,7 +1193,7 @@ export class Discoveries {
     const cities = (this.world as Partial<{ cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>).cities;
     if (cities) {
       const c = cities.at(this.cellPos.x, this.cellPos.z);
-      if (Math.hypot(c.cx - this.cellPos.x, c.cz - this.cellPos.z) < c.radius + 1500) return false;
+      if (Math.hypot(c.cx - this.cellPos.x, c.cz - this.cellPos.z) < c.radius + 1500 * WORLD_SCALE) return false;
     }
     return true;
   }

@@ -5,7 +5,7 @@ export const MAX_SITES = 4;
 
 /**
  * How far past radius * 1.2 + falloff a city may reshape the desert (the oasis dunes reach
- * furthest). Cities sit at least 2.2 km from their cell border, so this stays well inside it.
+ * furthest). Cities sit at least 1.8 km from their cell border, so this stays well inside it.
  */
 export const CITY_REACH_EXTRA = 600;
 

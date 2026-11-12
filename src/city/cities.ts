@@ -8,11 +8,12 @@ import type { CityKind, CityPlan, CitySite } from './types';
 import type { FrameState } from '../game/contract';
 import { EMITTER_KINDS, SolidIndex, createExtraCtx, type EmitterKind, type Extra, type ExtraCtx } from './extras';
 import { EXTRAS } from './extrasList';
+import { WORLD_SCALE } from '../world/scale';
 
 const KIND_ID: Record<CityKind, number> = { hill: 1, canyon: 2, oasis: 3, trade: 4 };
 
-const FAR_IN = 9000; // skyline appears (distance to the city's edge)
-const FAR_OUT = 11000;
+const FAR_IN = 9000 * WORLD_SCALE; // skyline appears (distance to the city's edge)
+const FAR_OUT = 11000 * WORLD_SCALE;
 const NEAR_IN = 1500; // full buildings appear
 const NEAR_OUT = 1800;
 const REACH = 40; // metres inside the edge that counts as arriving

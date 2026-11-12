@@ -9,13 +9,14 @@ import type * as THREE from 'three';
 import type { SurfaceSample, World } from '../game/contract';
 import { CITY_SHAPE_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 import { CityIndex, cityBlendAt, type CityBlend } from '../city/placement';
+import { WORLD_SCALE } from './scale';
 
 // ---------------------------------------------------------------- tuning
 
 export const TERRAIN = {
   // Regions. Noise inputs are in kilometres; values are wavelengths in km.
-  mtnRegionKmX: 9, // mountain-range mask, stretched so ranges run roughly along z
-  mtnRegionKmZ: 6,
+  mtnRegionKmX: 9 * WORLD_SCALE, // mountain-range mask, stretched so ranges run roughly along z
+  mtnRegionKmZ: 6 * WORLD_SCALE,
   mtnLo: 0.12, // mask noise value where mountains start rising
   mtnHi: 0.42, // mask noise value where mountains reach full height
   mtnMin: 150, // peak height of the weakest ranges (m)
@@ -27,11 +28,11 @@ export const TERRAIN = {
   terraceHi: 0.45,
   rockLo: 22, // mountain height (m) where bare rock starts showing through the sand
   rockHi: 60,
-  duneRegionKm: 5, // dune seas vs. rippled flats
+  duneRegionKm: 5 * WORLD_SCALE, // dune seas vs. rippled flats
   flatLo: -0.25, // region noise below this: flats
   flatHi: 0.1, // region noise above this: full dune sea
   flatAmp: 0.2, // dune amplitude on the flats
-  saltRegionKm: 3.6,
+  saltRegionKm: 3.6 * WORLD_SCALE,
   panEdgeLo: 0.26, // dunes start fading out
   panEdgeHi: 0.42,
   saltLo: 0.36, // salt crust starts

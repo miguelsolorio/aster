@@ -21,6 +21,7 @@ import { AutoQuality, QUALITY, applyQuality, defaultTier } from './quality';
 import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
 import { DEFAULTS, type Params } from '../render/types';
+import { WORLD_SCALE } from '../world/scale';
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
@@ -63,7 +64,7 @@ function start() {
     const n = new THREE.Vector3();
     let x = 0;
     let z = 0;
-    // Somewhere in the open desert, with a city in sight. Most cities are seen from 2 to 4.5 km
+    // Somewhere in the open desert, with a city in sight. Most cities are seen from 1.5 to 3.4 km
     // off; an oasis hides in a basin behind its ring of dunes, so it is seen from on or just inside
     // that ring, looking down at it. If the nearest city gives no clear view, the next ones are
     // tried, and only then is any open sand accepted.
@@ -76,7 +77,7 @@ function start() {
       const oasis = city.kind === 'oasis';
       for (let i = 0; i < 40; i++) {
         const a = Math.random() * Math.PI * 2;
-        const d = oasis ? city.radius + 250 + Math.random() * 400 : city.radius + 2000 + Math.random() * 2500;
+        const d = oasis ? city.radius + 250 + Math.random() * 400 : city.radius + (2000 + Math.random() * 2500) * WORLD_SCALE;
         x = city.cx + Math.cos(a) * d;
         z = city.cz + Math.sin(a) * d;
         world.sample(x, z, s);
