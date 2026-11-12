@@ -127,6 +127,7 @@ export class Dust {
   private readonly motes: THREE.Points;
   private readonly scaleU = { value: 800 };
 
+  private density = 1;
   private next = 0;
   private dirtyMin = Infinity;
   private dirtyMax = -1;
@@ -188,6 +189,16 @@ export class Dust {
     this.group.add(this.motes);
   }
 
+  /**
+   * 0..1 scale on how many particles each puff, spray and spindrift probe pass
+   * spawns, and on how many ambient motes are drawn. 1 = full (default).
+   */
+  setDensity(s: number): void {
+    const d = Math.min(1, Math.max(0, Number.isFinite(s) ? s : 1));
+    this.density = d;
+    this.motes.geometry.setDrawRange(0, Math.round(MOTE_COUNT * d));
+  }
+
   private now(): number {
     const t = this.uniforms.uTime?.value as number | undefined;
     return typeof t === 'number' ? t : 0;
@@ -220,7 +231,9 @@ export class Dust {
   /** A burst of sand at a world position. */
   puff(pos: THREE.Vector3, dir: THREE.Vector3, amount: number): void {
     const a = Math.min(Math.max(amount, 0), 1);
-    const n = Math.round(5 + a * 22 + Math.random() * 2);
+    const d = this.density;
+    if (d <= 0) return;
+    const n = Math.max(1, Math.round((5 + a * 22 + Math.random() * 2) * d));
     const dl = Math.hypot(dir.x, dir.y, dir.z);
     const inv = dl > 1e-4 ? 1 / dl : 0;
     const dx = dir.x * inv, dy = dir.y * inv, dz = dir.z * inv;
@@ -247,7 +260,8 @@ export class Dust {
     const a = Math.min(Math.max(amount, 0), 1);
     const sp = Math.hypot(vel.x, vel.z);
     if (sp < 0.1 || a <= 0) return;
-    const n = Math.floor(1 + a * 4 + Math.random());
+    // stochastic rounding keeps the average rate at low density (identical at 1)
+    const n = Math.floor((1 + a * 4) * this.density + Math.random());
     const bx = -vel.x / sp, bz = -vel.z / sp; // backwards
     const sx = -bz, sz = bx; // sideways
     const t = this.tmpDir, s = this.tmpSide;
@@ -295,7 +309,9 @@ export class Dust {
     const wx = f.wind.x, wz = f.wind.y;
     const px = f.player.pos.x, pz = f.player.pos.z;
     const s = this.surf;
-    for (let i = 0; i < SPINDRIFT_PROBES; i++) {
+    // fewer probes at low density: fewer particles and less CPU terrain sampling
+    const probes = this.density >= 1 ? SPINDRIFT_PROBES : Math.floor(SPINDRIFT_PROBES * this.density + Math.random());
+    for (let i = 0; i < probes; i++) {
       const ang = Math.random() * Math.PI * 2;
       const r = SPINDRIFT_MIN_R + Math.random() * (SPINDRIFT_MAX_R - SPINDRIFT_MIN_R);
       const x = px + Math.cos(ang) * r;

@@ -24,6 +24,9 @@ const SHARED_DEFAULTS: Array<[string, () => unknown]> = [
   ['uTrailFar', () => null],
   ['uTrailFarRect', () => new THREE.Vector3()],
   ['uSeed', () => 0],
+  // run-time quality knobs (game/quality.ts); these defaults are full quality
+  ['uShadowSteps', () => 30],
+  ['uDetail', () => 1],
 ];
 
 function gridGeometry(): THREE.BufferGeometry {
@@ -74,6 +77,7 @@ export class Clipmap {
   readonly group = new THREE.Group();
   private readonly shared: Uniforms;
   private readonly levels: Level[] = [];
+  private drawn = LEVELS;
 
   constructor(uniforms: Uniforms) {
     this.shared = uniforms;
@@ -105,6 +109,18 @@ export class Clipmap {
       this.levels.push({ cell, mesh, mat, center, inner });
     }
     this.group.matrixAutoUpdate = false;
+  }
+
+  /** Draw only the finest `n` levels (1..8); the rest are hidden. View distance halves per level dropped. */
+  setLevels(n: number): void {
+    const k = Math.min(LEVELS, Math.max(1, Math.round(n) || LEVELS));
+    this.drawn = k;
+    for (let l = 0; l < LEVELS; l++) this.levels[l].mesh.visible = l < k;
+  }
+
+  /** How many levels are drawn. */
+  get levelCount(): number {
+    return this.drawn;
   }
 
   update(focus: THREE.Vector3): void {

@@ -2,6 +2,15 @@
 // '35 mm' look, and the full-screen pass that bakes surface() into a heightmap.
 // GLSL1-style source for THREE.ShaderMaterial; three prepends `#version 300 es`
 // on WebGL2, so uint, textureLod and textureSize are available.
+//
+// Mobile notes: every stage declares highp float and int itself (surface()
+// hashes with uint and breaks under mediump); textures are only read with
+// textureLod inside loops and branches; every derivative is taken before the
+// first discard; loops have constant bounds and break early on uniforms.
+//
+// Run-time quality (shared uniforms, created by Clipmap; see game/quality.ts):
+//   float uShadowSteps  heightmap ray-march steps, 1..32 (30 = full quality)
+//   float uDetail       0..1 scale on optional fragment work (1 = full quality)
 import { SURFACE_GLSL } from '../world/surface';
 
 // '35 mm' style, baked in.
@@ -56,6 +65,9 @@ float fbm(vec2 p) {
 // ---------------------------------------------------------------- CLIPMAP
 
 export const terrainVert = /* glsl */ `
+precision highp float;
+precision highp int;
+
 ${SURFACE_GLSL}
 
 uniform vec2 uLevelCenter; // snapped world xz of this level's centre
@@ -98,6 +110,8 @@ uniform vec2 uWind;
 uniform vec3 uFigPos;
 uniform float uNight;
 uniform float uFog;
+uniform float uShadowSteps;
+uniform float uDetail;
 
 uniform vec3 uLit;
 uniform vec3 uShade;
@@ -119,6 +133,7 @@ ${LOOK}
 ${COMMON}
 
 // Explicit LOD everywhere: these run inside loops and branches.
+// The heightmap holds raw metres in both the 32-bit and the 16-bit float bake.
 float H(vec2 xz) {
   return textureLod(uHeightMap, (xz - uRect.xy) / uRect.z, 0.0).r;
 }
@@ -146,6 +161,11 @@ float trailTap(sampler2D tex, vec3 rect, vec2 xz, out vec2 g, out float wgt) {
   vec2 uv = (xz - rect.xy) / sz;
   vec2 c = abs(uv - 0.5) * 2.0;
   wgt = (1.0 - smoothstep(0.9, 1.0, max(c.x, c.y))) * step(1e-3, rect.z);
+  if (wgt <= 0.0) {
+    // outside this cascade: same result, no fetches
+    g = vec2(0.0);
+    return 0.0;
+  }
   vec2 tc = clamp(uv, 0.0, 1.0);
   float te = 1.5 / max(float(textureSize(tex, 0).x), 1.0);
   float d = textureLod(tex, tc, 0.0).r;
@@ -228,16 +248,22 @@ void main() {
   }
   vec3 n = n0;
 
+  // Optional work shrinks toward the camera at low detail (1.0 at full detail).
+  float dk = mix(0.45, 1.0, clamp(uDetail, 0.0, 1.0));
+
   // ---- sand ripples, two scales (analytic derivative along the wind)
   float rip = sandW * (1.0 - smoothstep(0.35, 0.75, 1.0 - n0.y));
   if (rip > 0.001 && dist < 360.0) {
     vec2 g = vec2(0.0);
     float k1 = 6.2831853 / 0.5;
-    float ph1 = along * k1 + fbm(p.xz * 0.45) * 9.0;
     float aa1 = 1.0 - smoothstep(1.2, 2.8, fwAlong * k1 * 1.3);
-    float fade1 = 1.0 - smoothstep(6.0, 45.0, dist);
-    float pat1 = 0.25 + 0.75 * smoothstep(0.25, 0.75, vnoise(p.xz * 0.05 + vec2(3.7, 1.3)));
-    g += w * cos(ph1) * (0.35 * RIPPLE * fade1 * aa1 * pat1);
+    float fade1 = 1.0 - smoothstep(6.0, 45.0 * dk, dist);
+    if (fade1 * aa1 > 0.0) {
+      // small ripples: their warp fbm is only paid for where they show
+      float ph1 = along * k1 + fbm(p.xz * 0.45) * 9.0;
+      float pat1 = 0.25 + 0.75 * smoothstep(0.25, 0.75, vnoise(p.xz * 0.05 + vec2(3.7, 1.3)));
+      g += w * cos(ph1) * (0.35 * RIPPLE * fade1 * aa1 * pat1);
+    }
 
     float k2 = 6.2831853 / 2.6;
     float ph2 = along * k2 + fbm(p.xz * 0.08 + vec2(11.0, 4.0)) * 10.0;
@@ -251,13 +277,20 @@ void main() {
   }
 
   // ---- rock: break the smooth mesh normal into crags and ledges
-  if (rock > 0.01 && dist < 2500.0) {
+  // (detail > 0.55: both octaves; 0.2..0.55: the large one only; below: none)
+  float cragFar = 2500.0 * dk;
+  if (rock > 0.01 && dist < cragFar && uDetail > 0.2) {
     float re = 0.7;
     vec2 rp = p.xz + p.y * vec2(0.37, -0.29);
-    float c0 = fbm(rp * 0.2) + 0.3 * fbm(rp * 0.9 + 9.0);
-    float cx = fbm((rp + vec2(re, 0.0)) * 0.2) + 0.3 * fbm((rp + vec2(re, 0.0)) * 0.9 + 9.0);
-    float cz = fbm((rp + vec2(0.0, re)) * 0.2) + 0.3 * fbm((rp + vec2(0.0, re)) * 0.9 + 9.0);
-    float rk = rock * 3.5 * (1.0 - smoothstep(1200.0, 2500.0, dist));
+    float c0 = fbm(rp * 0.2);
+    float cx = fbm((rp + vec2(re, 0.0)) * 0.2);
+    float cz = fbm((rp + vec2(0.0, re)) * 0.2);
+    if (uDetail > 0.55) {
+      c0 += 0.3 * fbm(rp * 0.9 + 9.0);
+      cx += 0.3 * fbm((rp + vec2(re, 0.0)) * 0.9 + 9.0);
+      cz += 0.3 * fbm((rp + vec2(0.0, re)) * 0.9 + 9.0);
+    }
+    float rk = rock * 3.5 * (1.0 - smoothstep(0.48 * cragFar, cragFar, dist));
     n = normalize(n - vec3(cx - c0, 0.0, cz - c0) * rk);
   }
 
@@ -289,12 +322,20 @@ void main() {
     vec3 o = vec3(p.x, max(p.y, h0) + 0.25 * uTexel, p.z) + n0 * (0.5 * uTexel);
     float res = 1.0;
     float t = 2.0 * uTexel;
-    for (int i = 0; i < 30; i++) {
+    // Fewer steps take longer strides so the ray still reaches about 1.3-1.5 km
+    // (2.7-3 km with an 8 m texel): shadows get softer, not shorter.
+    // At 30 steps this is exactly the original march.
+    float steps = clamp(uShadowSteps, 1.0, 32.0);
+    float sr = 30.0 / steps;
+    float grow = 0.16 * pow(sr, 1.25);
+    float minStep = 1.5 * uTexel * sr;
+    for (int i = 0; i < 32; i++) {
+      if (float(i) >= steps) break;
       vec3 q = o + uSunDir * t;
       float hh = q.y - H(q.xz);
       res = min(res, SHADOW_K * hh / t);
       if (res <= 0.0 || q.y > MAX_TERRAIN_H) break;
-      t += max(1.5 * uTexel, t * 0.16);
+      t += max(minStep, t * grow);
     }
     shadow = mix(1.0, clamp(res, 0.0, 1.0), sIn);
   }
@@ -334,7 +375,7 @@ void main() {
   vec3 saltCol = vec3(0.0);
   if (salt > 0.001) {
     saltCol = mix(uSaltShade * (0.86 + 0.14 * amb), uSaltLit, l);
-    float crackFade = (1.0 - smoothstep(0.12, 0.45, fwSalt)) * (1.0 - smoothstep(60.0, 220.0, dist));
+    float crackFade = (1.0 - smoothstep(0.12, 0.45, fwSalt)) * (1.0 - smoothstep(60.0 * dk, 220.0 * dk, dist));
     if (crackFade > 0.001) {
       vec2 cv = cells(saltUV);
       float lw = 0.045;
@@ -349,7 +390,7 @@ void main() {
   vec3 col = mix(mix(sandCol, saltCol, salt), rockCol, rock);
 
   // ---- sparkle on sand only
-  float spk = sandW * (1.0 - smoothstep(25.0, 60.0, dist));
+  float spk = sandW * (1.0 - smoothstep(25.0 * dk, 60.0 * dk, dist));
   if (spk > 0.001) {
     vec2 id = floor(sc);
     vec2 f = fract(sc) - 0.5;
