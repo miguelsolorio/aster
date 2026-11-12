@@ -9,10 +9,10 @@ import { TrailField } from '../world/trailField';
 import { Dust } from '../world/dust';
 import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
-import { buildFigureGeometry } from '../world/figure';
+import { Figure } from './figure';
 import { AudioEngine } from '../audio/audio';
 import { UI, type Quality } from '../ui/ui';
-import { figFrag, figVert, postFrag, postVert } from '../render/shaders';
+import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
 import { DEFAULTS, type Params } from '../render/types';
 
@@ -84,14 +84,8 @@ function start() {
   const wildlife = new Wildlife(world, u);
   scene.add(clipmap.group, discoveries.group, wildlife.group, dust.group);
 
-  const figWind = { value: new THREE.Vector2(1, 0) };
-  const figure = new THREE.Mesh(
-    buildFigureGeometry(),
-    new THREE.ShaderMaterial({ uniforms: { ...u, uWind: figWind }, vertexShader: figVert, fragmentShader: figFrag, side: THREE.DoubleSide }),
-  );
-  figure.frustumCulled = false;
-  figure.rotation.order = 'YXZ';
-  scene.add(figure);
+  const figure = new Figure(u);
+  scene.add(figure.group);
 
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(1, 48, 24),
@@ -160,7 +154,7 @@ function start() {
       photo = active;
     },
     onHideFigure(hidden) {
-      figure.visible = !hidden;
+      figure.group.visible = !hidden;
     },
     onCapture() {
       render();
@@ -249,7 +243,6 @@ function start() {
   const tmp2 = new THREE.Vector3();
   const sliders: Array<{ x: number; z: number; life: number }> = [];
   let slideStampDist = 0;
-  let lean = 0;
 
   const cascade = (x: number, z: number, count: number) => {
     for (let i = 0; i < count && sliders.length < 40; i++) {
@@ -341,14 +334,7 @@ function start() {
       trail.stamp(s.x, s.z, 0.22, 0.3 * Math.min(1, s.life));
     }
 
-    // Figure: face travel, lean back in a slide, bob while walking, cloak trails behind.
-    figure.position.copy(st.pos);
-    figure.position.y += st.grounded && !st.sliding ? Math.abs(Math.sin(player.stride * Math.PI)) * 0.05 * Math.min(1, st.speed / 4) - 0.04 : -0.04;
-    lean += ((st.sliding ? -0.38 : st.grounded ? Math.min(0.14, st.speed * 0.012) : -0.1) - lean) * (1 - Math.exp(-dt * 7));
-    figure.rotation.set(lean, player.facing, 0);
-    figWind.value.set(wind.x * 0.6 - st.vel.x * 0.09, wind.y * 0.6 - st.vel.z * 0.09);
-    const fw = figWind.value.length();
-    if (fw > 1.6) figWind.value.multiplyScalar(1.6 / fw);
+    figure.update(dt, st, player.facing, wind, frame.gust);
     (u.uFigPos.value as THREE.Vector3).copy(st.pos);
 
     // Camera: orbit behind the figure, kept above the sand.

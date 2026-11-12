@@ -189,7 +189,10 @@ void main() {
   float sandW = (1.0 - rock) * (1.0 - salt);
 
   // ---- every screen-space derivative up front, in uniform control flow
-  vec2 w = uWind;
+  // Ripples are set in the sand by the prevailing wind, so their direction is
+  // fixed. Using the live, wandering wind here would sweep the whole pattern
+  // across the ground.
+  vec2 w = vec2(0.7648, 0.6442);
   float along = dot(p.xz, w);
   float fwAlong = fwidth(along);
   const float SALT_CELL = 1.4;
