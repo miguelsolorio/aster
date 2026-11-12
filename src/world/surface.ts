@@ -18,8 +18,8 @@ export const TERRAIN = {
   mtnHi: 0.42, // mask noise value where mountains reach full height
   mtnMin: 150, // peak height of the weakest ranges (m)
   mtnMax: 450, // peak height of the strongest ranges (m)
-  ridgeKm: 2.2, // base wavelength of the ridged multifractal
-  ridgeOctaves: 5,
+  ridgeKm: 1.5, // base wavelength of the ridged multifractal
+  ridgeOctaves: 6,
   terraceStep: 32, // mesa step height (m)
   terraceLo: 0.15, // dune-region noise value where mesas start replacing ridges
   terraceHi: 0.45,
@@ -196,6 +196,11 @@ vec3 surface(vec2 p) {
     float tf = floor(tk);
     float tt = (tf + smoothstep(0.68, 1.0, tk - tf)) * ${F(T.terraceStep)};
     mt += (tt - mt) * tm;
+    // rock ledges everywhere: short cliffs between walkable benches
+    float lk = mt / 14.0;
+    float lf = floor(lk);
+    float lt = (lf + smoothstep(0.55, 1.0, lk - lf)) * 14.0;
+    mt += (lt - mt) * 0.55 * m;
   }
   float rock = smoothstep(${F(T.rockLo)}, ${F(T.rockHi)}, mt + 18.0 * wnx);
 
@@ -284,6 +289,11 @@ export function createWorld(seed: number): World {
       const tf = Math.floor(tk);
       const tt = (tf + smoothstep(0.68, 1, tk - tf)) * T.terraceStep;
       mt += (tt - mt) * tm;
+      // rock ledges everywhere (mirrors the GLSL)
+      const lk = mt / 14;
+      const lf = Math.floor(lk);
+      const lt = (lf + smoothstep(0.55, 1, lk - lf)) * 14;
+      mt += (lt - mt) * 0.55 * m;
     }
     const rock = smoothstep(T.rockLo, T.rockHi, mt + 18 * wnx);
 

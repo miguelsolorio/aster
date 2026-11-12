@@ -247,6 +247,17 @@ void main() {
     n = normalize(n);
   }
 
+  // ---- rock: break the smooth mesh normal into crags and ledges
+  if (rock > 0.01 && dist < 2500.0) {
+    float re = 0.7;
+    vec2 rp = p.xz + p.y * vec2(0.37, -0.29);
+    float c0 = fbm(rp * 0.2) + 0.3 * fbm(rp * 0.9 + 9.0);
+    float cx = fbm((rp + vec2(re, 0.0)) * 0.2) + 0.3 * fbm((rp + vec2(re, 0.0)) * 0.9 + 9.0);
+    float cz = fbm((rp + vec2(0.0, re)) * 0.2) + 0.3 * fbm((rp + vec2(0.0, re)) * 0.9 + 9.0);
+    float rk = rock * 3.5 * (1.0 - smoothstep(1200.0, 2500.0, dist));
+    n = normalize(n - vec3(cx - c0, 0.0, cz - c0) * rk);
+  }
+
   // ---- footprints and trails: near cascade inside its rect, far elsewhere
   vec2 gN;
   vec2 gF;
@@ -311,7 +322,7 @@ void main() {
     float aaS2 = 1.0 - smoothstep(0.08, 0.35, fwY / 1.6);
     float band2 = abs(fract(sy2) - 0.5) * 2.0;
     float blot = fbm(p.xz * 0.045 + vec2(-3.1, 5.4));
-    float tone = 0.9 + 0.14 * (band - 0.5) * aaS + 0.07 * (band2 - 0.5) * aaS2 + 0.22 * (blot - 0.5);
+    float tone = 0.9 + 0.22 * (band - 0.5) * aaS + 0.07 * (band2 - 0.5) * aaS2 + 0.22 * (blot - 0.5);
     tone *= 0.95 + 0.1 * vnoise(vec2(p.y * 0.9, warp * 3.0));
     rockCol = mix(uRockShade * (0.8 + 0.2 * amb), uRockLit, l) * tone;
   }
