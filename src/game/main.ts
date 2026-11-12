@@ -11,6 +11,7 @@ import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
 import { Cities } from '../city/cities';
 import { Caravans } from '../city/caravans';
+import { People } from '../city/people';
 import { Figure } from './figure';
 import { AudioEngine } from '../audio/audio';
 import { UI } from '../ui/ui';
@@ -109,7 +110,8 @@ function start() {
   const discoveries = new Discoveries(world, u);
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, u);
-  scene.add(clipmap.group, cities.group, caravans.group, discoveries.group, wildlife.group, dust.group);
+  const people = new People(u);
+  scene.add(clipmap.group, cities.group, people.group, caravans.group, discoveries.group, wildlife.group, dust.group);
 
   const figure = new Figure(u);
   scene.add(figure.group);
@@ -143,6 +145,7 @@ function start() {
   });
   function applyTier() {
     applyQuality(QUALITY[auto.tier], { uniforms: u, clipmap, bake, dust });
+    people.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     resize();
   }
   function resize() {
@@ -222,6 +225,7 @@ function start() {
   discoveries.onReach = () => audio.chime();
   cities.onReach = () => audio.chime();
   player.roof = (x, z) => cities.roofAt(x, z);
+  player.dip = (x, z) => cities.poolDepthAt(x, z);
   // What the camera must stay above: sand, or a roof.
   const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z));
 
@@ -508,6 +512,9 @@ function start() {
     discoveries.update(frame);
     wildlife.update(frame);
     caravans.update(frame);
+    people.setCity(cities.active);
+    people.update(frame);
+    bustle = people.bustle;
     // How much of a city surrounds the listener: 0 out in the desert, rising from 900 m out to the centre.
     {
       const site = cities.nearest(st.pos.x, st.pos.z);
@@ -543,7 +550,7 @@ function start() {
           render();
         },
         freeze: (f: boolean) => (frozen = f),
-        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, audio, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let frozen = false;

@@ -69,9 +69,12 @@ export class Player {
 
   constructor(private world: World) {}
 
-  /** The surface you can stand on: the terrain, or a roof above it. */
+  /** Optional: how far the ground is sunk below the terrain at (x, z), e.g. the bed of a pool. */
+  dip: ((x: number, z: number) => number) | null = null;
+
+  /** The surface you can stand on: the terrain (or a pool bed), or a roof above it. */
   private top(x: number, z: number): number {
-    const h = this.world.height(x, z);
+    const h = this.world.height(x, z) - (this.dip ? this.dip(x, z) : 0);
     return this.roof ? Math.max(h, this.roof(x, z)) : h;
   }
 

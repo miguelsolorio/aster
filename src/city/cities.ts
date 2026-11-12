@@ -72,6 +72,21 @@ export class Cities {
     }
   }
 
+  /** Depth of water to wade through at (x, z): the pool of the loaded city, shelving at its edge. */
+  poolDepthAt(x: number, z: number): number {
+    const c = this.active;
+    const pool = c?.plan.pool;
+    if (!c || !pool) return 0;
+    const s = c.site;
+    const dx = x - s.cx;
+    const dz = z - s.cz;
+    const co = Math.cos(s.rot);
+    const si = Math.sin(s.rot);
+    const d = Math.hypot(co * dx + si * dz - pool.x, -si * dx + co * dz - pool.z);
+    const t = Math.min(1, Math.max(0, (pool.r - 0.4 - d) / 2.5));
+    return t * t * (3 - 2 * t) * 0.6;
+  }
+
   private trackCache = new Map<number, [number, number]>();
   /** Bearings from a city toward its two nearest neighbours. */
   private tracks(s: CitySite): [number, number] {
