@@ -2,17 +2,23 @@ import * as THREE from 'three';
 import type { PlayerState, SurfaceSample, World } from './contract';
 
 const CRUISE = 11; // glide speed you can hold on the flat
-const BOOST = 17; // with Shift
+const BOOST = 32; // with Shift
 const WALK = 5.2; // on rock
-const RUN = 9.5;
+const RUN = 19; // on rock with Shift
 const GRAVITY = 20;
 const LIFT_TIME = 3.5; // seconds of climbing in the reserve; refilled on landing
 const LIFT_SPEED = 8; // climb rate while jump is held
 const LIFT_DELAY = 0.2; // a jump held this long turns into a climb; shorter is a plain jump
 const GLIDE_SINK = 2; // steady sink in a glide
 const GLIDE_SPEED = 16; // forward speed in flight
+const GLIDE_BOOST = 45; // in flight with Shift
 const HOVER_SINK = 4.5; // sink with no direction held: he stops and settles down
-const MAX_SPEED = 34;
+const MAX_SPEED = 48;
+const TAP_GRACE = 0.12; // in flight a press waits this long before climbing, so a double tap can drop instead
+const DOUBLE_TAP = 0.3; // two presses this close together in flight drop you
+
+/** Metres per step on rock. Running lengthens the stride with speed so the step rate stays put. */
+export const strideLength = (speed: number, running: boolean) => (running ? Math.max(1.15, speed / 8.3) : 0.8);
 
 export interface PlayerInput {
   x: number; // strafe, -1..1 (right positive)
@@ -20,7 +26,7 @@ export interface PlayerInput {
   run: boolean;
   jump: boolean; // true on the frame the key went down
   lift: boolean; // jump held: climb while the reserve lasts
-  drop: boolean; // descend held: fall at full gravity
+  drop: boolean; // descend held: fall at full gravity (a double tap of jump in flight drops too)
   wind: THREE.Vector2; // unit world wind direction
 }
 
@@ -76,6 +82,10 @@ export class Player {
   private holdT = 0; // how long jump has been held since leaving the ground
   private armed = true; // false just after a jump, until the hold is long enough to be a climb
   private flew = false; // a climb has happened this flight, so releasing glides
+  private clock = 0;
+  private lastTap = -1; // clock at the last jump press made in flight; -1 when there is none to pair with
+  private dropping = false; // double-tapped: falling until landing or until jump is held again
+  private released = false; // jump has been let go since the drop began, so a fresh hold can catch you
 
   /** Optional: absolute height of a roof over (x, z) for feet at height y, or -Infinity where the ground is open. */
   roof: ((x: number, z: number, y: number) => number) | null = null;
@@ -104,6 +114,7 @@ export class Player {
     const { pos, vel } = st;
     const w = this.world;
     if (dt <= 0) return;
+    this.clock += dt;
 
     w.sample(pos.x, pos.z, this.s);
     w.normal(pos.x, pos.z, this.n);
@@ -134,6 +145,8 @@ export class Player {
       this.holdT = 0;
       this.armed = true;
       this.flew = false;
+      this.lastTap = -1;
+      this.dropping = false;
       let hs = Math.hypot(vel.x, vel.z);
 
       if (rock) {
@@ -192,7 +205,9 @@ export class Player {
               // Push toward cruising speed; the push fades as you reach it.
               const cruise = input.run ? BOOST : CRUISE;
               const sp = Math.hypot(vx, vz);
-              const push = 10 * Math.max(0, 1 - sp / cruise) * Math.max(0.25, Math.cos(d));
+              // Boosting also cancels most of the speed-squared drag, so Shift can hold its higher speed.
+              const hold = input.run && sp < cruise ? 0.003 * sp * sp : 0;
+              const push = (10 * Math.max(0, 1 - sp / cruise) + hold) * Math.max(0.25, Math.cos(d));
               vel.x += (vx / sp) * push * dt;
               vel.z += (vz / sp) * push * dt;
             }
@@ -268,8 +283,9 @@ export class Player {
 
       // Footsteps only where you walk.
       if (st.grounded && rock) {
-        const strideLen = st.running ? 1.15 : 0.8;
-        this.stepDist += Math.hypot(vel.x, vel.z) * dt;
+        const sp = Math.hypot(vel.x, vel.z);
+        const strideLen = strideLength(sp, st.running);
+        this.stepDist += sp * dt;
         this.stride = this.stepDist / strideLen;
         if (this.stepDist >= strideLen) {
           this.stepDist -= strideLen;
@@ -295,14 +311,32 @@ export class Player {
       } else {
         this.holdT = 0;
         this.armed = true;
+        if (this.dropping) this.released = true;
       }
+
+      // Two quick presses in flight drop you. Only counts once you are flying, so hops never drop.
+      if (input.jump && this.flew) {
+        if (this.lastTap >= 0 && this.clock - this.lastTap <= DOUBLE_TAP) {
+          this.dropping = true;
+          this.released = false;
+          this.lastTap = -1;
+        } else {
+          this.lastTap = this.clock;
+        }
+      }
+      // A fresh hold, long enough not to be a tap, catches the drop.
+      if (this.dropping && this.released && input.lift && this.holdT >= LIFT_DELAY) this.dropping = false;
+      const drop = input.drop || this.dropping;
+
       const wasLifting = this.lifting;
-      this.lifting = input.lift && this.armed && this.reserve > 0 && !input.drop;
+      const grace = this.flew ? TAP_GRACE : 0;
+      this.lifting = input.lift && this.armed && this.holdT >= grace && this.reserve > 0 && !drop;
       if (this.lifting) {
         this.flew = true;
+        this.lastTap = -1; // a press held into a climb is not the first half of a double tap
         if (!wasLifting) ev.lift?.();
       }
-      this.gliding = this.flew && !this.lifting && !input.drop;
+      this.gliding = this.flew && !this.lifting && !drop;
 
       // Steering: the same as on the ground. Swing the heading toward where the stick points.
       const flying = this.flew;
@@ -327,9 +361,10 @@ export class Player {
         // Speed: pushing a direction brings you up to glide speed, scaled by how far the
         // stick is pushed. Let go and he eases to a stop in the air and settles straight
         // down, so you can come to rest over a roof. Extra speed from a fast launch bleeds off.
-        const want = wishing ? GLIDE_SPEED * Math.min(1, wl) : 0;
+        // Shift raises the glide speed and gets there in about a second.
+        const want = wishing ? (input.run ? GLIDE_BOOST : GLIDE_SPEED) * Math.min(1, wl) : 0;
         if (hs > want) hs += (want - hs) * (1 - Math.exp(-dt * (wishing ? 0.8 : 2.2)));
-        else hs = Math.min(want, hs + 14 * dt);
+        else hs = Math.min(want, hs + (input.run ? 30 : 14) * dt);
       } else {
         hs *= 1 - 0.03 * dt;
       }
@@ -390,9 +425,10 @@ export class Player {
         }
         if (w.sample(pos.x, pos.z, this.s).rock > 0.5) {
           const sp = Math.hypot(vel.x, vel.z);
-          if (sp > WALK) {
-            vel.x *= WALK / sp;
-            vel.z *= WALK / sp;
+          const cap = input.run ? RUN : WALK;
+          if (sp > cap) {
+            vel.x *= cap / sp;
+            vel.z *= cap / sp;
           }
         }
         ev.land(Math.min(1, Math.max(0, into / 14)));

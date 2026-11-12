@@ -462,7 +462,7 @@ function start() {
     input.run = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.boost);
     input.jump = playing && jumpQueued;
     input.lift = playing && (keys.has('Space') || touch.flyHeld);
-    input.drop = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.dropHeld);
+    input.drop = playing && touch.dropHeld;
     jumpQueued = false;
     player.update(dt, input, camYaw, events);
     // A cave has a ceiling: you cannot rise through the rock.
