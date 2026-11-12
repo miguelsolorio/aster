@@ -565,8 +565,9 @@ void main() {
     // wider than the notch, and spreads to the river's full width by the pool.
     float hw = mix(${TERRAIN.springHalf - 1.5}, ${TERRAIN.riverHalf - 1.2}, smoothstep(${TERRAIN.springLip + 0.02}, 0.97, vMask.w));
     float wa = (1.0 - smoothstep(hw, hw + 1.5, rd)) * smoothstep(${TERRAIN.springLip}, ${TERRAIN.springLip + 0.03}, vMask.w) * (1.0 - pave);
-    // the notch itself: a dark mouth in the rock, wet at the bottom
-    float mouth = (1.0 - smoothstep(${TERRAIN.springHalf - 1.5}, ${TERRAIN.springHalf + 0.5}, rd)) * smoothstep(${TERRAIN.springBack - 0.08}, ${TERRAIN.springBack - 0.02}, vMask.w) * (1.0 - smoothstep(${TERRAIN.springLip}, ${TERRAIN.springLip + 0.03}, vMask.w)) * smoothstep(${TERRAIN.waterY + 8}.0, ${TERRAIN.waterY + 14}.0, p.y);
+    // the notch itself: dark inside, wet at the bottom. It stops at the notch's back wall, so
+    // none of it shows on the cliff above the rock that caps the notch.
+    float mouth = (1.0 - smoothstep(${TERRAIN.springHalf - 1.5}, ${TERRAIN.springHalf + 0.5}, rd)) * smoothstep(${TERRAIN.springBack - 0.045}, ${TERRAIN.springBack - 0.01}, vMask.w) * (1.0 - smoothstep(${TERRAIN.springLip}, ${TERRAIN.springLip + 0.03}, vMask.w)) * smoothstep(${TERRAIN.waterY + 8}.0, ${TERRAIN.waterY + 14}.0, p.y);
     col = mix(col, mix(uShade * 0.16, uTop * vec3(0.3, 0.5, 0.48), 0.25), 0.94 * mouth);
     if (wa > 0.001) {
       vec3 V = toCam / max(dist, 1e-4);

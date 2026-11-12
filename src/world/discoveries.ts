@@ -882,7 +882,7 @@ function buildRoof(c: Ctx, face: (u: number, v: number, out: Face) => Face, floo
   // the opening under its brow is that tall.
   let u0 = dm.from;
   while (u0 < dm.len - 2 && face(u0, 0, F).y - floor(u0) < dm.height + 0.3) u0 += 0.25;
-  const NU = Math.ceil((dm.len + 3 - u0) / STEP);
+  const NU = Math.ceil((dm.len + 5 - u0) / STEP); // a little past the back wall
   // the mountainside itself, lifted a hand's width so it never fights the ground under it
   const top = (u: number, v: number) => {
     face(u, v, F);
