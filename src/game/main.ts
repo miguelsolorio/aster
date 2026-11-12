@@ -310,15 +310,23 @@ function start() {
     jumpQueued = false;
     player.update(dt, input, camYaw, events);
 
-    // Sliding carves a groove, throws spray and sets sand running beside you.
+    // Riding leaves one clean line in the sand; carving widens it and throws spray to the outside.
     if (st.sliding && st.grounded && st.onRock < 0.5) {
+      const carve = Math.min(1, Math.abs(player.turn) * st.speed * 0.045);
       slideStampDist += st.speed * dt;
-      if (slideStampDist > 0.25) {
+      if (slideStampDist > 0.16) {
         slideStampDist = 0;
-        trail.stamp(st.pos.x, st.pos.z, 0.42, 0.85);
-        if (Math.random() < 0.25) cascade(st.pos.x, st.pos.z, 1);
+        // elongated along the direction of travel so successive marks join into one line
+        trail.stamp(st.pos.x, st.pos.z, 0.15 + carve * 0.22, 0.6 + carve * 0.35, Math.atan2(st.vel.z, st.vel.x), 3);
+        if (player.slope > 0.4 && Math.random() < 0.3) cascade(st.pos.x, st.pos.z, 1);
       }
-      dust.spray(st.pos, st.vel, Math.min(1, st.speed / 18));
+      const spray = Math.min(1, carve * 0.9 + Math.max(0, st.speed - 14) * 0.03);
+      if (spray > 0.05) {
+        // outside of the turn: to the right of travel when turning left
+        const side = player.turn > 0 ? -1 : 1;
+        tmp2.set(st.vel.x * 0.6 + st.vel.z * side * 0.5, 0, st.vel.z * 0.6 - st.vel.x * side * 0.5);
+        dust.spray(st.pos, tmp2, spray);
+      }
     }
     for (let i = sliders.length - 1; i >= 0; i--) {
       const s = sliders[i];
@@ -334,7 +342,7 @@ function start() {
       trail.stamp(s.x, s.z, 0.22, 0.3 * Math.min(1, s.life));
     }
 
-    figure.update(dt, st, player.facing, wind, frame.gust);
+    figure.update(dt, st, player.facing, wind, frame.gust, player.turn);
     (u.uFigPos.value as THREE.Vector3).copy(st.pos);
 
     // Camera: orbit behind the figure, kept above the sand.
@@ -392,7 +400,13 @@ function start() {
   }
 
   if (import.meta.env.DEV) {
-    Object.assign(window, { __ds: { player, day, keys, world, trail, renderer, discoveries, wildlife, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+    Object.assign(window, { __ds: {
+        // advance the simulation by a number of seconds at 60 Hz, then draw (for testing when the tab is throttled)
+        sim: (sec: number) => {
+          for (let i = 0; i < Math.round(sec * 60); i++) update(1 / 60);
+          render();
+        },
+        player, day, keys, world, trail, renderer, discoveries, wildlife, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let last = performance.now();

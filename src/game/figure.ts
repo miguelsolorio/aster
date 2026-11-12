@@ -141,6 +141,8 @@ export class Figure {
   private slide = 0;
   private air = 0;
   private lean = 0;
+  private bank = 0;
+  private time = 0;
 
   constructor(u: Uniforms) {
     this.group.rotation.order = 'YXZ';
@@ -189,7 +191,6 @@ export class Figure {
     for (const sx of [-1, 1]) {
       const arm = new THREE.Group();
       arm.position.set(sx * 0.2, 0.5, 0);
-      arm.rotation.z = sx * 0.1;
       add(arm, new THREE.CylinderGeometry(0.052, 0.04, 0.56, 8).translate(0, -0.28, 0), clothes);
       add(arm, new THREE.SphereGeometry(0.045, 8, 6).translate(0, -0.58, 0), skin);
       t.add(arm);
@@ -207,59 +208,78 @@ export class Figure {
     add(t, capeGeometry().translate(0, -HIP, 0), mat(0, { uFlow: this.flow, uLocalWind: this.localWind }, capeVert, 0, THREE.DoubleSide));
   }
 
-  /** Pose the figure for this frame. wind is the world wind direction. */
-  update(dt: number, st: PlayerState, facing: number, wind: THREE.Vector2, gust: number) {
+  /**
+   * Pose the figure for this frame. wind is the world wind direction; turn is the
+   * carving rate in rad/s (positive to the figure's left).
+   */
+  update(dt: number, st: PlayerState, facing: number, wind: THREE.Vector2, gust: number, turn: number) {
     const k = (rate: number) => 1 - Math.exp(-dt * rate);
-    const moving = st.grounded && !st.sliding;
+    const walking = st.grounded && !st.sliding;
     const strideLen = st.running ? 1.15 : 0.8;
-    if (moving) this.cycle += (st.speed * dt) / (2 * strideLen);
+    if (walking) this.cycle += (st.speed * dt) / (2 * strideLen);
     const a = this.cycle * Math.PI * 2;
 
-    const ampT = moving ? Math.min(0.85, 0.12 * st.speed) : 0;
+    const ampT = walking ? Math.min(0.85, 0.12 * st.speed) : 0;
     this.amp += (ampT - this.amp) * k(10);
-    this.slide += ((st.sliding && st.grounded ? 1 : 0) - this.slide) * k(8);
+    // surf: 0 standing .. 1 riding
+    this.slide += ((st.sliding && st.grounded ? Math.min(1, st.speed / 4) : 0) - this.slide) * k(5);
     this.air += ((st.grounded ? 0 : 1) - this.air) * k(10);
+    // bank into the carve, harder at speed
+    const bankT = Math.max(-0.55, Math.min(0.55, turn * (0.12 + st.speed * 0.02)));
+    this.bank += (bankT - this.bank) * k(5);
+    const carve = Math.abs(this.bank);
+    // crouch deeper with speed and in a hard turn, and breathe a little so the ride never looks frozen
+    this.time += dt;
+    const crouch = this.slide * (0.55 + Math.min(0.3, st.speed * 0.012) + carve * 0.5 + Math.sin(this.time * 1.7) * 0.04);
 
     const s = Math.sin(a);
     const c = Math.cos(a);
     for (let i = 0; i < 2; i++) {
-      const sg = i === 0 ? 1 : -1;
-      // walking: thighs swing opposite, the knee folds while its leg comes forward
+      const sg = i === 0 ? 1 : -1; // +1: the figure's right leg, which leads when surfing
+      // walking (on rock): thighs swing opposite, the knee folds while its leg comes forward
       let thigh = -sg * s * this.amp;
       let knee = Math.max(0, sg * c) * this.amp * 1.5 + this.amp * 0.12;
-      // sliding: feet out in front, one a little ahead of the other
-      thigh += (-1.15 + sg * 0.14 - thigh) * this.slide;
-      knee += (0.5 - sg * 0.18 - knee) * this.slide;
-      // airborne: one knee up, one leg trailing
-      thigh += (-0.55 * sg - 0.15 - thigh) * this.air;
-      knee += (0.75 - knee) * this.air;
+      // surfing: one foot ahead, one behind, both knees bent
+      const sThigh = sg > 0 ? -0.7 - crouch * 0.5 : 0.5 - crouch * 0.3;
+      const sKnee = sg > 0 ? 0.3 + crouch * 0.9 : 0.75 + crouch * 0.8;
+      thigh += (sThigh - thigh) * this.slide;
+      knee += (sKnee - knee) * this.slide;
+      // airborne: knees tucked
+      thigh += (-0.75 + sg * 0.2 - thigh) * this.air;
+      knee += (1.1 - knee) * this.air;
       this.hips[i].rotation.x = thigh;
       this.knees[i].rotation.x = knee;
-      // arms swing against the legs, trail when sliding, lift when airborne
-      let arm = sg * s * this.amp * 0.7;
-      arm += (0.55 - arm) * this.slide;
-      arm += (-0.5 - arm) * this.air;
-      this.arms[i].rotation.x = arm;
+
+      // arms: swing when walking; held out for balance when surfing, the uphill hand reaching for the sand
+      let armX = sg * s * this.amp * 0.7;
+      let armZ = -sg * 0.1;
+      // inside hand drops toward the sand, outside hand lifts
+      const reach = -sg * this.bank > 0 ? -0.9 * Math.abs(this.bank) : 0.7 * Math.abs(this.bank);
+      armX += (-0.25 * sg - armX) * this.slide;
+      armZ += (-sg * (0.95 + reach - carve * 0.2) - armZ) * Math.max(this.slide, this.air);
+      this.arms[i].rotation.x = armX;
+      this.arms[i].rotation.z = armZ;
     }
 
-    // lean: into a run, back in a slide
-    const leanT = this.slide > 0.5 ? -0.5 : st.grounded ? Math.min(0.2, st.speed * 0.018) : -0.08;
-    this.lean += (leanT - this.lean) * k(7);
-    this.torso.rotation.x = this.lean * 0.55 + Math.sin(a * 2) * 0.02 * this.amp;
-    this.torso.rotation.y = s * 0.09 * this.amp;
+    // torso: turned side-on to the direction of travel, leaning with the ride
+    const leanT = st.grounded ? Math.min(0.2, st.speed * 0.012) : -0.08;
+    this.lean += (leanT - this.lean) * k(5);
+    this.torso.rotation.x = this.lean * 0.6 + crouch * 0.25 + Math.sin(a * 2) * 0.02 * this.amp;
+    this.torso.rotation.y = s * 0.09 * this.amp + this.slide * (0.95 + this.bank * 0.5);
     this.torso.rotation.z = c * 0.03 * this.amp;
 
     const g = this.group;
     g.position.copy(st.pos);
-    // hips drop a little at each footfall, and sit low in a slide
-    g.position.y += -0.03 - Math.abs(s) * 0.045 * this.amp - this.slide * 0.3;
-    g.rotation.set(this.lean * 0.45, facing, 0);
+    // hips drop at each footfall when walking, and ride low when surfing
+    g.position.y += -0.03 - Math.abs(s) * 0.045 * this.amp - crouch * 0.22 - this.slide * 0.06;
+    g.rotation.set(this.lean * 0.3, facing, -this.bank * this.slide);
 
-    const flowT = Math.min(1.25, st.speed / 17 + (st.sliding ? 0.2 : 0) + (st.grounded ? 0 : 0.3) + gust * 0.08);
+    const flowT = Math.min(1.25, st.speed / 17 + (st.grounded ? 0 : 0.3) + gust * 0.08 + carve * 0.3);
     this.flow.value += (flowT - this.flow.value) * k(4);
     const cf = Math.cos(facing);
     const sf = Math.sin(facing);
     const str = 0.45 + gust * 0.9;
-    this.localWind.value.set((wind.x * cf - wind.y * sf) * str, (wind.x * sf + wind.y * cf) * str);
+    // the cape swings to the outside of a carve
+    this.localWind.value.set((wind.x * cf - wind.y * sf) * str - this.bank * 1.6, (wind.x * sf + wind.y * cf) * str);
   }
 }
