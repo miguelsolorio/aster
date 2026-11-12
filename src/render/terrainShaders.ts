@@ -582,13 +582,28 @@ void main() {
       // shallows: the bed shows through near the bank
       float shal = smoothstep(${TERRAIN.riverHalf - 7}.0, ${TERRAIN.riverHalf}.0, rd);
       wcol = mix(wcol, col * 0.8, 0.35 * shal * c);
-      // above the water level this is the fall where the river springs from the mountainside:
-      // white water streaking down the rock
+      // above the water level this is the fall where the river springs from the mountainside
       float fall = smoothstep(${TERRAIN.waterY + 0.4}, ${TERRAIN.waterY + 2}.0, p.y);
       if (fall > 0.001) {
-        float streak = vnoise(vec2((p.x + p.z) * 0.9, p.y * 0.35 + uTime * 2.2)) * 0.6 + vnoise(vec2((p.x - p.z) * 2.3, p.y * 0.9 + uTime * 3.4)) * 0.4;
-        vec3 foam = mix(uShade * 1.5, uLit, 0.35 + 0.65 * l) * vec3(0.86, 0.95, 1.0) + vec3(0.12);
-        wcol = mix(wcol, mix(wcol * 1.15, foam, smoothstep(0.35, 0.7, streak)), fall);
+        // Strands of white water: narrow across the fall (the signed distance to the river's
+        // centre line runs across it), long down it, and sliding downward at different speeds.
+        float fu = vMask.z;
+        float s1 = vnoise(vec2(fu * 1.7, p.y * 0.1 + uTime * 2.6));
+        float s2 = vnoise(vec2(fu * 4.3 + 7.0, p.y * 0.22 + uTime * 4.1));
+        float s3 = vnoise(vec2(fu * 0.6 - 3.0, p.y * 0.05 + uTime * 1.5));
+        float strand = smoothstep(0.42, 0.74, 0.45 * s1 + 0.3 * s2 + 0.35 * s3);
+        // clumps that break up as they drop
+        float lump = vnoise(vec2(fu * 0.9, p.y * 0.6 + uTime * 5.0));
+        float lum = dot(mix(uShade * 1.5, uLit, 0.3 + 0.7 * l), vec3(0.3, 0.6, 0.1));
+        vec3 veil = vec3(0.74, 0.88, 1.0) * lum; // the thin sheet between the strands
+        vec3 foam = vec3(0.96, 0.98, 1.0) * (lum * 1.25 + 0.1);
+        vec3 fcol = mix(veil, foam, strand * (0.65 + 0.35 * lump));
+        // thinner at its edges, so the rock shows through
+        fcol = mix(col, fcol, 0.55 + 0.45 * (1.0 - smoothstep(${TERRAIN.riverHalf - 5}.0, ${TERRAIN.riverHalf}.0, abs(fu))) * (0.6 + 0.4 * strand));
+        // spray where it lands
+        float spray = 1.0 - smoothstep(${TERRAIN.waterY + 2}.0, ${TERRAIN.waterY + 10}.0, p.y);
+        fcol = mix(fcol, foam, 0.7 * spray * (0.55 + 0.45 * vnoise(vec2(fu * 0.8, uTime * 3.0))));
+        wcol = mix(wcol, fcol, fall);
       }
       col = mix(col, wcol, wa);
     }
