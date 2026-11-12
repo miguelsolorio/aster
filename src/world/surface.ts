@@ -64,6 +64,24 @@ export const TERRAIN = {
   massifGully: 30, // depth of the erosion gullies (m)
   massifLedge: 18, // bench height (m)
   snowLine: 560, // snow settles above this height (m)
+  // Plateau country: raised, flat slickrock for the rivers to cut gorges into. It takes the
+  // low side of the salt-region noise (the high side is the pans).
+  platLo: -0.42, // region noise below this: full plateau
+  platHi: -0.2, // region noise above this: none
+  platH: 62, // how far a plateau stands above the desert (m)
+  // Rivers: the zero line of a winding noise field. Every river lies at one water level, below
+  // all natural ground, so the water is flat and can be drawn as a single sheet.
+  riverKm: 4.3, // wavelength of the field: sets how far apart rivers are
+  meanderKm: 1.4, // wavelength of the bends
+  meander: 0.22, // strength of the bends
+  riverGradMin: 0.1, // floor on the field's slope (per km): caps how wide a river can pool
+  waterY: -34, // water level (m)
+  riverHalf: 14, // half-width of the water (m)
+  riverWade: 0.45, // how deep you stand in it: the water is painted on a flat bed
+  riverBank: 1, // height of the flat valley floor above the water (m)
+  riverFloor: 46, // half-width of the flat valley floor (m)
+  riverCityNear: 800, // rivers fade out between these distances from a city centre
+  riverCityFar: 1100,
 } as const;
 
 /** Tallest ground the terrain can produce (m); shadows stop marching above it. */
@@ -99,6 +117,9 @@ const K_RIDGE = 9; // .. 9 + octaves - 1
 const K_CITY = 20; // buttes around canyon cities
 const K_MASSIF = 30; // .. 32
 const MASSIF_SALT = 0x3a55;
+const K_RIVER = 40; // .. 41
+/** How far from a river the ground can be reshaped (m). */
+const RIVER_REACH = TERRAIN.riverFloor + 520;
 const MASSIF_P = Math.round(TERRAIN.massifP * 1024);
 const SEED_SALT = 0x5bd1e995;
 
@@ -142,6 +163,34 @@ function noise(px: number, py: number, key: number): number {
   return (ab + uy * (cd - ab)) * NSCALE;
 }
 
+/** noise() with its gradient: writes (value, d/dx, d/dy) to out. Mirrors sfNoiseD. */
+function noiseD(px: number, py: number, key: number, out: Float64Array): void {
+  px = Math.fround(px);
+  py = Math.fround(py);
+  const ix0 = Math.floor(px);
+  const iy0 = Math.floor(py);
+  const fx = px - ix0;
+  const fy = py - iy0;
+  const ix = ix0 | 0;
+  const iy = iy0 | 0;
+  const hA = mix32(Math.imul(ix, 0x8da6b343) ^ Math.imul(iy, 0xd8163841) ^ key) & 7;
+  const hB = mix32(Math.imul(ix + 1, 0x8da6b343) ^ Math.imul(iy, 0xd8163841) ^ key) & 7;
+  const hC = mix32(Math.imul(ix, 0x8da6b343) ^ Math.imul(iy + 1, 0xd8163841) ^ key) & 7;
+  const hD = mix32(Math.imul(ix + 1, 0x8da6b343) ^ Math.imul(iy + 1, 0xd8163841) ^ key) & 7;
+  const a = GX[hA] * fx + GY[hA] * fy;
+  const b = GX[hB] * (fx - 1) + GY[hB] * fy;
+  const c = GX[hC] * fx + GY[hC] * (fy - 1);
+  const d = GX[hD] * (fx - 1) + GY[hD] * (fy - 1);
+  const ux = fx * fx * fx * (fx * (fx * 6 - 15) + 10);
+  const uy = fy * fy * fy * (fy * (fy * 6 - 15) + 10);
+  const dux = 30 * fx * fx * (fx - 1) * (fx - 1);
+  const duy = 30 * fy * fy * (fy - 1) * (fy - 1);
+  const k = a - b - c + d;
+  out[0] = (a + ux * (b - a) + uy * (c - a) + ux * uy * k) * NSCALE;
+  out[1] = (GX[hA] + ux * (GX[hB] - GX[hA]) + uy * (GX[hC] - GX[hA]) + ux * uy * (GX[hA] - GX[hB] - GX[hC] + GX[hD]) + dux * (b - a + uy * k)) * NSCALE;
+  out[2] = (GY[hA] + ux * (GY[hB] - GY[hA]) + uy * (GY[hC] - GY[hA]) + ux * uy * (GY[hA] - GY[hB] - GY[hC] + GY[hD]) + duy * (c - a + ux * k)) * NSCALE;
+}
+
 const clamp01 = (x: number): number => (x < 0 ? 0 : x > 1 ? 1 : x);
 const smoothstep = (e0: number, e1: number, x: number): number => {
   const t = clamp01((x - e0) / (e1 - e0));
@@ -150,7 +199,7 @@ const smoothstep = (e0: number, e1: number, x: number): number => {
 
 // ---------------------------------------------------------------- GLSL
 
-export const SURFACE_GLSL = /* glsl */ `
+const NOISE_GLSL = /* glsl */ `
 uniform float uSeed;
 
 const vec2 SF_G[8] = vec2[8](
@@ -188,6 +237,46 @@ float sfNoise(vec2 p, uint key) {
   return (ab + u.y * (cd - ab)) * ${F(NSCALE)};
 }
 
+// sfNoise with its gradient: (value, d/dx, d/dy).
+vec3 sfNoiseD(vec2 p, uint key) {
+  vec2 i = floor(p);
+  vec2 f = p - i;
+  int ix = int(i.x);
+  int iy = int(i.y);
+  vec2 ga = SF_G[int(sfMix((uint(ix) * 0x8da6b343u) ^ (uint(iy) * 0xd8163841u) ^ key) & 7u)];
+  vec2 gb = SF_G[int(sfMix((uint(ix + 1) * 0x8da6b343u) ^ (uint(iy) * 0xd8163841u) ^ key) & 7u)];
+  vec2 gc = SF_G[int(sfMix((uint(ix) * 0x8da6b343u) ^ (uint(iy + 1) * 0xd8163841u) ^ key) & 7u)];
+  vec2 gd = SF_G[int(sfMix((uint(ix + 1) * 0x8da6b343u) ^ (uint(iy + 1) * 0xd8163841u) ^ key) & 7u)];
+  float a = dot(ga, f);
+  float b = dot(gb, f - vec2(1.0, 0.0));
+  float c = dot(gc, f - vec2(0.0, 1.0));
+  float d = dot(gd, f - vec2(1.0, 1.0));
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  vec2 du = 30.0 * f * f * (f - 1.0) * (f - 1.0);
+  float k = a - b - c + d;
+  float v = a + u.x * (b - a) + u.y * (c - a) + u.x * u.y * k;
+  vec2 g = ga + u.x * (gb - ga) + u.y * (gc - ga) + u.x * u.y * (ga - gb - gc + gd) + du * vec2((b - a) + u.y * k, (c - a) + u.x * k);
+  return vec3(v, g) * ${F(NSCALE)};
+}
+
+// Signed distance to the centre line of the nearest river (m), from kilometre coordinates:
+// positive on one bank, negative on the other, so it interpolates cleanly across the water.
+float sfRiver(vec2 q, uint sk) {
+  vec3 ra = sfNoiseD(q * ${F(1 / T.riverKm)} + vec2(13.7, -6.2), sk + ${KOFF(K_RIVER)}u);
+  vec3 rb = sfNoiseD(q * ${F(1 / T.meanderKm)} + vec2(-2.9, 21.4), sk + ${KOFF(K_RIVER + 1)}u);
+  vec2 rg = ra.yz * ${F(1 / T.riverKm)} + rb.yz * ${F(T.meander / T.meanderKm)};
+  return (ra.x + ${F(T.meander)} * rb.x) / max(length(rg), ${F(T.riverGradMin)}) * 1000.0;
+}
+`;
+
+export const SURFACE_GLSL = /* glsl */ `
+${NOISE_GLSL}
+
+// Set by surfaceBase and surface for the point just sampled: the signed distance to the nearest
+// river (m, clamped) and how present the river is there (0 where it fades out by a city or massif).
+float sfRiverD;
+float sfRiverS;
+
 // Integer hash of a grid cell (matches cellHash in placement.ts).
 uint sfCell(uint a, uint b, uint c) {
   uint h = (a * 0x9e3779b1u) ^ (b * 0x85ebca6bu) ^ (c * 0xc2b2ae35u);
@@ -203,8 +292,29 @@ vec2 sfCity(ivec2 c) {
   return (vec2(c) + 0.24 + 0.52 * r) * ${F(CITY_CELL)};
 }
 
-// The raw desert: (height m, rock 0..1, salt 0..1). About 13 noise evaluations, 16 on a massif.
-vec3 surfaceBase(vec2 p) {
+// How clear of a city-to-city line a point is: 0 on the line to a city in one of the four
+// edge-adjacent cells, 1 well away from all of them. wob makes the edge wander.
+float sfPass(vec2 p, float wob) {
+  ivec2 cc = ivec2(floor(p / ${F(CITY_CELL)}));
+  vec2 ca = sfCity(cc);
+  vec2 pa = p - ca;
+  float la = length(pa);
+  float pk = 1.0;
+  for (int k = 0; k < 4; k++) {
+    ivec2 o = ivec2(k == 0 ? 1 : k == 1 ? -1 : 0, k == 2 ? 1 : k == 3 ? -1 : 0);
+    vec2 cn = sfCity(cc + o);
+    vec2 ba = cn - ca;
+    float hh = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+    float ds = length(pa - ba * hh) + ${F(T.passWobble)} * wob;
+    float de = min(la, length(p - cn));
+    pk = min(pk, 1.0 - (1.0 - smoothstep(${F(T.passLo)}, ${F(T.passHi)}, ds)) * smoothstep(${F(T.passNear)}, ${F(T.passFar)}, de));
+  }
+  return pk;
+}
+
+// The raw desert: (height m, rock 0..1, salt 0..1, riverbank green 0..1).
+// About 15 noise evaluations, 18 on a massif.
+vec4 surfaceBase(vec2 p) {
   uint sk = sfMix(uint(int(uSeed)) ^ ${SEED_SALT >>> 0}u);
   vec2 q = p * 0.001; // kilometres
 
@@ -225,24 +335,8 @@ vec3 surfaceBase(vec2 p) {
 
   // mountains: ridged multifractal, optionally terraced into mesas
   float m = smoothstep(${F(T.mtnLo)}, ${F(T.mtnHi)}, rM);
-  // passes: the ranges open along the lines to the cities in the four edge-adjacent cells
-  if (m > 0.0) {
-    ivec2 cc = ivec2(floor(p / ${F(CITY_CELL)}));
-    vec2 ca = sfCity(cc);
-    vec2 pa = p - ca;
-    float la = length(pa);
-    float pk = 1.0;
-    for (int k = 0; k < 4; k++) {
-      ivec2 o = ivec2(k == 0 ? 1 : k == 1 ? -1 : 0, k == 2 ? 1 : k == 3 ? -1 : 0);
-      vec2 cn = sfCity(cc + o);
-      vec2 ba = cn - ca;
-      float hh = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-      float ds = length(pa - ba * hh) + ${F(T.passWobble)} * wnx;
-      float de = min(la, length(p - cn));
-      pk = min(pk, 1.0 - (1.0 - smoothstep(${F(T.passLo)}, ${F(T.passHi)}, ds)) * smoothstep(${F(T.passNear)}, ${F(T.passFar)}, de));
-    }
-    m *= pk;
-  }
+  // passes: the ranges open along the lines between neighbouring cities
+  if (m > 0.0) m *= sfPass(p, wnx);
   float mt = 0.0;
   if (m > 0.0) {
     vec2 r = q * ${F(1 / T.ridgeKm)} + vec2(-7.3, 4.1);
@@ -274,6 +368,7 @@ vec3 surfaceBase(vec2 p) {
 
   // massif: a lone cone at the nearest corner between city cells, with gullies, benches and
   // three smooth ridgelines to walk up
+  float mfo = 0.0;
   vec2 gcf = floor(p / ${F(CITY_CELL)} + 0.5);
   ivec2 gi = ivec2(gcf);
   uint mh = sfCell(uint(gi.x), uint(gi.y), uint(int(uSeed)) ^ ${MASSIF_SALT}u);
@@ -305,6 +400,7 @@ vec3 surfaceBase(vec2 p) {
       mz += (zt - mz) * 0.5 * lg * su * smoothstep(0.02, 0.1, mf);
       mt = mt * (1.0 - smoothstep(0.0, 0.3, mf)) + mz;
       m = max(m, smoothstep(0.0, 0.08, mf));
+      mfo = mf;
     }
   }
   float rock = smoothstep(${F(T.rockLo)}, ${F(T.rockHi)}, mt + 18.0 * wnx);
@@ -317,7 +413,41 @@ vec3 surfaceBase(vec2 p) {
   da *= (1.0 - pan) * (1.0 - rock);
   float base = swell + (swell * ${F(T.panSwell)} + ${F(T.panDrop)} - swell) * pan;
 
-  return vec3(base + da * (big + mid) + mt, rock, salt);
+  // plateau country: raised and nearly flat, part rock
+  float pu = (1.0 - smoothstep(${F(T.platLo)}, ${F(T.platHi)}, rS)) * nm;
+  float steep = smoothstep(0.15, 0.5, max(rock, pu));
+  float h = base * (1.0 - 0.6 * pu) + ${F(T.platH)} * pu + da * (1.0 - 0.8 * pu) * (big + mid) + mt;
+  rock = max(rock, 0.4 * pu);
+
+  // rivers: a flat floor at the water level, with cliffs where the ground is rock or plateau
+  // and a broad gentle valley where it is sand
+  float green = 0.0;
+  float rsd = sfRiver(q, sk);
+  float rd = abs(rsd);
+  sfRiverD = clamp(rsd, -300.0, 300.0);
+  sfRiverS = 0.0;
+  if (rd < ${F(RIVER_REACH)}) {
+    vec2 rc = sfCity(ivec2(floor(p / ${F(CITY_CELL)})));
+    float rs = smoothstep(${F(T.riverCityNear)}, ${F(T.riverCityFar)}, length(p - rc)) * (1.0 - smoothstep(0.02, 0.2, mfo));
+    sfRiverS = rs;
+    if (rs > 0.0) {
+      // where a track crosses, the cliffs give way to a gentle valley and a ford
+      if (steep > 0.0) steep *= sfPass(p, wnx);
+      float fy = ${F(T.waterY)} + ${F(T.riverBank)} * smoothstep(${F(T.riverHalf - 1)}, ${F(T.riverHalf + 6)}, rd);
+      float dep = max(h - ${F(T.waterY + T.riverBank)}, 0.0);
+      // side ramps: every few hundred metres the cliffs lie back into a slope you can walk
+      float ramp = smoothstep(0.3, 0.55, wnz);
+      float ww = mix(clamp(4.0 * dep, 120.0, 500.0), clamp(0.8 * dep, 30.0, 400.0) * (1.0 + 3.0 * ramp), steep);
+      float w = smoothstep(${F(T.riverFloor)}, ${F(T.riverFloor)} + ww, rd);
+      h = mix(h, min(h, mix(fy, h, w)), rs);
+      float rkc = mix(steep * smoothstep(0.03, 0.25, w), rock, smoothstep(0.85, 1.0, w));
+      rock = mix(rock, rkc, rs);
+      salt *= mix(1.0, w, rs);
+      green = rs * (1.0 - smoothstep(${F(T.riverHalf)}, ${F(T.riverFloor + 12)}, rd));
+    }
+  }
+
+  return vec4(h, rock, salt, green);
 }
 
 ${CITY_SITES_GLSL}
@@ -326,8 +456,8 @@ ${CITY_SHAPE_GLSL}
 // The desert with cities: the ground is levelled into a plateau under each city and
 // shaped around it (terraces, cliffs, dunes), and the built area counts as hard
 // ground (rock = 1, no salt).
-vec3 surface(vec2 p) {
-  vec3 s = surfaceBase(p);
+vec4 surface(vec2 p) {
+  vec4 s = surfaceBase(p);
   float h;
   float rk;
   uint ck = sfMix(uint(int(uSeed)) ^ ${SEED_SALT >>> 0}u) + ${KOFF(K_CITY)}u;
@@ -335,6 +465,8 @@ vec3 surface(vec2 p) {
   s.x = h;
   s.y = max(s.y, max(cb.y, rk));
   s.z *= 1.0 - cb.x;
+  s.w *= 1.0 - cb.x;
+  sfRiverS *= 1.0 - cb.x;
   return s;
 }
 
@@ -350,6 +482,8 @@ export interface DesertWorld extends World {
   readonly cities: CityIndex;
   /** The desert as it would be with no cities. */
   base(x: number, z: number, out: SurfaceSample): SurfaceSample;
+  /** Distance to the centre line of the nearest river (m). Rivers fade out near cities and on massifs. */
+  river(x: number, z: number): number;
   /** The massif at the corner (gi, gj) of the city grid, at world (gi, gj) * CITY_CELL, if any. */
   massif(gi: number, gj: number): Massif | null;
 }
@@ -378,6 +512,20 @@ export function createWorld(seed: number): DesertWorld {
   const kMa = key(K_MASSIF);
   const kMb = key(K_MASSIF + 1);
   const kMc = key(K_MASSIF + 2);
+  const kRa = key(K_RIVER);
+  const kRb = key(K_RIVER + 1);
+  const fRv = Math.fround(1 / T.riverKm);
+  const fMe = Math.fround(1 / T.meanderKm);
+  const nA = new Float64Array(3);
+  const nB = new Float64Array(3);
+  /** Distance to the nearest river's centre line (m), from kilometre coordinates. Mirrors the GLSL. */
+  function riverDist(qx: number, qz: number): number {
+    noiseD(qx * fRv + 13.7, qz * fRv - 6.2, kRa, nA);
+    noiseD(qx * fMe - 2.9, qz * fMe + 21.4, kRb, nB);
+    const gx = nA[1] * (1 / T.riverKm) + nB[1] * (T.meander / T.meanderKm);
+    const gz = nA[2] * (1 / T.riverKm) + nB[2] * (T.meander / T.meanderKm);
+    return (Math.abs(nA[0] + T.meander * nB[0]) / Math.max(Math.hypot(gx, gz), T.riverGradMin)) * 1000;
+  }
   // The shaders read the seed as a float32 uniform, so the grid hashes use it rounded the same way.
   const gridSeed = Math.trunc(Math.fround(seed)) | 0;
   const f = Math.fround;
@@ -394,6 +542,26 @@ export function createWorld(seed: number): DesertWorld {
   }
   const PASS_OX = [1, -1, 0, 0];
   const PASS_OZ = [0, 0, 1, -1];
+  /** Mirrors sfPass in the GLSL. */
+  function passAt(px: number, pz: number, wob: number): number {
+    const ci = Math.floor(f(px / CITY_CELL));
+    const cj = Math.floor(f(pz / CITY_CELL));
+    cityCentre(ci, cj, cA);
+    const pax = px - cA.x;
+    const paz = pz - cA.z;
+    const la = Math.hypot(pax, paz);
+    let pk = 1;
+    for (let k = 0; k < 4; k++) {
+      cityCentre(ci + PASS_OX[k], cj + PASS_OZ[k], cN);
+      const bax = cN.x - cA.x;
+      const baz = cN.z - cA.z;
+      const hh = clamp01((pax * bax + paz * baz) / (bax * bax + baz * baz));
+      const ds = Math.hypot(pax - bax * hh, paz - baz * hh) + T.passWobble * wob;
+      const de = Math.min(la, Math.hypot(px - cN.x, pz - cN.z));
+      pk = Math.min(pk, 1 - (1 - smoothstep(T.passLo, T.passHi, ds)) * smoothstep(T.passNear, T.passFar, de));
+    }
+    return pk;
+  }
   const mScratch = { x: 0, z: 0, r: 0, h: 0, jx: 0, jz: 0, ux: 0, uz: 0 };
   /** The massif at a cell corner, if there is one. Mirrors the GLSL. */
   function massifAt(gi: number, gj: number, out: typeof mScratch): boolean {
@@ -434,25 +602,7 @@ export function createWorld(seed: number): DesertWorld {
     const px = f(x);
     const pz = f(z);
     // passes (mirrors the GLSL)
-    if (m > 0) {
-      const ci = Math.floor(f(px / CITY_CELL));
-      const cj = Math.floor(f(pz / CITY_CELL));
-      cityCentre(ci, cj, cA);
-      const pax = px - cA.x;
-      const paz = pz - cA.z;
-      const la = Math.hypot(pax, paz);
-      let pk = 1;
-      for (let k = 0; k < 4; k++) {
-        cityCentre(ci + PASS_OX[k], cj + PASS_OZ[k], cN);
-        const bax = cN.x - cA.x;
-        const baz = cN.z - cA.z;
-        const hh = clamp01((pax * bax + paz * baz) / (bax * bax + baz * baz));
-        const ds = Math.hypot(pax - bax * hh, paz - baz * hh) + T.passWobble * wnx;
-        const de = Math.min(la, Math.hypot(px - cN.x, pz - cN.z));
-        pk = Math.min(pk, 1 - (1 - smoothstep(T.passLo, T.passHi, ds)) * smoothstep(T.passNear, T.passFar, de));
-      }
-      m *= pk;
-    }
+    if (m > 0) m *= passAt(px, pz, wnx);
     let mt = 0;
     if (m > 0) {
       let rx = qx * fR - 7.3;
@@ -488,6 +638,7 @@ export function createWorld(seed: number): DesertWorld {
 
     // massif (mirrors the GLSL)
     const ms = mScratch;
+    let mfo = 0;
     if (massifAt(Math.floor(f(f(px / CITY_CELL) + 0.5)), Math.floor(f(f(pz / CITY_CELL) + 0.5)), ms)) {
       const dx = f(px - ms.x);
       const dz = f(pz - ms.z);
@@ -510,20 +661,52 @@ export function createWorld(seed: number): DesertWorld {
         mz += (zt - mz) * 0.5 * lg * su * smoothstep(0.02, 0.1, mf);
         mt = mt * (1 - smoothstep(0, 0.3, mf)) + mz;
         m = Math.max(m, smoothstep(0, 0.08, mf));
+        mfo = mf;
       }
     }
-    const rock = smoothstep(T.rockLo, T.rockHi, mt + 18 * wnx);
+    let rock = smoothstep(T.rockLo, T.rockHi, mt + 18 * wnx);
 
     const nm = 1 - m;
     const pan = smoothstep(T.panEdgeLo, T.panEdgeHi, rS) * nm;
-    const salt = smoothstep(T.saltLo, T.saltHi, rS) * nm;
+    let salt = smoothstep(T.saltLo, T.saltHi, rS) * nm;
     let da = T.flatAmp + (1 - T.flatAmp) * smoothstep(T.flatLo, T.flatHi, rD);
     da *= (1 - pan) * (1 - rock);
     const base = swell + (swell * T.panSwell + T.panDrop - swell) * pan;
 
-    out.h = base + da * (big + mid) + mt;
+    // plateau country (mirrors the GLSL)
+    const pu = (1 - smoothstep(T.platLo, T.platHi, rS)) * nm;
+    let steep = smoothstep(0.15, 0.5, Math.max(rock, pu));
+    let h = base * (1 - 0.6 * pu) + T.platH * pu + da * (1 - 0.8 * pu) * (big + mid) + mt;
+    rock = Math.max(rock, 0.4 * pu);
+
+    // rivers (mirrors the GLSL)
+    let green = 0;
+    const rd = riverDist(qx, qz);
+    if (rd < RIVER_REACH) {
+      cityCentre(Math.floor(f(px / CITY_CELL)), Math.floor(f(pz / CITY_CELL)), cA);
+      const rs = smoothstep(T.riverCityNear, T.riverCityFar, Math.hypot(px - cA.x, pz - cA.z)) * (1 - smoothstep(0.02, 0.2, mfo));
+      if (rs > 0) {
+        if (steep > 0) steep *= passAt(px, pz, wnx);
+        const fy = T.waterY + T.riverBank * smoothstep(T.riverHalf - 1, T.riverHalf + 6, rd);
+        const dep = Math.max(h - (T.waterY + T.riverBank), 0);
+        const ramp = smoothstep(0.3, 0.55, wnz);
+        const wSand = Math.min(500, Math.max(120, 4 * dep));
+        const wRock = Math.min(400, Math.max(30, 0.8 * dep)) * (1 + 3 * ramp);
+        const ww = wSand + (wRock - wSand) * steep;
+        const w = smoothstep(T.riverFloor, T.riverFloor + ww, rd);
+        h = h + (Math.min(h, fy + (h - fy) * w) - h) * rs;
+        const rk0 = steep * smoothstep(0.03, 0.25, w);
+        const rkc = rk0 + (rock - rk0) * smoothstep(0.85, 1, w);
+        rock = rock + (rkc - rock) * rs;
+        salt *= 1 + (w - 1) * rs;
+        green = rs * (1 - smoothstep(T.riverHalf, T.riverFloor + 12, rd));
+      }
+    }
+
+    out.h = h;
     out.rock = rock;
     out.salt = salt;
+    out.green = green;
     return out;
   }
 
@@ -539,6 +722,7 @@ export function createWorld(seed: number): DesertWorld {
     out.h = cb.h;
     out.rock = Math.max(out.rock, cb.paved, cb.rock);
     out.salt *= 1 - cb.flatten;
+    out.green = (out.green ?? 0) * (1 - cb.flatten);
     return out;
   }
 
@@ -549,6 +733,7 @@ export function createWorld(seed: number): DesertWorld {
     seed,
     cities,
     base,
+    river: (x: number, z: number): number => riverDist(f(x * 0.001), f(z * 0.001)),
     massif(gi: number, gj: number): Massif | null {
       return massifAt(gi, gj, mScratch) ? { x: mScratch.x, z: mScratch.z, r: mScratch.r, h: mScratch.h } : null;
     },

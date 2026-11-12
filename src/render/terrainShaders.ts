@@ -96,15 +96,16 @@ uniform float uLower;      // metres to sink this level (0 for the finest)
 
 varying vec3 vW;
 varying vec3 vN;
-varying vec2 vMask; // rock, salt
+varying vec4 vMask; // rock, salt, signed distance to the river (m), river presence 0..1
 
 void main() {
   vec2 xz = uLevelCenter + position.xz * uCell;
-  vec3 s = surface(xz);
+  vec4 s = surface(xz);
+  vec2 river = vec2(sfRiverD, sfRiverS); // read now: the next calls overwrite them
   float hx = surfaceH(xz + vec2(uCell, 0.0));
   float hz = surfaceH(xz + vec2(0.0, uCell));
   vN = normalize(vec3(s.x - hx, uCell, s.x - hz));
-  vMask = s.yz;
+  vMask = vec4(s.yz, river);
   vec3 wp = vec3(xz.x, s.x - uLower, xz.y);
   vW = wp;
   // camera-relative so large world coordinates do not jitter
@@ -142,6 +143,8 @@ uniform vec3 uSaltShade;
 uniform vec3 uSnowLit;
 uniform vec3 uSnowShade;
 uniform vec3 uSunCol;
+uniform vec3 uTop;
+uniform vec3 uHorizon;
 uniform vec3 uFogCol;
 
 ${CITY_SITES_GLSL}
@@ -175,7 +178,7 @@ uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
 
 varying vec3 vW;
 varying vec3 vN;
-varying vec2 vMask;
+varying vec4 vMask;
 
 ${LOOK}
 ${COMMON}
@@ -501,6 +504,44 @@ void main() {
     col += uSunCol * (on * dotc * (0.15 + 1.6 * spec) * tw * l * spk * SPARKLE);
   }
 
+  // ---- rivers: green, damp banks, and the water itself painted on the flat bed. The distance
+  // to the river is signed, so it interpolates straight through the water even where the mesh
+  // is far coarser than the river is wide.
+  float rd = abs(vMask.z);
+  float bank = clamp(vMask.w, 0.0, 1.0) * (1.0 - smoothstep(${TERRAIN.riverHalf}.0, ${TERRAIN.riverFloor + 12}.0, rd)) * (1.0 - pave);
+  if (bank > 0.003) {
+    // growth is thick at the water and breaks into patches further up the bank
+    float grow = (1.0 - rock) * smoothstep(0.5, 0.74, fbm(p.xz * 0.11 + vec2(6.4, 1.9)) * (0.55 + 0.45 * bank) + 0.42 * bank * bank);
+    vec3 grassCol = mix(uShade * (0.8 + 0.2 * amb), uLit, l) * vec3(0.56, 0.72, 0.36);
+    grassCol *= 0.86 + 0.28 * vnoise(p.xz * 1.7);
+    col = mix(col, grassCol, 0.72 * grow * smoothstep(0.0, 0.15, bank));
+    // wet sand at the water's edge
+    col *= 1.0 - 0.3 * (1.0 - smoothstep(${TERRAIN.riverHalf}.0, ${TERRAIN.riverHalf + 5}.0, rd)) * smoothstep(0.3, 0.6, bank);
+    float wa = (1.0 - smoothstep(${TERRAIN.riverHalf - 1.2}, ${TERRAIN.riverHalf + 0.3}, rd)) * smoothstep(0.35, 0.7, vMask.w) * (1.0 - pave);
+    if (wa > 0.001) {
+      vec3 V = toCam / max(dist, 1e-4);
+      vec2 wq = p.xz * 0.3;
+      float wt = uTime * 0.25;
+      float w0 = vnoise(wq + wt) + vnoise(wq * 2.3 - wt * 1.3);
+      float wx = vnoise(wq + vec2(0.08, 0.0) + wt) + vnoise((wq + vec2(0.08, 0.0)) * 2.3 - wt * 1.3);
+      float wz = vnoise(wq + vec2(0.0, 0.08) + wt) + vnoise((wq + vec2(0.0, 0.08)) * 2.3 - wt * 1.3);
+      float calm = 1.0 - smoothstep(80.0, 400.0, dist);
+      vec3 wn = normalize(vec3(-(wx - w0) * 0.9 * calm, 1.0, -(wz - w0) * 0.9 * calm));
+      float c = clamp(dot(wn, V), 0.0, 1.0);
+      float fres = pow(1.0 - c, 3.0);
+      // looking down shows the deep green of the water; a grazing view mirrors the sky
+      vec3 deep = mix(uTop, uShade, 0.25) * vec3(0.55, 1.0, 0.86);
+      vec3 wcol = mix(deep, mix(uTop, uHorizon, 0.75), 0.15 + 0.85 * fres);
+      wcol *= 0.78 + 0.22 * l;
+      vec3 rf = reflect(-V, wn);
+      wcol += uSunCol * pow(max(dot(rf, uSunDir), 0.0), 180.0) * (1.0 - 0.6 * uNight) * 1.2 * shadow;
+      // shallows: the bed shows through near the bank
+      float shal = smoothstep(${TERRAIN.riverHalf - 7}.0, ${TERRAIN.riverHalf}.0, rd);
+      wcol = mix(wcol, col * 0.8, 0.35 * shal * c);
+      col = mix(col, wcol, wa);
+    }
+  }
+
   // ---- fog
   col = mix(col, uFogCol, 1.0 - exp(-dist * uFog * hazeAt(p.y)));
 
@@ -586,6 +627,6 @@ uniform float uBakeTexel; // metres per texel
 void main() {
   // gl_FragCoord.xy is the texel centre (i + 0.5), matching uv = (xz - origin) / size
   vec2 xz = uBakeOrigin + gl_FragCoord.xy * uBakeTexel;
-  gl_FragColor = vec4(surface(xz), 1.0);
+  gl_FragColor = surface(xz);
 }
 `;

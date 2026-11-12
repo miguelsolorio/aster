@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import { WORLD_SCALE } from './scale';
+import { TERRAIN } from './surface';
 
 const CELL = 900 * WORLD_SCALE;
 const MARGIN = 150; // keeps sites at least 300 m apart
@@ -12,6 +13,8 @@ const SITE_P = 0.34;
 const BUILD_R = 2500;
 const DROP_R = 3500;
 const SCAN_EVERY = 0.3;
+const GROVE_P = 0.7; // chance an otherwise empty cell beside a river holds a grove
+const GROVE_REACH = 260; // metres from a river that counts as beside it
 
 // ------------------------------------------------------------------ hashing
 
@@ -681,17 +684,22 @@ function buildOasis(c: Ctx): void {
 
   // palms
   const np = 3 + Math.floor(c.rng() * 5);
-  const top = new THREE.Vector3();
-  const pt = new THREE.Vector3();
   for (let p = 0; p < np; p++) {
     const a = (p / np) * Math.PI * 2 + c.r(-0.5, 0.5);
     const d = R * c.r(0.95, 1.5);
-    const bu = Math.cos(a) * d;
-    const bv = Math.sin(a) * d;
+    addPalm(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI + c.r(-0.9, 0.9)); // leaning mostly toward the water
+  }
+}
+
+/** One palm rooted at frame point (bu, bv), leaning toward the bearing la. */
+function addPalm(c: Ctx, bu: number, bv: number, la: number): void {
+  const st = c.stone;
+  const top = new THREE.Vector3();
+  const pt = new THREE.Vector3();
+  {
     const g = c.g(bu, bv);
     const H = c.r(8, 16);
     const lean = c.r(1.5, 5.5);
-    const la = a + Math.PI + c.r(-0.9, 0.9); // mostly toward the water
     const lu = Math.cos(la);
     const lv = Math.sin(la);
     const pts: THREE.Vector3[] = [];
@@ -747,6 +755,38 @@ function buildOasis(c: Ctx): void {
         V(i, 2); V(i + 1, 2); V(i + 1, 1);
       }
     }
+  }
+}
+
+/**
+ * A stand of palms and scrub on a riverbank. The site sits on the bank; onBank says whether a
+ * frame point is on the damp ground beside the water, and toWater is the bearing to the river.
+ */
+function buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: number): void {
+  const st = c.stone;
+  c.foot = 34;
+  const np = 3 + Math.floor(c.rng() * 6);
+  for (let p = 0, tries = 0; p < np && tries < 60; tries++) {
+    const a = c.rng() * Math.PI * 2;
+    const d = c.r(2, 34);
+    const u = Math.cos(a) * d;
+    const v = Math.sin(a) * d;
+    if (!onBank(u, v)) continue;
+    addPalm(c, u, v, toWater + c.r(-0.9, 0.9));
+    p++;
+  }
+  const nsh = 8 + Math.floor(c.rng() * 10);
+  for (let i = 0, tries = 0; i < nsh && tries < 80; tries++) {
+    const a = c.rng() * Math.PI * 2;
+    const d = c.r(1, 40);
+    const u = Math.cos(a) * d;
+    const v = Math.sin(a) * d;
+    if (!onBank(u, v)) continue;
+    const k = c.r(0.85, 1.1);
+    st.set(0.5 * k, 0.62 * k, 0.38 * k, 2, 0.15);
+    const s = c.r(0.7, 1.9);
+    c.prim(UNIT_BLOB, u, c.g(u, v) + s * 0.25, v, s * 1.3, s * 0.7, s * 1.2, c.rng() * 6);
+    i++;
   }
 }
 
@@ -1151,6 +1191,7 @@ export class Discoveries {
   private readonly reached = new Set<number>();
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private readonly cellPos = { x: 0, z: 0 };
+  private readonly bankSample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private scanT = 0;
 
   constructor(world: World, uniforms: Uniforms) {
@@ -1186,9 +1227,10 @@ export class Discoveries {
   /** Site position for a cell, or false if the cell is empty. */
   private cellSite(cx: number, cz: number): boolean {
     const s = this.world.seed | 0;
-    if (hash4(cx, cz, s, 1) >= SITE_P) return false;
     this.cellPos.x = cx * CELL + MARGIN + hash4(cx, cz, s, 2) * (CELL - 2 * MARGIN);
     this.cellPos.z = cz * CELL + MARGIN + hash4(cx, cz, s, 3) * (CELL - 2 * MARGIN);
+    // Most cells are empty, but one beside a river usually holds a grove.
+    if (hash4(cx, cz, s, 1) >= SITE_P && !(hash4(cx, cz, s, 5) < GROVE_P && this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH)) return false;
     // The wilderness finds keep clear of cities.
     const cities = (this.world as Partial<{ cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>).cities;
     if (cities) {
@@ -1264,6 +1306,36 @@ export class Discoveries {
     }
   }
 
+  /** Distance to the nearest river, if this world has rivers. */
+  private riverAt(x: number, z: number): number {
+    const river = (this.world as Partial<{ river(x: number, z: number): number }>).river;
+    return river ? river(x, z) : Infinity;
+  }
+
+  /**
+   * The nearest spot on a riverbank to (x, z), written to cellPos, or false if there is none:
+   * damp ground a little back from the water, where the river has not faded out.
+   */
+  private bankNear(x: number, z: number): boolean {
+    let best = Infinity;
+    for (let r = 0; r <= GROVE_REACH + 40; r += 12) {
+      for (let k = 0; k < 20; k++) {
+        const a = (k / 20) * Math.PI * 2;
+        const tx = x + Math.cos(a) * r;
+        const tz = z + Math.sin(a) * r;
+        const rd = this.riverAt(tx, tz);
+        if (rd < 20 || rd > 38 || r >= best) continue;
+        const sm = this.world.sample(tx, tz, this.bankSample);
+        if ((sm.green ?? 0) < 0.6 || sm.rock > 0.3) continue;
+        best = r;
+        this.cellPos.x = tx;
+        this.cellPos.z = tz;
+      }
+      if (best < Infinity) return true;
+    }
+    return false;
+  }
+
   private buildSite(cx: number, cz: number): void {
     this.cellSite(cx, cz);
     let x = this.cellPos.x;
@@ -1280,7 +1352,11 @@ export class Discoveries {
     mean /= 8;
     const r = rng();
     let kind: string;
-    if (s.rock > 0.45) kind = r < 0.45 ? 'arch' : r < 0.75 ? 'balancing-stones' : r < 0.9 ? 'lantern' : 'standing-stones';
+    if (this.riverAt(x, z) < GROVE_REACH && this.bankNear(x, z)) {
+      kind = 'grove';
+      x = this.cellPos.x;
+      z = this.cellPos.z;
+    } else if (s.rock > 0.45) kind = r < 0.45 ? 'arch' : r < 0.75 ? 'balancing-stones' : r < 0.9 ? 'lantern' : 'standing-stones';
     else if (s.salt > 0.35) kind = r < 0.4 ? 'standing-stones' : r < 0.7 ? 'sundial' : r < 0.85 ? 'lantern' : 'bones';
     else if (h < mean - 4 && r < 0.6) kind = 'oasis';
     else {
@@ -1321,6 +1397,27 @@ export class Discoveries {
     switch (kind) {
       case 'ruins': buildRuins(ctx); break;
       case 'oasis': buildOasis(ctx); break;
+      case 'grove': {
+        // bearing to the water, and a test for the damp bank, both in the site's own frame
+        let toWater = 0;
+        let near = Infinity;
+        for (let k = 0; k < 16; k++) {
+          const a = (k / 16) * Math.PI * 2;
+          ctx.at(Math.cos(a) * 14, Math.sin(a) * 14);
+          const rd = this.riverAt(x + ctx.lx, z + ctx.lz);
+          if (rd < near) {
+            near = rd;
+            toWater = a;
+          }
+        }
+        const onBank = (u: number, v: number): boolean => {
+          ctx.at(u, v);
+          const rd = this.riverAt(x + ctx.lx, z + ctx.lz);
+          return rd > TERRAIN.riverHalf + 2 && rd < TERRAIN.riverFloor + 6;
+        };
+        buildGrove(ctx, onBank, toWater);
+        break;
+      }
       case 'arch': buildArch(ctx); break;
       case 'balancing-stones': buildBalancing(ctx); break;
       case 'standing-stones': buildStones(ctx, onSalt); break;

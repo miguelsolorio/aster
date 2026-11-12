@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { FrameState, Uniforms } from './contract';
 import { DayCycle } from './daycycle';
 import { Player, type PlayerInput } from './player';
-import { createWorld } from '../world/surface';
+import { TERRAIN, createWorld } from '../world/surface';
 import { HeightBake } from '../world/heightBake';
 import { Clipmap } from '../world/clipmap';
 import { TrailField } from '../world/trailField';
@@ -244,7 +244,13 @@ function start() {
   discoveries.onReach = () => audio.chime();
   cities.onReach = () => audio.chime();
   player.roof = (x, z, y) => cities.roofAt(x, z, y);
-  player.dip = (x, z) => cities.poolDepthAt(x, z);
+  // Pools and rivers are waded: you stand a little below the surface.
+  const wadeS = { h: 0, rock: 0, salt: 0, green: 0 };
+  player.dip = (x, z) => {
+    const pool = cities.poolDepthAt(x, z);
+    if (pool > 0 || world.river(x, z) > TERRAIN.riverHalf) return pool;
+    return (world.sample(x, z, wadeS).green ?? 0) > 0.6 ? TERRAIN.riverWade : 0;
+  };
   // What the camera must stay above: sand, or a roof.
   const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z, camera.position.y));
 
