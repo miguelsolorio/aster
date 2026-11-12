@@ -332,10 +332,12 @@ function personGeometry(): { geo: THREE.InstancedBufferGeometry; tris: number } 
     [0.09, 0],
     [-0.09, 0.5],
   ] as Array<[number, number]>) {
-    b.set(1, 1, 0, ph, [hx, 0.62, 0]).tube(
+    // thin dark legs with a small foot, like the townsfolk
+    b.set(1, 8, 0, ph, [hx, 0.62, 0]).tube(
       [
-        { c: [hx, 0.62, 0], rx: 0.06, rz: 0.06 },
-        { c: [hx, 0.0, 0.03], rx: 0.07, rz: 0.06 },
+        { c: [hx, 0.62, 0], rx: 0.024, rz: 0.024 },
+        { c: [hx, 0.04, 0.0], rx: 0.022, rz: 0.022 },
+        { c: [hx, 0.0, 0.05], rx: 0.024, rz: 0.03 },
       ],
       4,
       Math.PI / 4,
@@ -376,9 +378,18 @@ function personGeometry(): { geo: THREE.InstancedBufferGeometry; tris: number } 
     false,
     false,
   );
-  b.set(0, 8);
-  b.tri([-0.075, 1.52, 0.17], [0.075, 1.52, 0.17], [0.075, 1.68, 0.185], null);
-  b.tri([-0.075, 1.52, 0.17], [0.075, 1.68, 0.185], [-0.075, 1.68, 0.185], null);
+  // the face: a plain white disc set in the front of the hood
+  b.set(0, 11).tube(
+    [
+      { c: [0, 1.6, 0.12], rx: 0.115, rz: 0.115 },
+      { c: [0, 1.6, 0.2], rx: 0.11, rz: 0.11 },
+      { c: [0, 1.6, 0.215], rx: 0.07, rz: 0.07 },
+    ],
+    8,
+    Math.PI / 8,
+    false,
+    true,
+  );
   for (const [sx, ph] of [
     [1, 0.5],
     [-1, 0],
@@ -491,7 +502,8 @@ vec3 matColor(float m, vec3 coat, vec3 load) {
   else if (m < 7.5) c = vec3(0.62, 0.38, 0.26);
   else if (m < 8.5) c = vec3(0.07, 0.055, 0.05);
   else if (m < 9.5) c = coat * 0.8 + vec3(0.05);
-  else c = vec3(0.42, 0.38, 0.34);
+  else if (m < 10.5) c = vec3(0.42, 0.38, 0.34);
+  else c = vec3(0.97, 0.95, 0.9);
   return c;
 }
 `;

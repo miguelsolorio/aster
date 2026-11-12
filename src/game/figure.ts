@@ -1,9 +1,10 @@
 import * as THREE from 'three';
 import type { PlayerState, Uniforms } from './contract';
 
-// The wanderer: a hooded walker with legs, arms and a cape that streams behind.
-// Local space: feet at y = 0, facing +z. Body parts are posed on the CPU; the
-// cape is a cloth sheet shaped and fluttered in the vertex shader.
+// The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
+// legs, a plain white face and a round hood.
+// Local space: feet at y = 0, facing +z. Legs and arms are posed on the CPU; the
+// robe is shaped and fluttered in the vertex shader.
 
 const bodyVert = /* glsl */ `
 varying vec3 vW;
@@ -16,40 +17,46 @@ void main() {
 }
 `;
 
-const capeVert = /* glsl */ `
+const robeVert = /* glsl */ `
 uniform float uTime;
 uniform float uFlow;      // 0 hanging .. 1+ streaming straight back
 uniform vec2 uLocalWind;  // wind in the figure's local x, z
-uniform float uSpread;    // 0 hanging .. 1 opened out like a wing
-attribute vec2 aUV;       // x: -1..1 around the shoulders, y: 0 collar .. 1 hem
+uniform float uSpread;    // 0 hanging .. 1 flared wide
+uniform float uStep;      // signed stride, swings the hem with the legs
+attribute vec2 aUV;       // x: -1..1 around the body (0 = front), y: 0 collar .. 1 hem
 varying vec3 vW;
 varying vec3 vN;
 void main() {
   vec3 p = position;
   float v = aUV.y;
   float w = v * v;
-  vec3 radial = normalize(vec3(p.x, 0.0, p.z) + vec3(0.0, 0.0, -1e-3));
+  float ang = aUV.x * 3.14159265;
+  float back = 0.5 - 0.5 * cos(ang);
+  vec3 radial = normalize(vec3(p.x, 0.0, p.z) + vec3(0.0, 0.0, 1e-3));
 
-  // stream back and up with speed, and draw the sides in
-  p.z -= w * uFlow * 0.62;
-  p.y += w * uFlow * 0.24;
-  p.x *= 1.0 - w * min(uFlow, 1.0) * 0.3 * (1.0 - uSpread) + uSpread * v * 1.1;
-  p.y += uSpread * w * 0.12;
+  // stream back and up with speed; the back of the hem goes furthest
+  p.z -= w * uFlow * (0.16 + 0.5 * back);
+  p.y += w * uFlow * 0.2 * back;
+  p.x *= 1.0 - w * min(uFlow, 1.0) * 0.22 * (1.0 - uSpread) + uSpread * v * 0.9;
+  p.y += uSpread * w * 0.1;
+
+  // the hem follows the legs
+  p.x += uStep * w * 0.05 * cos(ang);
+  p.z += uStep * w * 0.04 * sin(ang);
 
   // lean with the wind
-  p.x += uLocalWind.x * w * 0.2;
-  p.z += uLocalWind.y * w * 0.2;
+  p.x += uLocalWind.x * w * 0.16;
+  p.z += uLocalWind.y * w * 0.16;
 
   // travelling waves, bigger toward the hem and with speed
-  float t = uTime * (3.5 + uFlow * 6.0);
-  float wave = sin(v * 7.0 - t + aUV.x * 2.5) * 0.045 + sin(v * 13.0 - t * 1.7 + aUV.x * 5.0) * 0.02;
-  p += radial * wave * w * (0.7 + uFlow * 1.6);
-  p.y += sin(v * 9.0 - t * 1.3 + aUV.x * 4.0) * 0.02 * w * uFlow;
+  float t = uTime * (3.0 + uFlow * 6.0);
+  float ph = v * 6.0 - t + ang * 2.0;
+  p += radial * sin(ph) * 0.03 * w * (0.5 + uFlow * 1.8);
+  p.y += sin(v * 9.0 - t * 1.3 + ang * 3.0) * 0.02 * w * uFlow;
 
   vec4 wp = modelMatrix * vec4(p, 1.0);
   vW = wp.xyz;
-  // smooth cloth normal: outward, tilted by the fold slope and by how far the cape is lifted
-  vec3 nl = radial + vec3(0.0, 1.0, 0.0) * (uFlow * w * 0.5 - cos(v * 7.0 - t + aUV.x * 2.5) * 0.4 * w * (0.7 + uFlow * 1.6));
+  vec3 nl = radial + vec3(0.0, 1.0, 0.0) * (0.24 + uFlow * w * 0.5 * back - cos(ph) * 0.3 * w * (0.5 + uFlow * 1.8));
   vN = normalize(mat3(modelMatrix) * nl);
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
@@ -61,57 +68,81 @@ uniform vec3 uSunDir;
 uniform vec3 uSunCol;
 uniform vec3 uFig;
 uniform vec3 uFigLit;
-uniform vec3 uLit;
-uniform vec3 uShade;
 uniform vec3 uFogCol;
 uniform float uFog;
 uniform float uNight;
-uniform float uBody;   // 0 = dark cloak cloth .. 1 = sand-coloured
-uniform float uDeriv;  // 1 = take the normal from screen-space derivatives (cloth)
+uniform float uBody;   // 0 = dark cloth .. 1 = the white face
+uniform float uTone;   // 0 = the dress, near-black .. 1 = the cloak, a shade warmer
 varying vec3 vW;
 varying vec3 vN;
 void main() {
   vec3 toCam = cameraPosition - vW;
   float dist = length(toCam);
   vec3 V = toCam / max(dist, 1e-4);
-  vec3 nd = normalize(cross(dFdx(vW), dFdy(vW)));
-  vec3 n = uDeriv > 0.5 ? nd : normalize(vN);
+  vec3 n = normalize(vN);
   float inside = 1.0;
   if (dot(n, V) < 0.0) {
     n = -n;
-    inside = 0.8;
+    inside = 0.75;
   }
   float ndl = dot(n, uSunDir);
   float l = smoothstep(-0.1, 0.35, ndl);
-  vec3 sh = mix(uFig, uShade, uBody);
-  vec3 li = mix(uFigLit, uLit, uBody * 0.7);
-  vec3 col = mix(sh, li, l * 0.85) * inside;
-  // a thin rim of light so the silhouette holds against dark dunes
+  // cloth: a warm near-black that only just takes the light
+  vec3 sh = uFig * mix(0.36, 0.66, uTone);
+  vec3 li = mix(uFig, uFigLit, mix(0.03, 0.2, uTone));
+  vec3 dark = mix(sh, li, l * 0.85) * inside;
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * smoothstep(-0.2, 0.3, ndl);
-  col += uSunCol * rim * 0.12 * (1.0 - 0.5 * uNight);
+  dark += uSunCol * rim * 0.08 * (1.0 - 0.5 * uNight);
+  // face: flat white, tinted by the light and dimmed at night
+  vec3 white = vec3(0.97, 0.95, 0.9) * mix(vec3(1.0), uSunCol, 0.3) * (1.0 - 0.42 * uNight) * mix(0.84, 1.0, l);
+  vec3 col = mix(dark, white, uBody);
   col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));
   gl_FragColor = vec4(col, 1.0);
 }
 `;
 
-const HIP = 0.92;
-const THIGH = 0.46;
-const SHIN = 0.46;
+const HIP = 0.78;
+const THIGH = 0.39;
+const SHIN = 0.39;
+const COLLAR = 1.42;
+const HEM = 0.4;
+const HEAD_Y = 1.55;
+const HEAD_R = 0.125;
 
-function capeGeometry(): THREE.BufferGeometry {
-  const NU = 28;
-  const NV = 20;
+interface Drape {
+  top: number; // collar height
+  hem: number; // hem height
+  r0: number; // radius at the collar
+  r1: number; // radius at the hem
+  curve: number; // > 1 hangs straight then flares, < 1 swells early
+  arc: number; // half-angle covered, PI = closed all the way round
+  rag: number; // depth of the tears in the hem
+  flat: number; // front-to-back squash
+}
+
+/** A hanging cloth: a bell from collar to hem with a torn edge, closed or open at the front. */
+function drapeGeometry(d: Drape): THREE.BufferGeometry {
+  const NU = 44;
+  const NV = 16;
   const pos: number[] = [];
   const uv: number[] = [];
   const idx: number[] = [];
+  const closed = d.arc >= Math.PI - 1e-3;
+  const rag = (i: number) => {
+    const k = closed ? i % NU : i;
+    const h = Math.sin(k * 127.1 + d.top * 31.7) * 43758.5453;
+    return k % 2 === 0 ? d.rag * (0.3 + 0.7 * (h - Math.floor(h))) : 0;
+  };
   for (let j = 0; j <= NV; j++) {
     const v = j / NV;
     for (let i = 0; i <= NU; i++) {
-      const u = (i / NU) * 2 - 1;
-      const a = u * 1.95; // wraps from the back round to the front of each shoulder
-      const r = 0.215 + (0.37 - 0.215) * Math.pow(v, 0.8) + 0.02 * Math.sin(a * 5) * v;
-      pos.push(Math.sin(a) * r, 1.45 - v * 1.14, -Math.cos(a) * r * 0.82 - 0.02);
-      uv.push(u, v);
+      const a = ((i / NU) * 2 - 1) * d.arc;
+      // an open cloth hangs a little longer at the back than at its front edges
+      const drop = closed ? 0 : 0.1 * v * (0.5 - 0.5 * Math.cos(a));
+      const r = d.r0 + (d.r1 - d.r0) * Math.pow(v, d.curve);
+      const y = d.top - v * (d.top - d.hem) - drop - (j === NV ? rag(i) : 0);
+      pos.push(Math.sin(a) * r, y, Math.cos(a) * r * d.flat);
+      uv.push(a / Math.PI, v);
     }
   }
   for (let j = 0; j < NV; j++) {
@@ -119,8 +150,8 @@ function capeGeometry(): THREE.BufferGeometry {
       const a = j * (NU + 1) + i;
       const b = a + 1;
       const c = a + NU + 1;
-      const d = c + 1;
-      idx.push(a, c, b, b, c, d);
+      const e = c + 1;
+      idx.push(a, c, b, b, c, e);
     }
   }
   const g = new THREE.BufferGeometry();
@@ -130,14 +161,24 @@ function capeGeometry(): THREE.BufferGeometry {
   return g;
 }
 
+// The dress: narrow through the body, flaring late into a wide torn hem at mid-shin.
+const DRESS: Drape = { top: COLLAR, hem: HEM, r0: 0.075, r1: 0.35, curve: 1.25, arc: Math.PI, rag: 0.11, flat: 0.88 };
+// The cloak: a mantle off the shoulders to the knee, open down the front, one piece with the hood.
+const CLOAK: Drape = { top: COLLAR + 0.03, hem: 0.74, r0: 0.09, r1: 0.25, curve: 0.85, arc: 2.35, rag: 0.07, flat: 0.92 };
+
+const SHOULDER_Y = 1.3 - HIP;
+const DOWN = new THREE.Vector3(0, -1, 0);
+
 export class Figure {
   readonly group = new THREE.Group();
   private hips: THREE.Group[] = [];
   private knees: THREE.Group[] = [];
-  private arms: THREE.Group[] = [];
+  private arms: THREE.Group[] = []; // [right, left]
+  private tmp = new THREE.Vector3();
   private torso = new THREE.Group();
   private flow = { value: 0 };
   private spreadU = { value: 0 };
+  private stepU = { value: 0 };
   private pitch = 0;
   private localWind = { value: new THREE.Vector2() };
   private cycle = 0;
@@ -153,17 +194,14 @@ export class Figure {
 
   constructor(u: Uniforms) {
     this.group.rotation.order = 'YXZ';
-    const mat = (body: number, extra: Uniforms = {}, vert = bodyVert, deriv = 0, side: THREE.Side = THREE.FrontSide) =>
+    const mat = (body: number, tone = 0, extra: Uniforms = {}, vert = bodyVert, side: THREE.Side = THREE.FrontSide) =>
       new THREE.ShaderMaterial({
-        uniforms: { ...u, uBody: { value: body }, uDeriv: { value: deriv }, ...extra },
+        uniforms: { ...u, uBody: { value: body }, uTone: { value: tone }, ...extra },
         vertexShader: vert,
         fragmentShader: frag,
         side,
       });
     const cloth = mat(0);
-    const clothes = mat(0.42);
-    const boots = mat(0.08);
-    const skin = mat(0.2);
     const add = (parent: THREE.Object3D, geo: THREE.BufferGeometry, m: THREE.Material) => {
       const mesh = new THREE.Mesh(geo, m);
       mesh.frustumCulled = false;
@@ -171,48 +209,48 @@ export class Figure {
       return mesh;
     };
 
-    // legs: hip pivot -> thigh -> knee pivot -> shin and boot
+    // legs: thin sticks. hip pivot (hidden up inside the robe) -> thigh -> knee pivot -> shin and foot
     for (const sx of [-1, 1]) {
       const hip = new THREE.Group();
-      hip.position.set(sx * 0.095, HIP, 0);
-      add(hip, new THREE.CylinderGeometry(0.095, 0.072, THIGH, 10).translate(0, -THIGH / 2, 0), clothes);
+      hip.position.set(sx * 0.065, HIP, 0);
+      add(hip, new THREE.CylinderGeometry(0.022, 0.019, THIGH, 6).translate(0, -THIGH / 2, 0), cloth);
       const knee = new THREE.Group();
       knee.position.y = -THIGH;
-      add(knee, new THREE.SphereGeometry(0.072, 10, 8), clothes);
-      add(knee, new THREE.CylinderGeometry(0.07, 0.056, SHIN - 0.06, 10).translate(0, -(SHIN - 0.06) / 2, 0), boots);
-      add(knee, new THREE.BoxGeometry(0.1, 0.075, 0.25).translate(0, -SHIN + 0.04, 0.055), boots);
+      add(knee, new THREE.CylinderGeometry(0.019, 0.016, SHIN - 0.01, 6).translate(0, -(SHIN - 0.01) / 2, 0), cloth);
+      add(knee, new THREE.BoxGeometry(0.042, 0.028, 0.13).translate(0, -SHIN + 0.014, 0.04), cloth);
       hip.add(knee);
       this.group.add(hip);
       this.hips.push(hip);
       this.knees.push(knee);
     }
 
-    // torso, shoulders, arms, head and hood all ride on one group so the body can lean
+    // robe, head, hood and arms all ride on one group so the body can lean from the hips
     const t = this.torso;
     t.position.y = HIP;
     this.group.add(t);
-    add(t, new THREE.CylinderGeometry(0.155, 0.135, 0.5, 12).scale(1, 1, 0.72).translate(0, 0.25, 0), clothes);
-    add(t, new THREE.SphereGeometry(0.14, 12, 8).scale(1, 0.6, 0.75), clothes); // hips
-    add(t, new THREE.SphereGeometry(0.2, 14, 8).scale(1.08, 0.42, 0.62).translate(0, 0.5, 0), cloth); // shoulders
-    add(t, new THREE.TorusGeometry(0.095, 0.05, 8, 16).rotateX(Math.PI / 2).translate(0, 0.58, 0.01), cloth); // scarf
+    const cloth2 = { uFlow: this.flow, uLocalWind: this.localWind, uSpread: this.spreadU, uStep: this.stepU };
+    add(t, drapeGeometry(DRESS).translate(0, -HIP, 0), mat(0, 0, cloth2, robeVert, THREE.DoubleSide));
+    add(t, drapeGeometry(CLOAK).translate(0, -HIP, 0), mat(0, 1, cloth2, robeVert, THREE.DoubleSide));
+    add(t, new THREE.SphereGeometry(HEAD_R, 24, 16).translate(0, HEAD_Y - HIP, 0.035), mat(1));
+    // hood: a plain round cowl set a little behind the head, so the face shows as a disc
+    add(t, new THREE.SphereGeometry(0.155, 24, 16).scale(1, 1.03, 1).translate(0, HEAD_Y - HIP + 0.01, -0.03), mat(0, 1));
+
     for (const sx of [-1, 1]) {
       const arm = new THREE.Group();
-      arm.position.set(sx * 0.2, 0.5, 0);
-      add(arm, new THREE.CylinderGeometry(0.052, 0.04, 0.56, 8).translate(0, -0.28, 0), clothes);
-      add(arm, new THREE.SphereGeometry(0.045, 8, 6).translate(0, -0.58, 0), skin);
+      arm.position.set(sx * 0.09, SHOULDER_Y, 0);
+      add(arm, new THREE.CylinderGeometry(0.02, 0.017, 1, 6).translate(0, -0.5, 0), cloth);
       t.add(arm);
       this.arms.push(arm);
     }
-    add(t, new THREE.SphereGeometry(0.108, 14, 10).translate(0, 0.72, 0.012), skin); // face, in the hood's shadow
-    // hood: a shell open at the front
-    add(
-      t,
-      new THREE.SphereGeometry(0.15, 20, 14, Math.PI / 2 + 0.62, Math.PI * 2 - 1.24).scale(1, 1.08, 1.1).translate(0, 0.725, -0.012),
-      mat(0, {}, bodyVert, 0, THREE.DoubleSide),
-    );
-    add(t, new THREE.ConeGeometry(0.1, 0.34, 12).translate(0, 0.17, 0).rotateX(-2.5).translate(0, 0.8, -0.09), cloth);
+  }
 
-    add(t, capeGeometry().translate(0, -HIP, 0), mat(0, { uFlow: this.flow, uLocalWind: this.localWind, uSpread: this.spreadU }, capeVert, 0, THREE.DoubleSide));
+  /** Stretch an arm from its shoulder to a point in torso space. */
+  private reach(arm: THREE.Group, x: number, y: number, z: number, thick: number) {
+    const d = this.tmp.set(x, y, z).sub(arm.position);
+    const len = Math.max(0.05, d.length());
+    arm.quaternion.setFromUnitVectors(DOWN, d.divideScalar(len));
+    arm.scale.set(thick, len, thick);
+    arm.visible = thick > 0.03;
   }
 
   /**
@@ -255,8 +293,9 @@ export class Figure {
     this.flare += (flareT - this.flare) * k(flareT ? 9 : 6);
     const flare = this.flare;
     const air = this.air;
-    // The cape opens only a little on the glide; it is cloth catching air, not a wing.
-    this.spreadU.value = glide * 0.3;
+    // The hem flares wide on the glide.
+    this.spreadU.value = glide * 0.6;
+    this.stepU.value = Math.sin(this.cycle * Math.PI * 2) * this.amp;
     const fly = Math.max(this.slide, air);
 
     // bank like a bird, harder at speed
@@ -269,7 +308,7 @@ export class Figure {
     for (let i = 0; i < 2; i++) {
       const sg = i === 0 ? 1 : -1; // +1 is the figure's right side
       // walking on rock: thighs swing opposite, the knee folds while its leg comes forward
-      let thigh = -sg * s * this.amp;
+      let thigh = -sg * s * this.amp * 0.8;
       let knee = Math.max(0, sg * c) * this.amp * 1.5 + this.amp * 0.12;
       // flying: legs long and together, one a touch behind the other, trailing in the air
       const fThigh = 0.05 * sg + sway * sg;
@@ -288,26 +327,13 @@ export class Figure {
       this.hips[i].rotation.x = thigh;
       this.knees[i].rotation.x = knee;
 
-      // arms: swing when walking; swept back like folded wings when riding or diving;
-      // opened wide when gliding. In a turn the inside arm dips and the outside arm lifts.
-      const inside = -sg * this.bank > 0 ? -1 : 1;
-      const tip = inside * Math.abs(this.bank) * 0.8;
-      const backX = 1.1 + Math.min(0.25, st.speed * 0.01);
-      const backZ = 0.38 + tip + sway;
-      let armX = sg * s * this.amp * 0.7;
-      let armZ = 0.1;
-      armX += (backX - armX) * this.slide;
-      armZ += (backZ - armZ) * this.slide;
-      // in the air: low and a little back on the way up, eased out to the sides for
-      // balance on the glide. Never forward, never spread like wings.
-      const jumpX = 0.3 + rise * 0.25 - flare * 0.25;
-      const jumpZ = 0.24 + tip * 0.4 + sway;
-      const glideX = 0.16 - flare * 0.2;
-      const glideZ = 0.62 + tip * 0.7 + sway * 2;
-      armX += (jumpX + (glideX - jumpX) * glide - armX) * air;
-      armZ += (jumpZ + (glideZ - jumpZ) * glide - armZ) * air;
-      this.arms[i].rotation.x = armX;
-      this.arms[i].rotation.z = -sg * armZ;
+    }
+
+    // The arms stay inside the robe until the glide, then open out for balance.
+    const tip = this.bank * 0.5 * fly;
+    for (let i = 0; i < 2; i++) {
+      const sx = i === 0 ? -1 : 1;
+      this.reach(this.arms[i], sx * (0.12 + 0.4 * glide), 0.1 + 0.34 * glide + sx * tip * 0.3 + sway, -0.06 * glide, glide * air);
     }
 
     // Lean: forward from the ankles on the sand, more with speed and when diving down a face;
@@ -334,7 +360,7 @@ export class Figure {
     g.position.z -= cf * Math.sin(this.pitch) * off;
     g.position.y += (1 - Math.cos(this.pitch)) * off;
 
-    // Cape: streams off the legs when riding, opens like a wing when gliding.
+    // Robe: sways in the walk, streams back when riding, flares when gliding.
     const flowT = Math.min(1.25, this.slide * 0.55 + st.speed / 24 + this.air * 0.45 + gust * 0.08 + Math.abs(this.bank) * 0.3);
     this.flow.value += (flowT - this.flow.value) * k(3.5);
     const str = 0.45 + gust * 0.9;
