@@ -11,7 +11,9 @@ import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
 import { Figure } from './figure';
 import { AudioEngine } from '../audio/audio';
-import { UI, type Quality } from '../ui/ui';
+import { UI } from '../ui/ui';
+import { TouchControls, type TouchMode } from './touch';
+import { AutoQuality, QUALITY, applyQuality, defaultTier } from './quality';
 import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
 import { DEFAULTS, type Params } from '../render/types';
@@ -108,32 +110,44 @@ function start() {
   postScene.add(quad);
 
   let rt: THREE.WebGLRenderTarget | null = null;
-  let quality: Quality = 'high';
+  let stillDrawn = false; // the paused frame has been drawn; nothing more to render until something changes
+  // Quality: a tier (mobile / low / high) plus a render scale the game lowers by itself if frames run slow.
+  const auto = new AutoQuality(defaultTier(), (tier) => {
+    ui.setQuality(tier);
+    applyTier();
+  });
+  function applyTier() {
+    applyQuality(QUALITY[auto.tier], { uniforms: u, clipmap, bake, dust });
+    resize();
+  }
   function resize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const budget = quality === 'high' ? 3.8e6 : 1.5e6;
-    let ratio = Math.min(window.devicePixelRatio || 1, quality === 'high' ? 2 : 1);
-    ratio = Math.min(ratio, Math.sqrt(budget / (w * h)));
+    const q = QUALITY[auto.tier];
+    let ratio = Math.min(window.devicePixelRatio || 1, q.maxRatio);
+    ratio = Math.min(ratio, Math.sqrt(q.pixelBudget / (w * h))) * auto.renderScale;
     const pw = Math.max(2, Math.round(w * ratio));
     const ph = Math.max(2, Math.round(h * ratio));
     renderer.setSize(pw, ph, false);
     rt?.depthTexture?.dispose();
     rt?.dispose();
-    rt = new THREE.WebGLRenderTarget(pw, ph, { samples: quality === 'high' ? 4 : 0, depthBuffer: true });
+    rt = new THREE.WebGLRenderTarget(pw, ph, { samples: q.samples, depthBuffer: true });
     rt.depthTexture = new THREE.DepthTexture(pw, ph);
     postU.tColor.value = rt.texture;
     postU.tDepth.value = rt.depthTexture;
     (postU.uRes.value as THREE.Vector2).set(pw, ph);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    stillDrawn = false;
   }
   window.addEventListener('resize', resize);
 
   // ---- audio and interface
   const audio = new AudioEngine();
   let photo = false;
-  const ui = new UI(uiHost, {
+  const ui = new UI(
+    uiHost,
+    {
     onBegin() {
       void audio.start();
       lock();
@@ -147,8 +161,8 @@ function start() {
     },
     onVolume: (v) => audio.setVolume(v),
     onQuality(q) {
-      quality = q;
-      resize();
+      auto.setTier(q);
+      applyTier();
     },
     onPhoto(active) {
       photo = active;
@@ -160,15 +174,26 @@ function start() {
       render();
       canvas.toBlob((blob) => {
         if (!blob) return;
+        // On a phone, hand the picture to the share sheet when the browser allows it.
+        const name = `desertscape-${Date.now()}.png`;
+        if (touch.used && typeof navigator.canShare === 'function') {
+          const file = new File([blob], name, { type: 'image/png' });
+          if (navigator.canShare({ files: [file] })) {
+            navigator.share({ files: [file] }).catch(() => {});
+            return;
+          }
+        }
         const a = document.createElement('a');
         a.href = URL.createObjectURL(blob);
-        a.download = `desertscape-${Date.now()}.png`;
+        a.download = name;
         a.click();
         setTimeout(() => URL.revokeObjectURL(a.href), 2000);
       }, 'image/png');
     },
-  });
-  resize();
+    },
+    { quality: auto.tier },
+  );
+  applyTier();
   discoveries.onReach = () => audio.chime();
 
   // ---- input
@@ -179,7 +204,40 @@ function start() {
   let camDist = 7.5;
   let dragging = false;
 
+  // ---- touch: a floating stick, drag to look, pinch to zoom, one button to leap and fly
+  const touchHost = document.createElement('div');
+  document.body.insertBefore(touchHost, uiHost);
+  let lastTouch = -1e9;
+  window.addEventListener('pointerdown', (e) => {
+    if (e.pointerType !== 'mouse') lastTouch = performance.now();
+  }, true);
+  const touch = new TouchControls(touchHost, {
+    onLook(dx, dy) {
+      camYaw -= dx * 0.0052;
+      camPitch = Math.min(1.25, Math.max(-0.35, camPitch + dy * 0.0044));
+    },
+    onZoom(f) {
+      camDist = Math.min(photo ? 60 : 16, Math.max(3, camDist / f));
+    },
+    onJump() {
+      if (ui.state === 'playing') jumpQueued = true;
+    },
+    onPause() {
+      if (ui.state === 'playing') ui.openMenu();
+    },
+  });
+  touch.onFirstTouch = () => ui.setTouch(true);
+  // A phone has not been touched yet when the title card appears, so show touch hints from the start.
+  if (window.matchMedia?.('(pointer: coarse)').matches) ui.setTouch(true);
+  let touchMode: TouchMode = 'off';
+  const buzz = (ms: number) => {
+    if (touch.used && typeof navigator.vibrate === 'function') navigator.vibrate(ms);
+  };
+  // Mouse events that browsers synthesise after a touch must not move the camera.
+  const fromTouch = () => performance.now() - lastTouch < 800;
+
   const lock = () => {
+    if (touch.used) return;
     try {
       const p = canvas.requestPointerLock() as unknown as Promise<void> | undefined;
       p?.catch?.(() => {});
@@ -205,11 +263,13 @@ function start() {
   window.addEventListener('keyup', (e) => keys.delete(e.code));
   window.addEventListener('blur', () => keys.clear());
   canvas.addEventListener('mousedown', () => {
+    if (fromTouch()) return;
     dragging = true;
     if (ui.state === 'playing' && document.pointerLockElement !== canvas) lock();
   });
   window.addEventListener('mouseup', () => (dragging = false));
   window.addEventListener('mousemove', (e) => {
+    if (fromTouch()) return;
     const locked = document.pointerLockElement === canvas;
     if (!(locked && ui.state === 'playing') && !(dragging && (ui.state === 'playing' || photo))) return;
     camYaw -= e.movementX * 0.0026;
@@ -275,6 +335,7 @@ function start() {
         trail.stamp(tmp.x, tmp.z, 0.3, 0.8);
       }
       audio.footstep(1, player.state.onRock > 0.5);
+      buzz(8);
     },
     land(strength: number) {
       const p = player.state.pos;
@@ -285,6 +346,7 @@ function start() {
         cascade(p.x, p.z, Math.round(strength * 5));
       }
       audio.land(strength);
+      buzz(6 + Math.round(strength * 18));
     },
   };
 
@@ -305,11 +367,15 @@ function start() {
     (u.uWind.value as THREE.Vector2).copy(wind);
     frame.gust = 0.5 + 0.3 * Math.sin(frame.time * 0.07) + 0.2 * Math.sin(frame.time * 0.19 + 1.3);
 
-    input.x = playing ? (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0) : 0;
-    input.z = playing ? (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0) : 0;
-    input.run = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight'));
+    const mode: TouchMode = playing ? 'play' : photo ? 'photo' : 'off';
+    if (mode !== touchMode) touch.setMode((touchMode = mode));
+    const kx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+    const kz = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+    input.x = playing ? Math.max(-1, Math.min(1, kx + touch.moveX)) : 0;
+    input.z = playing ? Math.max(-1, Math.min(1, kz + touch.moveZ)) : 0;
+    input.run = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.boost);
     input.jump = playing && jumpQueued;
-    input.glide = playing && keys.has('Space');
+    input.glide = playing && (keys.has('Space') || touch.flyHeld);
     jumpQueued = false;
     player.update(dt, input, camYaw, events);
 
@@ -436,18 +502,32 @@ function start() {
           render();
         },
         freeze: (f: boolean) => (frozen = f),
-        player, day, keys, world, trail, renderer, discoveries, wildlife, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let frozen = false;
   let last = performance.now();
   function tick(now: number) {
-    const dt = Math.min(0.05, Math.max(0, (now - last) / 1000));
-    last = now;
-    // The world holds still in the menu and in photo mode.
-    update(frozen || ui.state === 'menu' || ui.state === 'photo' ? 0 : dt);
-    render();
     requestAnimationFrame(tick);
+    // Nothing to do while the tab is hidden.
+    if (document.hidden) {
+      last = now;
+      return;
+    }
+    // Phones are capped at 60 frames a second to save battery.
+    const capped = touch.used || auto.tier === 'mobile';
+    if (capped && now - last < 1000 / 62) return;
+    const real = (now - last) / 1000;
+    const dt = Math.min(0.05, Math.max(0, real));
+    last = now;
+    // The world holds still in the menu and in photo mode. In the menu nothing
+    // changes on screen, so one frame is drawn and then the GPU rests.
+    const still = frozen || ui.state === 'menu';
+    if (still && stillDrawn && !frozen) return;
+    stillDrawn = ui.state === 'menu';
+    update(still || ui.state === 'photo' ? 0 : dt);
+    render();
+    if (ui.state === 'playing') auto.frame(real);
   }
   requestAnimationFrame(tick);
 }
