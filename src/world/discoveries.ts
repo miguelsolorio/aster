@@ -1558,97 +1558,98 @@ export class Discoveries {
   /**
    * The springs at a massif's foot: for each place a river runs into the mountain, the middle
    * of the lip its water pours from, the direction the notch runs back into the rock, and how
-   * far back the notch goes. The terrain makes these from noise, so they are found by walking
-   * each river in from outside the mountain until it gives out.
+   * far back the notch goes. The terrain makes these from noise, so they are found by sweeping
+   * the mountain's foot for river water that is giving out. Done once per massif.
    */
   private findSprings(m: Massif): Spring[] {
     const out: Spring[] = [];
     const w = this.world;
     const s = this.bankSample;
-    const R = m.r * 1.3;
-    const n = Math.ceil((2 * Math.PI * R) / 6);
-    let prev = this.riverAt(m.x + R, m.z) < 10;
-    for (let i = 1; i <= n; i++) {
-      const a = (i / n) * Math.PI * 2;
-      let x = m.x + Math.cos(a) * R;
-      let z = m.z + Math.sin(a) * R;
-      const inRiver = this.riverAt(x, z) < 10;
-      const enter = inRiver && !prev;
-      prev = inRiver;
-      if (!enter) continue;
-      // walk up the river toward the mountain, keeping to its centre line
-      let dx = (m.x - x) / R;
-      let dz = (m.z - z) / R;
-      // A river can cross the ring at any angle: of the two ways along it, start on the one
-      // that heads more toward the mountain.
-      {
-        let bestIn = -Infinity;
-        const ix = dx;
-        const iz = dz;
-        for (let k = 0; k < 24; k++) {
-          const t = (k / 24) * Math.PI * 2;
-          const ex = Math.cos(t);
-          const ez = Math.sin(t);
-          if (this.riverAt(x + ex * 6, z + ez * 6) > 3) continue;
-          const inward = ex * ix + ez * iz;
-          if (inward > bestIn) {
-            bestIn = inward;
-            dx = ex;
-            dz = ez;
-          }
-        }
+    // On the water, the damp-ground value is how present the river still is: 1 in the open,
+    // falling to 0 up the headwall. The lip of a notch is where it passes springLip.
+    const present = (x: number, z: number) => w.sample(x, z, s).green ?? 0;
+    const LIP = TERRAIN.springLip;
+
+    // 1. Sweep the foot of the mountain for river water that is giving out.
+    const R0 = m.r * 0.7;
+    const R1 = m.r * 1.15;
+    const G = 8;
+    const hits: { x: number; z: number; n: number }[] = [];
+    for (let x = m.x - R1; x <= m.x + R1; x += G) {
+      for (let z = m.z - R1; z <= m.z + R1; z += G) {
+        const r = Math.hypot(x - m.x, z - m.z);
+        if (r < R0 || r > R1 || this.riverAt(x, z) > 7) continue;
+        const g = present(x, z);
+        if (g < LIP - 0.2 || g > LIP + 0.2) continue;
+        const c = hits.find((h) => Math.hypot(h.x / h.n - x, h.z / h.n - z) < 70);
+        if (c) {
+          c.x += x;
+          c.z += z;
+          c.n++;
+        } else hits.push({ x, z, n: 1 });
       }
-      for (let step = 0; step < 500; step++) {
+    }
+
+    for (const h of hits) {
+      // 2. Settle on the middle of the lip: on the river's centre line, where the river is
+      // just at the strength the lip is cut at.
+      let x = h.x / h.n;
+      let z = h.z / h.n;
+      for (let pass = 0, span = 24, step = 4; pass < 3; pass++, span /= 4, step /= 4) {
         let best = Infinity;
-        let bx = dx;
-        let bz = dz;
-        for (let k = -4; k <= 4; k++) {
-          const t = k * 0.3;
-          const ex = dx * Math.cos(t) - dz * Math.sin(t);
-          const ez = dx * Math.sin(t) + dz * Math.cos(t);
-          const rd = this.riverAt(x + ex * 4, z + ez * 4);
-          if (rd < best) {
-            best = rd;
-            bx = ex;
-            bz = ez;
+        let bx = x;
+        let bz = z;
+        for (let ox = -span; ox <= span; ox += step) {
+          for (let oz = -span; oz <= span; oz += step) {
+            const rd = this.riverAt(x + ox, z + oz);
+            if (rd > 10) continue;
+            const cost = rd + 40 * Math.abs(present(x + ox, z + oz) - LIP);
+            if (cost < best) {
+              best = cost;
+              bx = x + ox;
+              bz = z + oz;
+            }
           }
         }
-        if (best > 12) break; // lost the river
-        dx = bx;
-        dz = bz;
-        x += dx * 2;
-        z += dz * 2;
-        if (Math.hypot(x - m.x, z - m.z) > R * 1.2) break; // it turned away from the mountain
-        // on the water the damp-ground value is how present the river still is
-        if ((w.sample(x, z, s).green ?? 0) > TERRAIN.springLip) continue;
-        let skew = 0;
-        // The lip. The notch runs back into the rock square to the cliff, which is the way the
-        // river thins out fastest, and that is not always the way the river was heading.
-        {
-          const g = (ax: number, az: number) => w.sample(x + ax, z + az, s).green ?? 0;
-          const gx = g(3, 0) - g(-3, 0);
-          const gz = g(0, 3) - g(0, -3);
-          const gl = Math.hypot(gx, gz);
-          if (gl > 0.01 && -(gx * dx + gz * dz) / gl > 0.3) {
-            // the notch follows the river, so where the river meets the cliff at a slant the
-            // rock over it has to reach further to each side
-            const cos = -(gx * dx + gz * dz) / gl;
-            skew = Math.sqrt(1 - cos * cos) / cos;
-            dx = -gx / gl;
-            dz = -gz / gl;
-          }
-        }
-        let len = 6;
-        let h0 = w.height(x + dx * len, z + dz * len);
-        for (; len < 30; len++) {
-          const h1 = w.height(x + dx * (len + 1), z + dz * (len + 1));
-          if (h1 - h0 > 4) break;
-          h0 = h1;
-        }
-        const half = TERRAIN.springHalf + Math.min(10, skew * len);
-        if (!out.some((o) => Math.hypot(o.x - x, o.z - z) < 40)) out.push({ x, z, dx, dz, len, half });
-        break;
+        x = bx;
+        z = bz;
       }
+      if (this.riverAt(x, z) > 3 || Math.abs(present(x, z) - LIP) > 0.08) continue;
+      if (out.some((o) => Math.hypot(o.x - x, o.z - z) < 40)) continue;
+
+      // 3. The notch runs back square to the cliff: the way the river thins out fastest.
+      const gx = present(x + 3, z) - present(x - 3, z);
+      const gz = present(x, z + 3) - present(x, z - 3);
+      const gl = Math.hypot(gx, gz);
+      let dx = (m.x - x) / Math.hypot(m.x - x, m.z - z);
+      let dz = (m.z - z) / Math.hypot(m.x - x, m.z - z);
+      if (gl > 0.01) {
+        dx = -gx / gl;
+        dz = -gz / gl;
+      }
+      // The notch itself follows the river, so where the river meets the cliff at a slant the
+      // rock over it has to reach further to each side. Find the river's heading: the way
+      // along its centre line that goes most nearly into the cliff.
+      let cos = 0;
+      for (let k = 0; k < 36; k++) {
+        const a = (k / 36) * Math.PI * 2;
+        const ex = Math.cos(a);
+        const ez = Math.sin(a);
+        if (this.riverAt(x + ex * 6, z + ez * 6) < 1.5) cos = Math.max(cos, ex * dx + ez * dz);
+      }
+      const skew = cos > 0.35 ? Math.sqrt(1 - cos * cos) / cos : 0;
+
+      // 4. How far back the notch runs before its back wall.
+      let len = 6;
+      let h0 = w.height(x + dx * len, z + dz * len);
+      for (; len < 30; len++) {
+        const h1 = w.height(x + dx * (len + 1), z + dz * (len + 1));
+        if (h1 - h0 > 4) break;
+        h0 = h1;
+      }
+      // no back wall: the headwall is too low here for the notch to be a hollow worth roofing
+      if (len >= 30) continue;
+      out.push({ x, z, dx, dz, len, half: TERRAIN.springHalf + Math.min(10, skew * len) });
     }
     return out;
   }
