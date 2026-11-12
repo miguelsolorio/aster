@@ -93,6 +93,12 @@ export const TERRAIN = {
   // Rivers bend round cities: the field is pushed away from zero by riverPush within
   // riverClearNear of a city centre, easing to nothing by riverClearFar (under the 1.8 km a
   // city keeps to its cell border).
+  // Rivers meet a massif head on: inside riverRadial times its radius they run straight along
+  // a radius, and they bend onto that line between there and riverRadialFar times its radius.
+  riverRadial: 1.15,
+  riverRadialFar: 1.6,
+  riverSmoothNear: 120, // within this of a river a massif's flank is a plain cone (m)
+  riverSmoothFar: 350, // and by here it has all its lobes, gullies and benches back
   riverPush: 0.9,
   riverClearNear: 1100,
   riverClearFar: 1750,
@@ -325,10 +331,39 @@ vec2 sfCity(ivec2 c) {
 }
 
 // Signed distance to the centre line of the nearest river (m): positive on one bank, negative
-// on the other, so it interpolates cleanly across the water. q is p in kilometres.
+// on the other, so it interpolates cleanly across the water.
 // Rivers never run up to a city and stop: around each city the field is pushed further from
 // zero, on whichever side of zero the city already stands, so the line bends round the town.
-float sfRiver(vec2 p, vec2 q, uint sk) {
+// Rivers also meet a massif head on. Close to one, the field is read from further out along
+// the same bearing from its centre, so every river that comes within reach runs straight in
+// along a radius, and one that only passes by stays outside.
+float sfRiver(vec2 p, uint sk) {
+  vec2 pw = p;
+  vec2 rh = vec2(0.0);
+  float hs = 1.0;
+  float hd = 1.0;
+  vec2 gcf = floor(p / ${F(CITY_CELL)} + 0.5);
+  ivec2 gi = ivec2(gcf);
+  uint mh = sfCell(uint(gi.x), uint(gi.y), uint(int(uSeed)) ^ ${MASSIF_SALT}u);
+  if ((mh & 1023u) < ${MASSIF_P}u) {
+    uint mh2 = sfCell(mh, 7u, 0x51edu);
+    vec2 jj = vec2(float((mh >> 10u) & 1023u), float((mh >> 20u) & 1023u)) / 1023.0;
+    float mR = ${F(T.massifRMin)} + ${F(T.massifRMax - T.massifRMin)} * (float(mh2 & 1023u) / 1023.0);
+    vec2 md = p - (gcf * ${F(CITY_CELL)} + (jj - 0.5) * ${F(2 * T.massifJitter)});
+    float mr = max(length(md), 1.0);
+    float rc = mR * ${F(T.riverRadial)};
+    float rr = mR * ${F(T.riverRadialFar)};
+    if (mr < rr) {
+      // h is the radius the field is read at: held at rc inside it, easing to mr by rr
+      float t = clamp((mr - rc) / (rr - rc), 0.0, 1.0);
+      float h = rc + (rr - rc) * t * t * (2.0 - t);
+      rh = md / mr;
+      hs = h / mr;
+      hd = t * (4.0 - 3.0 * t);
+      pw = p + rh * (h - mr);
+    }
+  }
+  vec2 q = pw * 0.001;
   vec3 ra = sfNoiseD(q * ${F(1 / T.riverKm)} + vec2(13.7, -6.2), sk + ${KOFF(K_RIVER)}u);
   vec3 rb = sfNoiseD(q * ${F(1 / T.meanderKm)} + vec2(-2.9, 21.4), sk + ${KOFF(K_RIVER + 1)}u);
   float rf = ra.x + ${F(T.meander)} * rb.x;
@@ -338,11 +373,16 @@ float sfRiver(vec2 p, vec2 q, uint sk) {
   float fc = sfNoise(cq * ${F(1 / T.riverKm)} + vec2(13.7, -6.2), sk + ${KOFF(K_RIVER)}u)
     + ${F(T.meander)} * sfNoise(cq * ${F(1 / T.meanderKm)} + vec2(-2.9, 21.4), sk + ${KOFF(K_RIVER + 1)}u);
   float sg = fc < 0.0 ? -${F(T.riverPush)} : ${F(T.riverPush)};
-  vec2 dc = p - c;
+  // (measured from where the field is read, so near a massif the push only turns a river onto
+  // another radius, never off one)
+  vec2 dc = pw - c;
   float r = length(dc);
   float t = clamp((r - ${F(T.riverClearNear)}) / ${F(T.riverClearFar - T.riverClearNear)}, 0.0, 1.0);
   rf += sg * (1.0 - t * t * (3.0 - 2.0 * t));
   rg += dc * (sg * -6.0 * t * (1.0 - t) * ${F(1000 / (T.riverClearFar - T.riverClearNear))} / max(r, 1.0));
+  // the slope of the field as it lies on the ground: stretched round the massif, flat along a radius
+  float gr = dot(rg, rh);
+  rg = (rg - rh * gr) * hs + rh * (gr * hd);
   return rf / max(length(rg), ${F(T.riverGradMin)}) * 1000.0;
 }
 
@@ -424,6 +464,7 @@ vec4 surfaceBase(vec2 p) {
   // massif: a lone cone at the nearest corner between city cells, with gullies, benches and
   // three smooth ridgelines to walk up
   float mfo = 0.0;
+  float rsd = sfRiver(p, sk); // found before the massif, which smooths itself where a river comes in
   vec2 gcf = floor(p / ${F(CITY_CELL)} + 0.5);
   ivec2 gi = ivec2(gcf);
   uint mh = sfCell(uint(gi.x), uint(gi.y), uint(int(uSeed)) ^ ${MASSIF_SALT}u);
@@ -447,7 +488,9 @@ vec4 surfaceBase(vec2 p) {
       vec2 cv = d - ce * (0.5 * mR);
       float cal = -dot(cv, ce); // metres into the mountain from the mouth
       float clt = dot(cv, vec2(-ce.y, ce.x)); // metres to the side
-      float ck = smoothstep(70.0, 150.0, length(cv));
+      // Where a river runs in, the outline is left round too, so the headwall faces the river
+      // squarely instead of bulging across it.
+      float ck = smoothstep(70.0, 150.0, length(cv)) * smoothstep(${F(T.riverSmoothNear)}, ${F(T.riverSmoothFar)}, abs(rsd));
       n1 *= ck;
       n2 *= ck;
       gn *= ck;
@@ -490,7 +533,6 @@ vec4 surfaceBase(vec2 p) {
   // rivers: a flat floor at the water level, with cliffs where the ground is rock or plateau
   // and a broad gentle valley where it is sand
   float green = 0.0;
-  float rsd = sfRiver(p, q, sk);
   float rd = abs(rsd);
   sfRiverD = clamp(rsd, -300.0, 300.0);
   sfRiverS = 0.0;
@@ -616,8 +658,32 @@ export function createWorld(seed: number): DesertWorld {
   let pushCj = NaN;
   let pushSg = 0;
   function riverDist(px: number, pz: number): number {
-    const qx = f(px * 0.001);
-    const qz = f(pz * 0.001);
+    // rivers meet a massif head on (mirrors the GLSL)
+    let wx = px;
+    let wz = pz;
+    let rhx = 0;
+    let rhz = 0;
+    let hs = 1;
+    let hd = 1;
+    if (massifAt(Math.floor(f(f(px / CITY_CELL) + 0.5)), Math.floor(f(f(pz / CITY_CELL) + 0.5)), mRiver)) {
+      const mdx = px - mRiver.x;
+      const mdz = pz - mRiver.z;
+      const mr = Math.max(Math.hypot(mdx, mdz), 1);
+      const rc = mRiver.r * T.riverRadial;
+      const rr = mRiver.r * T.riverRadialFar;
+      if (mr < rr) {
+        const t = clamp01((mr - rc) / (rr - rc));
+        const h = rc + (rr - rc) * t * t * (2 - t);
+        rhx = mdx / mr;
+        rhz = mdz / mr;
+        hs = h / mr;
+        hd = t * (4 - 3 * t);
+        wx = px + rhx * (h - mr);
+        wz = pz + rhz * (h - mr);
+      }
+    }
+    const qx = f(f(wx) * 0.001);
+    const qz = f(f(wz) * 0.001);
     noiseD(qx * fRv + 13.7, qz * fRv - 6.2, kRa, nA);
     noiseD(qx * fMe - 2.9, qz * fMe + 21.4, kRb, nB);
     let rf = nA[0] + T.meander * nB[0];
@@ -635,14 +701,17 @@ export function createWorld(seed: number): DesertWorld {
       pushCi = ci;
       pushCj = cj;
     }
-    const dcx = px - cR.x;
-    const dcz = pz - cR.z;
+    const dcx = wx - cR.x;
+    const dcz = wz - cR.z;
     const r = Math.hypot(dcx, dcz);
     const t = clamp01((r - T.riverClearNear) / (T.riverClearFar - T.riverClearNear));
     rf += pushSg * (1 - t * t * (3 - 2 * t));
     const k = (pushSg * -6 * t * (1 - t) * (1000 / (T.riverClearFar - T.riverClearNear))) / Math.max(r, 1);
     gx += dcx * k;
     gz += dcz * k;
+    const gr = gx * rhx + gz * rhz;
+    gx = (gx - rhx * gr) * hs + rhx * (gr * hd);
+    gz = (gz - rhz * gr) * hs + rhz * (gr * hd);
     return (Math.abs(rf) / Math.max(Math.hypot(gx, gz), T.riverGradMin)) * 1000;
   }
   // The shaders read the seed as a float32 uniform, so the grid hashes use it rounded the same way.
@@ -682,6 +751,7 @@ export function createWorld(seed: number): DesertWorld {
     return pk;
   }
   const mScratch = { x: 0, z: 0, r: 0, h: 0, jx: 0, jz: 0, ux: 0, uz: 0 };
+  const mRiver = { x: 0, z: 0, r: 0, h: 0, jx: 0, jz: 0, ux: 0, uz: 0 };
   let caveOn = true; // false while sampling the mountain with no cave or spring notch cut into it
   const cvS = { x: 0, z: 0, along: 0, lat: 0, ex: 0, ez: 0 };
   /** Where a point (dx, dz from the massif's centre) lies in the frame of its cave. Mirrors the GLSL. */
@@ -775,6 +845,7 @@ export function createWorld(seed: number): DesertWorld {
     // massif (mirrors the GLSL)
     const ms = mScratch;
     let mfo = 0;
+    const rd = riverDist(px, pz);
     if (massifAt(Math.floor(f(f(px / CITY_CELL) + 0.5)), Math.floor(f(f(pz / CITY_CELL) + 0.5)), ms)) {
       const dx = f(px - ms.x);
       const dz = f(pz - ms.z);
@@ -787,7 +858,7 @@ export function createWorld(seed: number): DesertWorld {
         let gn = 1 - Math.min(1, Math.abs(noise(lx * 5 + 1.3, lz * 5 + 8.8, kMc)));
         // the cave (mirrors the GLSL)
         caveFrame(ms, dx, dz);
-        const ck = smoothstep(70, 150, Math.hypot(cvS.x, cvS.z));
+        const ck = smoothstep(70, 150, Math.hypot(cvS.x, cvS.z)) * smoothstep(T.riverSmoothNear, T.riverSmoothFar, rd);
         n1 *= ck;
         n2 *= ck;
         gn *= ck;
@@ -827,7 +898,6 @@ export function createWorld(seed: number): DesertWorld {
 
     // rivers (mirrors the GLSL)
     let green = 0;
-    const rd = riverDist(px, pz);
     if (rd < RIVER_REACH) {
       cityCentre(Math.floor(f(px / CITY_CELL)), Math.floor(f(pz / CITY_CELL)), cA);
       const rs = smoothstep(T.riverCityNear, T.riverCityFar, Math.hypot(px - cA.x, pz - cA.z)) * (1 - smoothstep(T.springLo, T.springHi, mfo));
