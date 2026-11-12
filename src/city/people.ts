@@ -1208,6 +1208,8 @@ export class People {
   private density = 1;
   private _bustle = 0;
   private hi = 0;
+  private heldI = -1; // someone the player is talking to: they stand and face the player
+  private heldT = 0;
   private time = 0;
   private rs = 0x9e3779b9;
   private spawnAcc = 0;
@@ -1357,6 +1359,43 @@ export class People {
   }
 
   /** How busy the surroundings are right now, 0..1. */
+  /**
+   * The nearest townsperson within maxD metres of the player, in world space.
+   * out.h is their height scale and out.sit how far they are sat down (0..1).
+   */
+  nearestPerson(maxD: number, out: { id: number; x: number; z: number; h: number; sit: number }): boolean {
+    if (!this.city) return false;
+    let best = -1;
+    let bd = maxD;
+    for (let i = 0; i < this.hi; i++) {
+      if (!this.alive[i] || this.ph[i] === P_GONE || this.fade[i] < 0.7) continue;
+      const d = this.distPlayer(this.x[i], this.z[i]);
+      if (d < bd) {
+        bd = d;
+        best = i;
+      }
+    }
+    return best >= 0 && this.personAt(best, out);
+  }
+
+  /** Where a townsperson is now. False once they have gone. */
+  personAt(i: number, out: { id: number; x: number; z: number; h: number; sit: number }): boolean {
+    const c = this.city;
+    if (!c || i < 0 || !this.alive[i] || this.ph[i] === P_GONE) return false;
+    out.id = i;
+    out.x = c.site.cx + c.co * this.x[i] - c.si * this.z[i];
+    out.z = c.site.cz + c.si * this.x[i] + c.co * this.z[i];
+    out.h = this.hgt[i];
+    out.sit = this.sit[i];
+    return true;
+  }
+
+  /** Call every frame while talking to someone: they stop where they are and turn to the player. */
+  hold(i: number) {
+    this.heldI = i;
+    this.heldT = 0.3;
+  }
+
   get bustle(): number {
     return this._bustle;
   }
@@ -2081,13 +2120,20 @@ export class People {
     }
 
     // people
+    this.heldT -= dt;
     let active = 0;
     let bustle = 0;
     const k2 = 1 - Math.exp(-dt * 2);
     const k3 = 1 - Math.exp(-dt * 3);
     for (let i = 0; i < this.hi; i++) {
       if (!this.alive[i]) continue;
-      this.step(i, c, dt);
+      if (i === this.heldI && this.heldT > 0 && this.ph[i] !== P_GONE) {
+        // being spoken to: stand, turn to the player, and talk
+        this.vs[i] *= Math.exp(-dt * 8);
+        if (this.sit[i] < 0.5) this.fac[i] += wrapPi(Math.atan2(this.plx - this.x[i], this.plz - this.z[i]) - this.fac[i]) * k3;
+        this.talk[i] += (1 - this.talk[i]) * k2;
+        this.lookT[i] = Math.max(this.lookT[i], 0.5);
+      } else this.step(i, c, dt);
       if (!this.alive[i]) continue;
       const dist = this.distPlayer(this.x[i], this.z[i]);
       if (this.ph[i] !== P_GONE) {

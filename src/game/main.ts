@@ -24,6 +24,9 @@ import { DEFAULTS, type Params } from '../render/types';
 import { LOOKS, stylesUnlocked, type Look } from './looks';
 import { WORLD_SCALE } from '../world/scale';
 import { Massifs } from '../world/massifs';
+import { Save } from './save';
+import { Talk, type Speaker } from './talk';
+import { TOWNSFOLK, TRAVELLER, type Line } from './lines';
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
@@ -65,10 +68,18 @@ function start() {
     (u.uInk.value as THREE.Vector3).copy(l.ink);
     (u.uPaperCol.value as THREE.Vector3).copy(l.paper);
     day.setLook(l.day);
+    onLook?.(l);
   };
+  let onLook: ((l: Look) => void) | null = null;
   applyLook(LOOKS[0]);
   const world = createWorld(WORLD_SEED);
   const player = new Player(world);
+  // What the wanderer has been given so far. It starts with nothing: on foot.
+  const save = new Save(qs);
+  // A board, once given, is ridden until you step off it (Q); stepping off puts it on your back.
+  let boardOn = true;
+  player.board = save.has('board');
+  player.carpet = save.has('carpet');
 
   // ---- spawn somewhere new each visit, on open sand
   {
@@ -143,7 +154,46 @@ function start() {
   scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, dust.group, massifs.group);
 
   const figure = new Figure(u);
+  figure.board = player.board;
+  figure.carpet = player.carpet;
+  figure.pick = save.has('pick'); // carried, but there is nothing to dig yet
   scene.add(figure.group);
+
+  // ---- a fire and its travellers, a short walk from where you begin, toward the city you face.
+  // They are the first people you can reach, and the first thing worth walking to.
+  {
+    const p = player.state.pos;
+    const eye = p.y + 1.6;
+    // The first level spot in plain sight wins. Failing that, the gentlest ground on offer:
+    // there is always a fire, even among steep dunes.
+    let best: { x: number; z: number } | null = null;
+    let bestScore = Infinity;
+    search: for (const d of [45, 60, 35, 75, 90, 110, 130]) {
+      for (const off of [0, 0.3, -0.3, 0.6, -0.6, 1, -1, 1.5, -1.5, 2.2, -2.2, Math.PI]) {
+        const a = player.facing + off;
+        const x = p.x + Math.sin(a) * d;
+        const z = p.z + Math.cos(a) * d;
+        const rough = caravans.campRough(x, z);
+        if (rough === Infinity) continue;
+        // in plain sight: no dune between you and the fire
+        let clear = true;
+        const h = world.height(x, z) + 1;
+        for (let t = 0.1; t < 0.95 && clear; t += 0.1) {
+          if (world.height(p.x + (x - p.x) * t, p.z + (z - p.z) * t) > eye + (h - eye) * t) clear = false;
+        }
+        if (clear && rough < 1.6) {
+          best = { x, z };
+          break search;
+        }
+        const score = rough + (clear ? 0 : 3) + d * 0.01;
+        if (score < bestScore) {
+          bestScore = score;
+          best = { x, z };
+        }
+      }
+    }
+    if (best) caravans.addCamp(best.x, best.z, WORLD_SEED ^ Math.round(best.x * 31 + best.z * 17));
+  }
 
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(1, 48, 24),
@@ -256,6 +306,99 @@ function start() {
     { quality: auto.tier, styles: unlocked ? LOOKS.map(({ id, name }) => ({ id, name })) : [], style: unlocked ? qs.get('style') : null },
   );
   applyTier();
+  const syncKnown = () => {
+    ui.setKnown({ talk: save.data.talked, board: save.has('board'), carpet: player.carpet });
+    touch.setBoard(save.has('board'), player.board);
+  };
+
+  // ---- talking: anyone in reach can be spoken to. Travellers give the board to someone on foot.
+  const pick = <T,>(list: T[], avoid: T | null): T => {
+    let v = list[Math.floor(Math.random() * list.length)];
+    if (v === avoid && list.length > 1) v = list[(list.indexOf(v) + 1) % list.length];
+    return v;
+  };
+  const text = (l: Line) => (typeof l === 'string' ? l : touch.used ? l.touch : l.keys);
+  let lastLine: string | null = null;
+  const trav = { ref: null as unknown, x: 0, y: 0, z: 0, h: 1, sit: 0, seed: 0 };
+  const folk = { id: -1, x: 0, z: 0, h: 1, sit: 0 };
+  const setTraveller = (out: Speaker) => {
+    out.kind = 'traveller';
+    out.ref = trav.ref;
+    out.x = trav.x;
+    out.z = trav.z;
+    out.y = trav.y + (1.72 - 0.62 * trav.sit) * trav.h;
+    out.pitch = 120 + trav.seed * 110;
+  };
+  const setFolk = (out: Speaker) => {
+    out.kind = 'townsfolk';
+    out.ref = folk.id;
+    out.x = folk.x;
+    out.z = folk.z;
+    // townsfolk stand on the same street as the player
+    out.y = player.state.pos.y + (1.7 - 0.6 * folk.sit) * folk.h;
+    out.pitch = folk.h < 0.8 ? 330 + (folk.id % 7) * 12 : 130 + (folk.id % 11) * 11;
+  };
+  const talk = new Talk(uiHost, {
+    find(out) {
+      const p = player.state.pos;
+      if (!player.state.grounded) return false;
+      if (caravans.nearestPerson(p.x, p.z, 3.4, trav) && Math.abs(trav.y - p.y) < 2) {
+        setTraveller(out);
+        return true;
+      }
+      if (people.nearestPerson(2.8, folk)) {
+        setFolk(out);
+        return true;
+      }
+      return false;
+    },
+    hold(s) {
+      if (s.kind === 'traveller') {
+        caravans.hold(s.ref);
+        caravans.personAt(s.ref, trav);
+        setTraveller(s);
+        return true;
+      }
+      if (!people.personAt(s.ref as number, folk)) return false;
+      people.hold(folk.id);
+      setFolk(s);
+      return true;
+    },
+    script(s) {
+      if (!save.data.talked) {
+        save.setTalked();
+        syncKnown();
+      }
+      if (s.kind === 'traveller') {
+        if (!save.has('board')) {
+          return {
+            lines: TRAVELLER.gift.map(text),
+            done() {
+              // The gift: from here on the sand is ridden.
+              save.give('board');
+              boardOn = true;
+              player.board = true;
+              figure.board = true;
+              figure.boardOn = true;
+              audio.chime();
+              buzz(20);
+              syncKnown();
+              if (!touch.used) ui.toast('Q to step on or off the board', 6000);
+            },
+          };
+        }
+        return { lines: [(lastLine = pick(TRAVELLER.after, lastLine))] };
+      }
+      const site = cities.active?.site;
+      const d = day.day;
+      const hour = d < 0.2 || d > 0.82 ? TOWNSFOLK.night : d < 0.32 ? TOWNSFOLK.dawn : d > 0.7 ? TOWNSFOLK.dusk : d > 0.42 && d < 0.58 ? TOWNSFOLK.noon : [];
+      const pool = [...TOWNSFOLK.any, ...(site ? TOWNSFOLK[site.kind] : []), ...hour, ...(save.has('board') ? [] : [...TOWNSFOLK.onFoot, ...TOWNSFOLK.onFoot])];
+      return { lines: [(lastLine = pick(pool, lastLine))] };
+    },
+    voice: (pitch) => audio.murmur(pitch),
+  });
+  onLook = (l) => talk.setColours(l.ink, l.paper);
+  onLook(look);
   discoveries.onReach = () => audio.chime();
   cities.onReach = () => audio.chime();
   // Roofs you can land on: buildings, and the rock over a cave once you are above its ceiling.
@@ -306,7 +449,24 @@ function start() {
     onPause() {
       if (ui.state === 'playing') ui.openMenu();
     },
+    onTalk() {
+      if (ui.state === 'playing') talk.interact();
+    },
+    onBoard() {
+      if (ui.state === 'playing') toggleBoard();
+    },
   });
+  // Step on or off the board. Off, it rides on your back and you walk.
+  const toggleBoard = () => {
+    if (!save.has('board')) return;
+    boardOn = !boardOn;
+    player.board = boardOn;
+    figure.boardOn = boardOn;
+    audio.footstep(0.8, player.state.onRock > 0.5);
+    buzz(10);
+    touch.setBoard(true, boardOn);
+  };
+  syncKnown();
   touch.onFirstTouch = () => ui.setTouch(true);
   // A phone has not been touched yet when the title card appears, so show touch hints from the start.
   if (window.matchMedia?.('(pointer: coarse)').matches) ui.setTouch(true);
@@ -339,6 +499,8 @@ function start() {
       if (!e.repeat) jumpQueued = true;
       e.preventDefault();
     }
+    if (e.code === 'KeyE' && !e.repeat) talk.interact();
+    if (e.code === 'KeyQ' && !e.repeat) toggleBoard();
     keys.add(e.code);
   });
   window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -514,6 +676,7 @@ function start() {
       touch.setAirborne(!st.grounded);
     }
 
+
     // Flying low drags a faint wake through the sand.
     if (!st.grounded && player.alt < 2 && st.speed > 6) {
       slideStampDist += st.speed * dt;
@@ -566,6 +729,11 @@ function start() {
     }
     camera.updateMatrixWorld();
     sky.position.copy(camera.position);
+
+    // Speech is drawn over the scene, so it is placed once the camera has settled.
+    talk.setKey(touch.used ? '' : 'E');
+    talk.update(camera, st.pos.x, st.pos.z, playing);
+    touch.setTalk(talk.available);
 
     cities.update(dt, st.pos);
     bake.update(st.pos);
@@ -624,7 +792,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, save, talk, figure, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let frozen = false;

@@ -1,0 +1,116 @@
+/* Speech: a bubble over whoever is talking, and a faint mark over anyone in reach. */
+.aster-talk {
+  --say-ink: #1a1410;
+  --say-paper: #f4ecdc;
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.aster-talk__cue,
+.aster-talk__say {
+  position: absolute;
+  left: 0;
+  top: 0;
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+/* The mark: a small ring that breathes. */
+.aster-talk__cue {
+  width: 10px;
+  height: 10px;
+  margin: -5px 0 0 -5px;
+  border: 1.5px solid var(--say-paper);
+  border-radius: 50%;
+  box-shadow: 0 0 6px rgba(20, 16, 13, 0.35);
+  transition: opacity 400ms ease-out;
+}
+
+.aster-talk__cue.is-on {
+  opacity: 0.7;
+  animation: aster-cue 2.4s ease-in-out infinite;
+}
+
+@keyframes aster-cue {
+  0%, 100% { opacity: 0.35; }
+  50% { opacity: 0.8; }
+}
+
+/* With a keyboard the mark is the key that talks. */
+.aster-talk__cue--key {
+  width: 22px;
+  height: 22px;
+  margin: -11px 0 0 -11px;
+  border: 0;
+  border-radius: 6px;
+  background: var(--say-paper);
+  color: var(--say-ink);
+  font: 600 12px/22px system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  text-align: center;
+  box-shadow: 0 1px 8px rgba(20, 16, 13, 0.35);
+}
+
+.aster-talk__cue--key.is-on {
+  opacity: 0.92;
+  animation: none;
+}
+
+.aster-talk__say {
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 32px));
+  padding: 10px 14px 11px;
+  border-radius: 12px;
+  background: var(--say-paper);
+  color: var(--say-ink);
+  font-size: 16px;
+  line-height: 1.4;
+  text-wrap: pretty;
+  box-shadow: 0 2px 14px rgba(20, 16, 13, 0.28);
+  transition: opacity 180ms ease-out;
+}
+
+.aster-talk__say.is-on {
+  opacity: 0.96;
+}
+
+/* the tail, pointing down at the speaker */
+.aster-talk__say::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -6px;
+  width: 12px;
+  height: 12px;
+  margin-left: -6px;
+  background: var(--say-paper);
+  transform: rotate(45deg);
+  border-radius: 2px;
+}
+
+/* more to come: a small mark at the end of the line */
+.aster-talk__more {
+  display: inline-block;
+  width: 0;
+  height: 0;
+  margin-left: 8px;
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid currentColor;
+  opacity: 0.45;
+  vertical-align: middle;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aster-talk__cue.is-on {
+    animation: none;
+  }
+  .aster-talk__cue,
+  .aster-talk__say {
+    transition: none;
+  }
+}

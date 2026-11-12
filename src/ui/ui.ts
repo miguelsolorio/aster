@@ -23,13 +23,30 @@ export interface StyleChoice {
 const KEY_VOLUME = 'aster.volume';
 const KEY_QUALITY = 'aster.quality';
 const KEY_STYLE = 'aster.style';
-const CONTROLS = ['WASD glide', 'Mouse look', 'Shift boost', 'Space leap, hold to rise, let go to glide', 'In the air: WASD steer, Shift boost, double-tap Space to drop', 'Esc menu'];
-const TOUCH_CONTROLS = [
-  'Left thumb: glide (push to the edge to boost)',
-  'Right thumb: look, pinch to zoom',
-  'Button: leap, hold to rise, let go to glide',
-  'In the air: stick steers (edge to boost), small button drops',
-];
+/** What the player has found out so far. The controls list only shows what has been earned. */
+export interface Known {
+  talk: boolean;
+  board: boolean;
+  carpet: boolean;
+}
+
+function keyControls(k: Known): string[] {
+  const out = ['WASD walk', 'Mouse look', 'Shift run', 'Space leap, hold to rise, let go to glide', 'In the air: WASD steer, Shift boost, double-tap Space to drop'];
+  if (k.talk) out.push('E talk');
+  if (k.board) out.push('Q step on or off the board', 'On the board: WASD glide, Shift boost');
+  if (k.carpet) out.push('The carpet unrolls when you fly, and flies faster');
+  out.push('Esc menu');
+  return out;
+}
+
+function touchControls(k: Known): string[] {
+  const out = ['Left thumb: walk (push to the edge to run)', 'Right thumb: look, pinch to zoom'];
+  out.push('Button: leap, hold to rise, let go to glide', 'In the air: stick steers (edge to boost), small button drops');
+  if (k.talk) out.push('Speech button: talk, when someone is near');
+  if (k.board) out.push('Board button: step on or off the board', 'On the board: the stick glides (edge to boost)');
+  if (k.carpet) out.push('The carpet unrolls when you fly, and flies faster');
+  return out;
+}
 const QUALITIES: Quality[] = ['mobile', 'low', 'high'];
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled])';
 
@@ -48,11 +65,6 @@ function fillControls(ul: HTMLElement, items: string[]): void {
   ul.replaceChildren(...items.map((c) => el('li', undefined, c)));
 }
 
-function controlsList(cls: string): HTMLUListElement {
-  const ul = el('ul', cls);
-  fillControls(ul, CONTROLS);
-  return ul;
-}
 
 function readStore(key: string): string | null {
   try {
@@ -104,6 +116,7 @@ export class UI {
   private readonly rotateEl: HTMLElement;
   private readonly portraitMq: MediaQueryList | null;
   private touch = false;
+  private known: Known = { talk: false, board: false, carpet: false };
   private touchIdleTimer = 0;
   private rotateTimer = 0;
   private rotateDone = false;
@@ -207,7 +220,8 @@ export class UI {
     photoBtn.type = 'button';
     actions.append(this.resumeBtn, photoBtn);
     panel.appendChild(actions);
-    this.panelControls = controlsList('aster-panel__controls');
+    this.panelControls = el('ul', 'aster-panel__controls');
+    fillControls(this.panelControls, keyControls(this.known));
     panel.appendChild(this.panelControls);
     menu.appendChild(panel);
     this.menu = menu;
@@ -329,10 +343,20 @@ export class UI {
     this.touch = on;
     this.host.classList.toggle('is-touch', on);
     this.beginEl.textContent = on ? 'Tap to begin' : 'Click to begin';
-    fillControls(this.panelControls, on ? TOUCH_CONTROLS : CONTROLS);
+    this.syncControls();
     this.fillPhotoHint();
     this.syncPause();
     this.syncRotate();
+  }
+
+  /** What the controls list may show: it grows as the player meets people and is given things. */
+  setKnown(k: Known): void {
+    this.known = { ...k };
+    this.syncControls();
+  }
+
+  private syncControls(): void {
+    fillControls(this.panelControls, this.touch ? touchControls(this.known) : keyControls(this.known));
   }
 
   toast(text: string, ms = 2200): void {

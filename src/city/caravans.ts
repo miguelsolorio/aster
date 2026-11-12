@@ -1064,6 +1064,9 @@ export class Caravans {
 
   private readonly cache = new Map<number, Group[]>();
   private readonly live: Group[] = [];
+  private readonly placed: Group[] = []; // camps put down by the game, not by a city
+  private held: Agent | null = null; // someone the player is talking to
+  private heldT = 0;
   private refresh = 0;
 
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
@@ -1134,6 +1137,74 @@ export class Caravans {
     this.fireGeo.dispose();
     for (const m of this.materials) m.dispose();
     this.group.clear();
+  }
+
+  // ---------------------------------------------------------------- talking
+
+  /**
+   * How uneven the ground is for a camp at (x, z): the largest height difference, in metres,
+   * to four points 14 m out. Infinity on rock or salt, where nobody camps. Under 1.6 is level.
+   */
+  campRough(x: number, z: number): number {
+    const w = this.world;
+    const s = w.sample(x, z, this.sample);
+    if (s.rock > 0.15 || s.salt > 0.5) return Infinity;
+    const h0 = s.h;
+    let worst = 0;
+    for (let i = 0; i < 4; i++) {
+      const a = i * (Math.PI / 2);
+      worst = Math.max(worst, Math.abs(w.height(x + Math.sin(a) * 14, z + Math.cos(a) * 14) - h0));
+    }
+    return worst;
+  }
+
+  /** Put a camp down at a chosen place: a fire, animals, and people round it. */
+  addCamp(x: number, z: number, seed: number): void {
+    const g = this.buildCamp(mulberry32(seed >>> 0), x, z);
+    this.placed.push(g);
+    this.live.push(g);
+  }
+
+  /**
+   * The nearest traveller within maxD metres of (px, pz). out.y is the ground under
+   * them, out.h their height scale and out.sit how far they are sat down (0..1).
+   */
+  nearestPerson(px: number, pz: number, maxD: number, out: { ref: unknown; x: number; y: number; z: number; h: number; sit: number; seed: number }): boolean {
+    let best: Agent | null = null;
+    let bd = maxD;
+    for (let i = 0; i < this.live.length; i++) {
+      const g = this.live[i];
+      if (!g.active || g.pres < 0.8 || Math.hypot(g.ax - px, g.az - pz) > g.reach + 60) continue;
+      for (let k = 0; k < g.agents.length; k++) {
+        const a = g.agents[k];
+        if (a.animal) continue;
+        const d = Math.hypot(a.x - px, a.z - pz);
+        if (d < bd) {
+          bd = d;
+          best = a;
+        }
+      }
+    }
+    return best !== null && this.personAt(best, out);
+  }
+
+  /** Where a traveller is now. */
+  personAt(ref: unknown, out: { ref: unknown; x: number; y: number; z: number; h: number; sit: number; seed: number }): boolean {
+    const a = ref as Agent;
+    out.ref = a;
+    out.x = a.x;
+    out.y = a.y;
+    out.z = a.z;
+    out.h = a.scale;
+    out.sit = a.sit;
+    out.seed = a.seed;
+    return true;
+  }
+
+  /** Call every frame while talking to a traveller: they stop walking and turn to the player. */
+  hold(ref: unknown): void {
+    this.held = ref as Agent;
+    this.heldT = 0.3;
   }
 
   // ---------------------------------------------------------------- generation
@@ -1374,7 +1445,10 @@ export class Caravans {
         }
         for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
       }
+      for (let k = 0; k < this.placed.length; k++) this.live.push(this.placed[k]);
     }
+    this.heldT -= dt;
+    if (this.heldT <= 0) this.held = null;
 
     this.nA = 0;
     this.nP = 0;
@@ -1477,7 +1551,10 @@ export class Caravans {
       if (mv < 0 && a.s <= a.lo) mv = 0;
       if (mv !== 0) a.dirSign = mv;
     }
-    const ty = Math.atan2(tx, tz) + (a.dirSign < 0 ? Math.PI : 0);
+    // Spoken to: stop on the road and turn to the player.
+    const held = a === this.held;
+    if (held) mv = 0;
+    const ty = held ? Math.atan2(px - a.x, pz - a.z) : Math.atan2(tx, tz) + (a.dirSign < 0 ? Math.PI : 0);
     const err = angDiff(ty, a.yaw);
     const tr = (a.animal ? 1.0 : 1.8) * dt;
     a.yaw += Math.max(-tr, Math.min(tr, err));
@@ -1488,7 +1565,7 @@ export class Caravans {
     if (bounce) a.s = Math.min(r.len, Math.max(0, a.s));
     else a.s = Math.min(a.hi, Math.max(a.lo, a.s));
     a.ph += (a.spd * dt) / a.stride;
-    a.sitTarget = !bounce && mv === 0 && a.spd < 0.15 ? 1 : 0;
+    a.sitTarget = !bounce && !held && mv === 0 && a.spd < 0.15 ? 1 : 0;
     const ds = a.sitTarget - a.sit;
     a.sit += Math.max(-dt * 0.7, Math.min(dt * 0.7, ds));
 
@@ -1514,6 +1591,8 @@ export class Caravans {
   private stepCamp(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
     for (let i = 0; i < g.agents.length; i++) {
       const a = g.agents[i];
+      // Someone standing by the fire turns to whoever speaks to them.
+      if (a === this.held && a.sit < 0.5) a.yaw += angDiff(Math.atan2(px - a.x, pz - a.z), a.yaw) * (1 - Math.exp(-dt * 4));
       this.put(a, a.x, a.y, a.z, a.nx, a.ny, a.nz, g, dt, px, pz);
     }
     const dist = Math.hypot(g.fx - px, g.fz - pz);
@@ -1560,6 +1639,10 @@ export class Caravans {
     const dx = x - px;
     const dz = z - pz;
     const d = Math.hypot(dx, dz);
+    // (kept so someone on the road can be found and spoken to)
+    a.x = x;
+    a.y = y;
+    a.z = z;
     if (d > RANGE) return;
     const pr = g.pres * g.pres * (3 - 2 * g.pres);
     const sc = a.scale * pr * (1 - ss(FADE0, RANGE, d));

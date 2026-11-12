@@ -466,6 +466,35 @@ export class AudioEngine {
     src.onended = () => disconnectAll(src, filt, env);
   }
 
+  /** Someone speaking: a few soft syllables with no words in them, at the speaker's pitch. */
+  murmur(pitch: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    let t = ctx.currentTime + 0.02;
+    const count = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < count; i++) {
+      const osc = ctx.createOscillator();
+      osc.type = 'triangle';
+      const f = pitch * rand(0.88, 1.14);
+      osc.frequency.setValueAtTime(f, t);
+      osc.frequency.exponentialRampToValueAtTime(f * rand(0.9, 1.06), t + 0.11);
+      const filt = ctx.createBiquadFilter();
+      filt.type = 'bandpass';
+      filt.Q.value = 2.5;
+      filt.frequency.value = rand(500, 1100);
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(EPS, t);
+      env.gain.exponentialRampToValueAtTime(0.05, t + 0.025);
+      env.gain.exponentialRampToValueAtTime(EPS, t + 0.13);
+      osc.connect(filt).connect(env).connect(g.sfxBus);
+      osc.start(t);
+      osc.stop(t + 0.15);
+      osc.onended = () => disconnectAll(osc, filt, env);
+      t += rand(0.09, 0.15);
+    }
+  }
+
   land(strength: number): void {
     const ctx = this.ctx;
     const g = this.g;

@@ -182,3 +182,61 @@
     transition: none;
   }
 }
+
+/* Talk: left of the fly button, shown only while someone is in reach. */
+.aster-touch__talk {
+  position: absolute;
+  right: calc(env(safe-area-inset-right, 0px) + 104px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 32px);
+  width: 48px;
+  height: 48px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--aster-touch-ink);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--aster-touch-ink);
+  opacity: 0;
+  visibility: hidden;
+  touch-action: none;
+  cursor: default;
+  outline: none;
+  transition: opacity 300ms ease-out, visibility 0s linear 300ms;
+}
+
+.aster-touch--play.aster-touch--talk .aster-touch__talk {
+  visibility: visible;
+  opacity: 0.45;
+  transition: opacity 200ms ease-out, visibility 0s;
+}
+
+.aster-touch__talk svg {
+  width: 26px;
+  height: 26px;
+  display: block;
+  pointer-events: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Board: above the talk button, shown once there is a board. Filled in while riding. */
+.aster-touch__board {
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 92px);
+}
+
+.aster-touch--play.aster-touch--board .aster-touch__board {
+  visibility: visible;
+  opacity: 0.28;
+  transition: opacity 200ms ease-out, background-color 120ms ease-out, visibility 0s;
+}
+
+.aster-touch--play.aster-touch--board .aster-touch__board.is-held {
+  opacity: 0.45;
+  background: rgba(239, 230, 216, 0.1);
+}
