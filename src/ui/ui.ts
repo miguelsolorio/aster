@@ -1,6 +1,6 @@
 import './ui.css';
 
-export type Quality = 'low' | 'high';
+export type Quality = 'mobile' | 'low' | 'high';
 export type UIState = 'title' | 'playing' | 'menu' | 'photo';
 
 export interface UIHooks {
@@ -17,6 +17,13 @@ export interface UIHooks {
 const KEY_VOLUME = 'desertscape.volume';
 const KEY_QUALITY = 'desertscape.quality';
 const CONTROLS = ['WASD glide', 'Mouse look', 'Shift boost', 'Space leap, hold to fly', 'In the air: S climb, W dive', 'Esc menu'];
+const TOUCH_CONTROLS = [
+  'Left thumb: glide (push to the edge to boost)',
+  'Right thumb: look, pinch to zoom',
+  'Button: leap, hold to fly',
+  'In the air: stick up dives, down climbs',
+];
+const QUALITIES: Quality[] = ['mobile', 'low', 'high'];
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled])';
 
 function el<K extends keyof HTMLElementTagNameMap>(
@@ -30,9 +37,13 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return e;
 }
 
+function fillControls(ul: HTMLElement, items: string[]): void {
+  ul.replaceChildren(...items.map((c) => el('li', undefined, c)));
+}
+
 function controlsList(cls: string): HTMLUListElement {
   const ul = el('ul', cls);
-  for (const c of CONTROLS) ul.appendChild(el('li', undefined, c));
+  fillControls(ul, CONTROLS);
   return ul;
 }
 
@@ -76,6 +87,17 @@ export class UI {
   private readonly resumeBtn: HTMLButtonElement;
   private readonly captureBtn: HTMLButtonElement;
   private readonly hideBtn: HTMLButtonElement;
+  private readonly beginEl: HTMLElement;
+  private readonly titleControls: HTMLElement;
+  private readonly panelControls: HTMLElement;
+  private readonly photoHint: HTMLElement;
+  private readonly pauseBtn: HTMLButtonElement;
+  private readonly rotateEl: HTMLElement;
+  private readonly portraitMq: MediaQueryList | null;
+  private touch = false;
+  private touchIdleTimer = 0;
+  private rotateTimer = 0;
+  private rotateDone = false;
 
   private volume: number;
   private quality: Quality;
@@ -91,7 +113,7 @@ export class UI {
     const storedQ = readStore(KEY_QUALITY);
     this.volume = clamp01(Number.isFinite(storedVol) ? storedVol : (initial?.volume ?? 0.7));
     this.quality =
-      storedQ === 'low' || storedQ === 'high' ? storedQ : (initial?.quality ?? 'high');
+      storedQ === 'mobile' || storedQ === 'low' || storedQ === 'high' ? storedQ : (initial?.quality ?? 'high');
 
     const host = el('div', 'ds-ui');
     host.dataset.state = 'title';
@@ -101,8 +123,10 @@ export class UI {
     const title = el('div', 'ds-layer ds-title is-on');
     title.appendChild(el('h1', 'ds-title__name', 'Desertscape'));
     title.appendChild(el('p', 'ds-title__line', 'Walk anywhere. There is nowhere you need to be.'));
-    title.appendChild(el('p', 'ds-title__begin', 'Click to begin'));
-    title.appendChild(controlsList('ds-title__controls'));
+    this.beginEl = el('p', 'ds-title__begin', 'Click to begin');
+    title.appendChild(this.beginEl);
+    this.titleControls = controlsList('ds-title__controls');
+    title.appendChild(this.titleControls);
     this.title = title;
 
     // Menu
@@ -143,11 +167,11 @@ export class UI {
       const b = el('button', undefined, label);
       b.type = 'button';
       b.setAttribute('role', 'radio');
-      b.addEventListener('click', () => this.setQuality(q));
+      b.addEventListener('click', () => this.chooseQuality(q));
       seg.appendChild(b);
       return b;
     };
-    this.qualityBtns = { low: mk('low', 'Low'), high: mk('high', 'High') };
+    this.qualityBtns = { mobile: mk('mobile', 'Mobile'), low: mk('low', 'Low'), high: mk('high', 'High') };
     gfx.append(gfxHead, seg);
     panel.appendChild(gfx);
 
@@ -158,7 +182,8 @@ export class UI {
     photoBtn.type = 'button';
     actions.append(this.resumeBtn, photoBtn);
     panel.appendChild(actions);
-    panel.appendChild(controlsList('ds-panel__controls'));
+    this.panelControls = controlsList('ds-panel__controls');
+    panel.appendChild(this.panelControls);
     menu.appendChild(panel);
     this.menu = menu;
     this.panel = panel;
@@ -176,7 +201,8 @@ export class UI {
     const done = el('button', 'ds-btn', 'Done');
     done.type = 'button';
     const hint = el('p', 'ds-bar__hint');
-    hint.append('Drag to orbit. ', el('kbd', undefined, 'C'), ' captures.');
+    this.photoHint = hint;
+    this.fillPhotoHint();
     bar.append(this.captureBtn, this.hideBtn, done, hint);
     photo.appendChild(bar);
     this.photo = photo;
@@ -188,7 +214,21 @@ export class UI {
     toast.setAttribute('aria-live', 'polite');
     this.toastEl = toast;
 
-    host.append(title, menu, photo, toast);
+    // Touch-only affordances (hidden unless setTouch(true))
+    const pause = el('button', 'ds-pause');
+    pause.type = 'button';
+    pause.setAttribute('aria-label', 'Pause');
+    pause.append(el('span', 'ds-pause__bar'), el('span', 'ds-pause__bar'));
+    this.pauseBtn = pause;
+    const rotate = el('div', 'ds-rotate');
+    rotate.setAttribute('aria-hidden', 'true');
+    rotate.innerHTML =
+      '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2" transform="rotate(90 12 12)"/><path d="M4 8a8 8 0 0 1 3-3.5M4 4v4h4"/></svg>';
+    rotate.append(el('span', undefined, 'Rotate for a wider view'));
+    this.rotateEl = rotate;
+    this.portraitMq = typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait)') : null;
+
+    host.append(title, menu, photo, pause, rotate, toast);
     root.appendChild(host);
 
     // Menu is inert until shown
@@ -210,9 +250,19 @@ export class UI {
     this.hideBtn.addEventListener('click', () => this.setFigureHidden(!this.figureHidden));
     done.addEventListener('click', () => this.exitPhoto());
     title.addEventListener('click', () => this.begin());
+    pause.addEventListener('click', () => this.openMenu());
+    const onOrient = (): void => {
+      if (this.portraitMq && !this.portraitMq.matches) this.rotateDone = false;
+      this.syncRotate();
+    };
+    if (this.portraitMq) {
+      if (this.portraitMq.addEventListener) this.portraitMq.addEventListener('change', onOrient);
+      else this.portraitMq.addListener(onOrient);
+    }
     window.addEventListener('keydown', this.onKey, true);
     window.addEventListener('pointermove', this.onActivity, { passive: true });
     window.addEventListener('pointerdown', this.onActivity, { passive: true });
+    window.addEventListener('touchstart', this.onTouchActivity, { passive: true });
 
     // Restored / initial values
     this.hooks.onVolume(this.volume);
@@ -232,6 +282,25 @@ export class UI {
     this.setState('playing');
     this.restoreFocus();
     this.hooks.onResume();
+  }
+
+  setQuality(q: Quality): void {
+    if (!QUALITIES.includes(q)) return;
+    this.quality = q;
+    writeStore(KEY_QUALITY, q);
+    this.syncQuality();
+  }
+
+  setTouch(on: boolean): void {
+    if (on === this.touch) return;
+    this.touch = on;
+    this.host.classList.toggle('is-touch', on);
+    this.beginEl.textContent = on ? 'Tap to begin' : 'Click to begin';
+    fillControls(this.titleControls, on ? TOUCH_CONTROLS : CONTROLS);
+    fillControls(this.panelControls, on ? TOUCH_CONTROLS : CONTROLS);
+    this.fillPhotoHint();
+    this.syncPause();
+    this.syncRotate();
   }
 
   toast(text: string, ms = 2200): void {
@@ -257,7 +326,48 @@ export class UI {
     this.title.setAttribute('aria-hidden', String(s !== 'title'));
     if (s === 'photo') this.wake();
     else window.clearTimeout(this.idleTimer);
+    this.syncPause();
+    this.syncRotate();
   }
+
+  private fillPhotoHint(): void {
+    if (this.touch) this.photoHint.textContent = 'Drag to orbit, pinch to zoom';
+    else this.photoHint.replaceChildren('Drag to orbit. ', el('kbd', undefined, 'C'), ' captures.');
+  }
+
+  private syncPause(): void {
+    const show = this.touch && this._state === 'playing';
+    this.pauseBtn.classList.toggle('is-on', show);
+    this.pauseBtn.tabIndex = show ? 0 : -1;
+    this.pauseBtn.setAttribute('aria-hidden', String(!show));
+    window.clearTimeout(this.touchIdleTimer);
+    this.pauseBtn.classList.remove('is-idle');
+    if (show) this.touchIdleTimer = window.setTimeout(() => this.pauseBtn.classList.add('is-idle'), 4000);
+  }
+
+  private syncRotate(): void {
+    const portrait = !!this.portraitMq && this.portraitMq.matches;
+    const show =
+      this.touch && portrait && !this.rotateDone && (this._state === 'playing' || this._state === 'title');
+    const was = this.rotateEl.classList.contains('is-on');
+    this.rotateEl.classList.toggle('is-on', show);
+    if (show && !was) {
+      window.clearTimeout(this.rotateTimer);
+      this.rotateTimer = window.setTimeout(() => {
+        this.rotateDone = true;
+        this.rotateEl.classList.remove('is-on');
+      }, 6000);
+    } else if (!show) {
+      window.clearTimeout(this.rotateTimer);
+    }
+  }
+
+  private readonly onTouchActivity = (): void => {
+    if (!this.touch || this._state !== 'playing') return;
+    this.pauseBtn.classList.remove('is-idle');
+    window.clearTimeout(this.touchIdleTimer);
+    this.touchIdleTimer = window.setTimeout(() => this.pauseBtn.classList.add('is-idle'), 4000);
+  };
 
   private restoreFocus(): void {
     const t = this.returnFocus;
@@ -294,7 +404,7 @@ export class UI {
     this.hooks.onHideFigure(hidden);
   }
 
-  private setQuality(q: Quality): void {
+  private chooseQuality(q: Quality): void {
     if (q === this.quality) return;
     this.quality = q;
     writeStore(KEY_QUALITY, q);
@@ -311,7 +421,7 @@ export class UI {
   }
 
   private syncQuality(): void {
-    for (const q of ['low', 'high'] as const) {
+    for (const q of QUALITIES) {
       const b = this.qualityBtns[q];
       b.setAttribute('aria-checked', String(q === this.quality));
       b.tabIndex = q === this.quality ? 0 : -1;
@@ -374,8 +484,10 @@ export class UI {
   private arrowSegment(e: KeyboardEvent): boolean {
     const t = e.target;
     if (!(t instanceof HTMLButtonElement) || t.getAttribute('role') !== 'radio') return false;
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') this.setQuality('low');
-    else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') this.setQuality('high');
+    const i = QUALITIES.indexOf(this.quality);
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') this.chooseQuality(QUALITIES[Math.max(0, i - 1)]);
+    else if (e.key === 'ArrowRight' || e.key === 'ArrowDown')
+      this.chooseQuality(QUALITIES[Math.min(QUALITIES.length - 1, i + 1)]);
     else return false;
     this.qualityBtns[this.quality].focus();
     return true;
