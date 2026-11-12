@@ -7,6 +7,7 @@ export interface SurfaceSample {
   h: number; // height in metres
   rock: number; // 0 = sand, 1 = bare rock (mountains, mesas)
   salt: number; // 0..1 cracked salt pan
+  green?: number; // 0..1 damp, growing ground beside a river
 }
 
 /** CPU view of the terrain. Must match the GLSL `surface()` function to within a few millimetres. */

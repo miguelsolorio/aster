@@ -1,5 +1,5 @@
-.ds-touch {
-  --ds-touch-ink: #efe6d8;
+.aster-touch {
+  --aster-touch-ink: #efe6d8;
   position: fixed;
   inset: 0;
   pointer-events: none;
@@ -11,21 +11,21 @@
   overflow: hidden;
 }
 
-.ds-touch--on {
+.aster-touch--on {
   pointer-events: auto;
 }
 
-.ds-touch *,
-.ds-touch *::before,
-.ds-touch *::after {
+.aster-touch *,
+.aster-touch *::before,
+.aster-touch *::after {
   box-sizing: border-box;
   -webkit-user-select: none;
   user-select: none;
   -webkit-touch-callout: none;
 }
 
-.ds-touch__ring,
-.ds-touch__dot {
+.aster-touch__ring,
+.aster-touch__dot {
   position: absolute;
   left: 0;
   top: 0;
@@ -36,35 +36,35 @@
   transition: opacity 200ms ease-out;
 }
 
-.ds-touch__ring {
+.aster-touch__ring {
   width: 112px;
   height: 112px;
   margin: -56px 0 0 -56px;
-  border: 1px solid var(--ds-touch-ink);
+  border: 1px solid var(--aster-touch-ink);
 }
 
-.ds-touch__dot {
+.aster-touch__dot {
   width: 22px;
   height: 22px;
   margin: -11px 0 0 -11px;
-  background: var(--ds-touch-ink);
+  background: var(--aster-touch-ink);
 }
 
-.ds-touch--stick .ds-touch__ring {
+.aster-touch--stick .aster-touch__ring {
   opacity: 0.22;
   transition: opacity 80ms ease-out;
 }
 
-.ds-touch--stick.ds-touch--edge .ds-touch__ring {
+.aster-touch--stick.aster-touch--edge .aster-touch__ring {
   opacity: 0.4;
 }
 
-.ds-touch--stick .ds-touch__dot {
+.aster-touch--stick .aster-touch__dot {
   opacity: 0.32;
   transition: opacity 80ms ease-out;
 }
 
-.ds-touch__fly {
+.aster-touch__fly {
   position: absolute;
   right: calc(env(safe-area-inset-right, 0px) + 22px);
   bottom: calc(env(safe-area-inset-bottom, 0px) + 22px);
@@ -75,10 +75,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--ds-touch-ink);
+  border: 1px solid var(--aster-touch-ink);
   border-radius: 50%;
   background: transparent;
-  color: var(--ds-touch-ink);
+  color: var(--aster-touch-ink);
   opacity: 0;
   visibility: hidden;
   touch-action: none;
@@ -87,24 +87,24 @@
   transition: opacity 600ms ease-out, background-color 120ms ease-out, visibility 0s linear 600ms;
 }
 
-.ds-touch--play .ds-touch__fly {
+.aster-touch--play .aster-touch__fly {
   visibility: visible;
   opacity: 0.28;
   transition: opacity 250ms ease-out, background-color 120ms ease-out, visibility 0s;
 }
 
-.ds-touch--play.ds-touch--idle .ds-touch__fly {
+.aster-touch--play.aster-touch--idle .aster-touch__fly {
   opacity: 0.12;
   transition: opacity 1200ms ease-out, background-color 120ms ease-out, visibility 0s;
 }
 
-.ds-touch--play .ds-touch__fly.is-held {
+.aster-touch--play .aster-touch__fly.is-held {
   opacity: 0.5;
   background: rgba(239, 230, 216, 0.1);
   transition: opacity 60ms ease-out, background-color 60ms ease-out, visibility 0s;
 }
 
-.ds-touch__fly svg {
+.aster-touch__fly svg {
   width: 28px;
   height: 28px;
   display: block;
@@ -117,7 +117,7 @@
 }
 
 /* Drop: a smaller button above the fly button, shown only while airborne. */
-.ds-touch__drop {
+.aster-touch__drop {
   position: absolute;
   right: calc(env(safe-area-inset-right, 0px) + 32px);
   bottom: calc(env(safe-area-inset-bottom, 0px) + 104px);
@@ -128,10 +128,10 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1px solid var(--ds-touch-ink);
+  border: 1px solid var(--aster-touch-ink);
   border-radius: 50%;
   background: transparent;
-  color: var(--ds-touch-ink);
+  color: var(--aster-touch-ink);
   opacity: 0;
   visibility: hidden;
   touch-action: none;
@@ -140,18 +140,18 @@
   transition: opacity 300ms ease-out, background-color 120ms ease-out, visibility 0s linear 300ms;
 }
 
-.ds-touch--play.ds-touch--air .ds-touch__drop {
+.aster-touch--play.aster-touch--air .aster-touch__drop {
   visibility: visible;
   opacity: 0.28;
   transition: opacity 200ms ease-out, background-color 120ms ease-out, visibility 0s;
 }
 
-.ds-touch--play.ds-touch--air .ds-touch__drop.is-held {
+.aster-touch--play.aster-touch--air .aster-touch__drop.is-held {
   opacity: 0.5;
   background: rgba(239, 230, 216, 0.1);
 }
 
-.ds-touch__drop svg {
+.aster-touch__drop svg {
   width: 22px;
   height: 22px;
   display: block;
@@ -164,21 +164,21 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ds-touch__drop,
-  .ds-touch--play.ds-touch--air .ds-touch__drop {
+  .aster-touch__drop,
+  .aster-touch--play.aster-touch--air .aster-touch__drop {
     transition: none;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ds-touch__ring,
-  .ds-touch__dot,
-  .ds-touch__fly,
-  .ds-touch--play .ds-touch__fly,
-  .ds-touch--play.ds-touch--idle .ds-touch__fly,
-  .ds-touch--play .ds-touch__fly.is-held,
-  .ds-touch--stick .ds-touch__ring,
-  .ds-touch--stick .ds-touch__dot {
+  .aster-touch__ring,
+  .aster-touch__dot,
+  .aster-touch__fly,
+  .aster-touch--play .aster-touch__fly,
+  .aster-touch--play.aster-touch--idle .aster-touch__fly,
+  .aster-touch--play .aster-touch__fly.is-held,
+  .aster-touch--stick .aster-touch__ring,
+  .aster-touch--stick .aster-touch__dot {
     transition: none;
   }
 }

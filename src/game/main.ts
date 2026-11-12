@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { FrameState, Uniforms } from './contract';
 import { DayCycle } from './daycycle';
 import { Player, type PlayerInput } from './player';
-import { createWorld } from '../world/surface';
+import { TERRAIN, createWorld } from '../world/surface';
 import { HeightBake } from '../world/heightBake';
 import { Clipmap } from '../world/clipmap';
 import { TrailField } from '../world/trailField';
@@ -21,12 +21,12 @@ import { AutoQuality, QUALITY, applyQuality, defaultTier } from './quality';
 import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
 import { DEFAULTS, type Params } from '../render/types';
+import { LOOKS, stylesUnlocked, type Look } from './looks';
+import { WORLD_SCALE } from '../world/scale';
+import { Massifs } from '../world/massifs';
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
-
-// The "35 mm" film treatment for the post pass.
-const FILM: Partial<Params> = { grain: 0.075, vig: 0.5, chroma: 0.0028, sat: 0.94, contrast: 1.03 };
 
 const cap = (k: string) => 'u' + k[0].toUpperCase() + k.slice(1);
 const canvasHost = document.getElementById('game') as HTMLElement;
@@ -46,14 +46,27 @@ function start() {
     uFigPos: { value: new THREE.Vector3() },
   };
   for (const n of ['uInk', 'uPaperCol', 'uA', 'uB', 'uLine']) u[n] = { value: new THREE.Vector3() };
-  const film: Params = { ...DEFAULTS, ...FILM };
+  // One float uniform per style setting. Glow and fog are not here: the day cycle owns them.
   for (const k of Object.keys(DEFAULTS) as Array<keyof Params>) {
-    if (k !== 'glow' && k !== 'fog') u[cap(k)] = { value: film[k] };
+    if (k !== 'glow' && k !== 'fog') u[cap(k)] = { value: DEFAULTS[k] };
   }
-  u.uBands.value = 0;
 
   const qs = new URLSearchParams(location.search);
   const day = new DayCycle(u, qs.has('day') ? Number(qs.get('day')) : Math.random());
+  // The look: 35 mm. Behind the hidden style picker (see stylesUnlocked) it can be any
+  // gallery style; ?style=<id> then chooses one for this visit.
+  const unlocked = stylesUnlocked(qs);
+  let look: Look = LOOKS[0];
+  const applyLook = (l: Look) => {
+    look = l;
+    for (const k of Object.keys(DEFAULTS) as Array<keyof Params>) {
+      if (k !== 'glow' && k !== 'fog') u[cap(k)].value = l.params[k];
+    }
+    (u.uInk.value as THREE.Vector3).copy(l.ink);
+    (u.uPaperCol.value as THREE.Vector3).copy(l.paper);
+    day.setLook(l.day);
+  };
+  applyLook(LOOKS[0]);
   const world = createWorld(WORLD_SEED);
   const player = new Player(world);
 
@@ -63,7 +76,7 @@ function start() {
     const n = new THREE.Vector3();
     let x = 0;
     let z = 0;
-    // Somewhere in the open desert, with a city in sight. Most cities are seen from 2 to 4.5 km
+    // Somewhere in the open desert, with a city in sight. Most cities are seen from 1.5 to 3.4 km
     // off; an oasis hides in a basin behind its ring of dunes, so it is seen from on or just inside
     // that ring, looking down at it. If the nearest city gives no clear view, the next ones are
     // tried, and only then is any open sand accepted.
@@ -76,7 +89,7 @@ function start() {
       const oasis = city.kind === 'oasis';
       for (let i = 0; i < 40; i++) {
         const a = Math.random() * Math.PI * 2;
-        const d = oasis ? city.radius + 250 + Math.random() * 400 : city.radius + 2000 + Math.random() * 2500;
+        const d = oasis ? city.radius + 250 + Math.random() * 400 : city.radius + (2000 + Math.random() * 2500) * WORLD_SCALE;
         x = city.cx + Math.cos(a) * d;
         z = city.cz + Math.sin(a) * d;
         world.sample(x, z, s);
@@ -126,7 +139,8 @@ function start() {
   const caravans = new Caravans(world, world.cities, u);
   const waymarks = new Waymarks(world, world.cities, u);
   const people = new People(u);
-  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, dust.group);
+  const massifs = new Massifs(world, u);
+  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, dust.group, massifs.group);
 
   const figure = new Figure(u);
   scene.add(figure.group);
@@ -219,7 +233,7 @@ function start() {
       canvas.toBlob((blob) => {
         if (!blob) return;
         // On a phone, hand the picture to the share sheet when the browser allows it.
-        const name = `desertscape-${Date.now()}.png`;
+        const name = unlocked ? `aster-${look.id}-${Date.now()}.png` : `aster-${Date.now()}.png`;
         if (touch.used && typeof navigator.canShare === 'function') {
           const file = new File([blob], name, { type: 'image/png' });
           if (navigator.canShare({ files: [file] })) {
@@ -234,16 +248,32 @@ function start() {
         setTimeout(() => URL.revokeObjectURL(a.href), 2000);
       }, 'image/png');
     },
+    onStyle(i) {
+      applyLook(LOOKS[i]);
+      stillDrawn = false;
     },
-    { quality: auto.tier },
+    },
+    { quality: auto.tier, styles: unlocked ? LOOKS.map(({ id, name }) => ({ id, name })) : [], style: unlocked ? qs.get('style') : null },
   );
   applyTier();
   discoveries.onReach = () => audio.chime();
   cities.onReach = () => audio.chime();
-  player.roof = (x, z, y) => cities.roofAt(x, z, y);
-  player.dip = (x, z) => cities.poolDepthAt(x, z);
+  // Roofs you can land on: buildings, and the rock over a cave once you are above its ceiling.
+  const caveRoofAt = (x: number, z: number, y: number) => {
+    const ceil = world.caveCeil(x, z);
+    return ceil < Infinity && y > ceil - 0.3 ? world.uncarved(x, z) : -Infinity;
+  };
+  player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y));
+  // Pools and rivers are waded: you stand a little below the surface.
+  const wadeS = { h: 0, rock: 0, salt: 0, green: 0 };
+  player.dip = (x, z) => {
+    const pool = cities.poolDepthAt(x, z);
+    if (pool > 0 || world.river(x, z) > TERRAIN.riverHalf) return pool;
+    return (world.sample(x, z, wadeS).green ?? 0) > 0.6 ? TERRAIN.riverWade : 0;
+  };
   // What the camera must stay above: sand, or a roof.
-  const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z, camera.position.y));
+  const topAt = (x: number, z: number) => Math.max(world.height(x, z), cities.roofAt(x, z, camera.position.y), inCave ? -Infinity : caveRoofAt(x, z, camera.position.y));
+  let inCave = false; // the wanderer is under a cave roof, so the camera stays under it too
 
   // ---- input
   const keys = new Set<string>();
@@ -433,6 +463,15 @@ function start() {
     input.drop = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.dropHeld);
     jumpQueued = false;
     player.update(dt, input, camYaw, events);
+    // A cave has a ceiling: you cannot rise through the rock.
+    {
+      const ceil = world.caveCeil(st.pos.x, st.pos.z);
+      inCave = ceil < Infinity && st.pos.y < ceil - 0.3;
+      if (inCave && st.pos.y > ceil - 1.9) {
+        st.pos.y = ceil - 1.9;
+        if (st.vel.y > 0) st.vel.y = 0;
+      }
+    }
 
     // Riding leaves one clean line in the sand; carving widens it and throws spray to the outside.
     if (st.sliding && st.grounded && st.onRock < 0.5) {
@@ -516,6 +555,7 @@ function start() {
     }
     camera.position.copy(camTarget).addScaledVector(tmp2, dist);
     camera.position.y = Math.max(camera.position.y, topAt(camera.position.x, camera.position.z) + 0.7);
+    if (inCave) camera.position.y = Math.min(camera.position.y, world.caveCeil(camera.position.x, camera.position.z) - 0.4);
     camera.lookAt(camTarget);
     const fov = 50 + Math.min(14, st.speed * 0.55);
     if (Math.abs(camera.fov - fov) > 0.05) {
@@ -531,6 +571,7 @@ function start() {
     trail.update(dt, st.pos.x, st.pos.z);
     dust.update(frame);
     discoveries.update(frame);
+    massifs.update(frame, clipmap.levelCount);
     wildlife.update(frame);
     const ambience = cities.frame(frame);
     audio.setAmbience(ambience);
@@ -574,6 +615,13 @@ function start() {
           render();
         },
         freeze: (f: boolean) => (frozen = f),
+        // switch the look without touching the saved choice
+        look: (id: string) => {
+          const l = LOOKS.find((x) => x.id === id);
+          if (l) applyLook(l);
+          stillDrawn = false;
+          return l?.name;
+        },
         player, day, keys, world, trail, renderer, discoveries, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
@@ -608,6 +656,6 @@ try {
   start();
 } catch (err) {
   console.error(err);
-  uiHost.textContent = 'Desertscape needs WebGL 2, which this browser could not start.';
+  uiHost.textContent = 'Aster needs WebGL 2, which this browser could not start.';
   uiHost.style.cssText = 'display:grid;place-items:center;color:#efe6d8;font:16px system-ui;padding:24px;text-align:center';
 }

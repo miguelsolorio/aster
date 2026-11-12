@@ -72,17 +72,17 @@ export class TouchControls {
     this.hooks = hooks;
 
     const layer = document.createElement('div');
-    layer.className = 'ds-touch';
+    layer.className = 'aster-touch';
     this.layer = layer;
 
     this.ring = document.createElement('div');
-    this.ring.className = 'ds-touch__ring';
+    this.ring.className = 'aster-touch__ring';
     this.dot = document.createElement('div');
-    this.dot.className = 'ds-touch__dot';
+    this.dot.className = 'aster-touch__dot';
 
     const fly = document.createElement('button');
     fly.type = 'button';
-    fly.className = 'ds-touch__fly';
+    fly.className = 'aster-touch__fly';
     fly.setAttribute('aria-label', 'Leap, hold to rise, let go to glide');
     fly.tabIndex = -1;
     fly.innerHTML = FLY_SVG;
@@ -90,7 +90,7 @@ export class TouchControls {
 
     const drop = document.createElement('button');
     drop.type = 'button';
-    drop.className = 'ds-touch__drop';
+    drop.className = 'aster-touch__drop';
     drop.setAttribute('aria-label', 'Drop');
     drop.tabIndex = -1;
     drop.innerHTML = DROP_SVG;
@@ -115,8 +115,8 @@ export class TouchControls {
     this.mode = mode;
     this.releaseAll();
     const cl = this.layer.classList;
-    cl.toggle('ds-touch--play', mode === 'play');
-    cl.remove('ds-touch--idle');
+    cl.toggle('aster-touch--play', mode === 'play');
+    cl.remove('aster-touch--idle');
     this.armIdle();
     this.syncPointerEvents();
   }
@@ -125,13 +125,13 @@ export class TouchControls {
   setAirborne(air: boolean): void {
     if (air === this.airborne) return;
     this.airborne = air;
-    this.layer.classList.toggle('ds-touch--air', air);
+    this.layer.classList.toggle('aster-touch--air', air);
     if (!air) this.endDrop();
   }
 
   private syncPointerEvents(): void {
     const on = this.used && this.mode !== 'off' && !this.mouseActive;
-    this.layer.classList.toggle('ds-touch--on', on);
+    this.layer.classList.toggle('aster-touch--on', on);
   }
 
   private static isTouch(e: PointerEvent): boolean {
@@ -141,7 +141,7 @@ export class TouchControls {
   private onWindowPointer = (e: PointerEvent): void => {
     if (TouchControls.isTouch(e)) {
       if (e.type === 'pointerdown') {
-        this.layer.classList.remove('ds-touch--idle');
+        this.layer.classList.remove('aster-touch--idle');
         this.armIdle();
       }
       let changed = false;
@@ -166,7 +166,7 @@ export class TouchControls {
     window.clearTimeout(this.idleTimer);
     if (this.mode !== 'play') return;
     this.idleTimer = window.setTimeout(() => {
-      this.layer.classList.add('ds-touch--idle');
+      this.layer.classList.add('aster-touch--idle');
     }, IDLE_MS);
   }
 
@@ -208,8 +208,8 @@ export class TouchControls {
           this.stickCy = y;
           this.capture(id);
           this.placeStick(x, y, x, y);
-          this.layer.classList.add('ds-touch--stick');
-          this.layer.classList.remove('ds-touch--edge');
+          this.layer.classList.add('aster-touch--stick');
+          this.layer.classList.remove('aster-touch--edge');
         }
         return;
       }
@@ -315,7 +315,7 @@ export class TouchControls {
       this.moveZ = (-dy / l2) * m;
     }
     this.boost = edge;
-    this.layer.classList.toggle('ds-touch--edge', edge);
+    this.layer.classList.toggle('aster-touch--edge', edge);
     this.placeStick(this.stickCx, this.stickCy, this.stickCx + dx, this.stickCy + dy);
   }
 
@@ -329,7 +329,7 @@ export class TouchControls {
     this.moveX = 0;
     this.moveZ = 0;
     this.boost = false;
-    this.layer.classList.remove('ds-touch--stick', 'ds-touch--edge');
+    this.layer.classList.remove('aster-touch--stick', 'aster-touch--edge');
   }
 
   private endFly(): void {

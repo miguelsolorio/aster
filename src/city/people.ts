@@ -18,6 +18,7 @@
 import * as THREE from 'three';
 import type { FrameState, Uniforms } from '../game/contract';
 import { CITY_SHADOW_GLSL } from './cityGlsl';
+import { STYLE_GLSL } from '../render/styleGlsl';
 import type { CityKind, CityPlan, CitySite, Spot, SpotKind } from './types';
 
 const MAXP = 320;
@@ -893,6 +894,7 @@ varying float vMul;
 varying float vSun;
 varying vec3 vTint2;
 varying vec3 vInfo;
+${STYLE_GLSL}
 void main() {
   if (vFade < 0.995) {
     float h = fract(sin(dot(floor(gl_FragCoord.xy), vec2(12.9898, 78.233))) * 43758.5453);
@@ -905,6 +907,7 @@ void main() {
   if (dot(n, V) < 0.0) n = -n;
   float ndl = dot(n, uSunDir);
   float l = smoothstep(-0.1, 0.35, ndl) * vSun;
+  l = styleBands(l, vW.xz);
   l += (1.0 - l) * uNight * 0.12;
   // cloth: one colour, or a blend from the hood colour down to the hem colour, some with bands
   float hgt = vInfo.y;

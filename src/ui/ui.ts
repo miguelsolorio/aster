@@ -12,10 +12,17 @@ export interface UIHooks {
   onPhoto(active: boolean): void;
   onHideFigure(hidden: boolean): void;
   onCapture(): void;
+  onStyle(index: number): void;
 }
 
-const KEY_VOLUME = 'desertscape.volume';
-const KEY_QUALITY = 'desertscape.quality';
+export interface StyleChoice {
+  id: string;
+  name: string;
+}
+
+const KEY_VOLUME = 'aster.volume';
+const KEY_QUALITY = 'aster.quality';
+const KEY_STYLE = 'aster.style';
 const CONTROLS = ['WASD glide', 'Mouse look', 'Shift boost', 'Space leap, hold to rise, let go to glide', 'In the air: WASD steer, Shift drop', 'Esc menu'];
 const TOUCH_CONTROLS = [
   'Left thumb: glide (push to the edge to boost)',
@@ -88,10 +95,12 @@ export class UI {
   private readonly captureBtn: HTMLButtonElement;
   private readonly hideBtn: HTMLButtonElement;
   private readonly beginEl: HTMLElement;
-  private readonly titleControls: HTMLElement;
   private readonly panelControls: HTMLElement;
   private readonly photoHint: HTMLElement;
   private readonly pauseBtn: HTMLButtonElement;
+  private readonly styleNames: HTMLElement[] = [];
+  private readonly styles: StyleChoice[];
+  private styleI = 0;
   private readonly rotateEl: HTMLElement;
   private readonly portraitMq: MediaQueryList | null;
   private touch = false;
@@ -106,8 +115,16 @@ export class UI {
   private toastTimer = 0;
   private returnFocus: HTMLElement | null = null;
 
-  constructor(root: HTMLElement, hooks: UIHooks, initial?: { volume?: number; quality?: Quality }) {
+  constructor(
+    root: HTMLElement,
+    hooks: UIHooks,
+    initial?: { volume?: number; quality?: Quality; styles?: StyleChoice[]; style?: string | null },
+  ) {
     this.hooks = hooks;
+    this.styles = initial?.styles ?? [];
+    // A style named in the URL wins for this visit, without replacing the saved choice.
+    const wanted = initial?.style ?? readStore(KEY_STYLE);
+    this.styleI = Math.max(0, this.styles.findIndex((st) => st.id === wanted));
 
     const storedVol = parseFloat(readStore(KEY_VOLUME) ?? '');
     const storedQ = readStore(KEY_QUALITY);
@@ -115,38 +132,36 @@ export class UI {
     this.quality =
       storedQ === 'mobile' || storedQ === 'low' || storedQ === 'high' ? storedQ : (initial?.quality ?? 'high');
 
-    const host = el('div', 'ds-ui');
+    const host = el('div', 'aster-ui');
     host.dataset.state = 'title';
     this.host = host;
 
     // Title card
-    const title = el('div', 'ds-layer ds-title is-on');
-    title.appendChild(el('h1', 'ds-title__name', 'Desertscape'));
-    title.appendChild(el('p', 'ds-title__line', 'Walk anywhere. There is nowhere you need to be.'));
-    this.beginEl = el('p', 'ds-title__begin', 'Click to begin');
+    const title = el('div', 'aster-layer aster-title is-on');
+    title.appendChild(el('h1', 'aster-title__name', 'Aster'));
+    title.appendChild(el('p', 'aster-title__line', 'The desert is your map'));
+    this.beginEl = el('p', 'aster-title__begin', 'Click to begin');
     title.appendChild(this.beginEl);
-    this.titleControls = controlsList('ds-title__controls');
-    title.appendChild(this.titleControls);
     this.title = title;
 
     // Menu
-    const menu = el('div', 'ds-layer ds-menu');
-    const panel = el('div', 'ds-panel');
+    const menu = el('div', 'aster-layer aster-menu');
+    const panel = el('div', 'aster-panel');
     panel.setAttribute('role', 'dialog');
     panel.setAttribute('aria-modal', 'true');
-    panel.setAttribute('aria-labelledby', 'ds-menu-title');
-    const h = el('h2', 'ds-panel__title', 'Paused');
-    h.id = 'ds-menu-title';
+    panel.setAttribute('aria-labelledby', 'aster-menu-title');
+    const h = el('h2', 'aster-panel__title', 'Paused');
+    h.id = 'aster-menu-title';
     panel.appendChild(h);
 
-    const volField = el('div', 'ds-field');
-    const volHead = el('div', 'ds-field__head');
+    const volField = el('div', 'aster-field');
+    const volHead = el('div', 'aster-field__head');
     const volLabel = el('label', undefined, 'Volume');
-    volLabel.htmlFor = 'ds-volume';
-    this.volumeOut = el('span', 'ds-field__value');
+    volLabel.htmlFor = 'aster-volume';
+    this.volumeOut = el('span', 'aster-field__value');
     volHead.append(volLabel, this.volumeOut);
-    const slider = el('input', 'ds-range');
-    slider.id = 'ds-volume';
+    const slider = el('input', 'aster-range');
+    slider.id = 'aster-volume';
     slider.type = 'range';
     slider.min = '0';
     slider.max = '100';
@@ -155,14 +170,14 @@ export class UI {
     volField.append(volHead, slider);
     panel.appendChild(volField);
 
-    const gfx = el('div', 'ds-field');
-    const gfxHead = el('div', 'ds-field__head');
+    const gfx = el('div', 'aster-field');
+    const gfxHead = el('div', 'aster-field__head');
     const gfxLabel = el('span', undefined, 'Graphics');
-    gfxLabel.id = 'ds-gfx-label';
+    gfxLabel.id = 'aster-gfx-label';
     gfxHead.appendChild(gfxLabel);
-    const seg = el('div', 'ds-seg');
+    const seg = el('div', 'aster-seg');
     seg.setAttribute('role', 'radiogroup');
-    seg.setAttribute('aria-labelledby', 'ds-gfx-label');
+    seg.setAttribute('aria-labelledby', 'aster-gfx-label');
     const mk = (q: Quality, label: string): HTMLButtonElement => {
       const b = el('button', undefined, label);
       b.type = 'button';
@@ -175,52 +190,63 @@ export class UI {
     gfx.append(gfxHead, seg);
     panel.appendChild(gfx);
 
-    const actions = el('div', 'ds-actions');
-    this.resumeBtn = el('button', 'ds-btn ds-btn--primary', 'Resume');
+    if (this.styles.length > 1) {
+      const sty = el('div', 'aster-field');
+      const styHead = el('div', 'aster-field__head');
+      const styLabel = el('span', undefined, 'Style');
+      styLabel.id = 'aster-style-label';
+      styHead.appendChild(styLabel);
+      sty.append(styHead, this.stylePicker('aster-pick aster-pick--wide', 'aster-style-label'));
+      panel.appendChild(sty);
+    }
+
+    const actions = el('div', 'aster-actions');
+    this.resumeBtn = el('button', 'aster-btn aster-btn--primary', 'Resume');
     this.resumeBtn.type = 'button';
-    const photoBtn = el('button', 'ds-btn', 'Photo mode');
+    const photoBtn = el('button', 'aster-btn', 'Photo mode');
     photoBtn.type = 'button';
     actions.append(this.resumeBtn, photoBtn);
     panel.appendChild(actions);
-    this.panelControls = controlsList('ds-panel__controls');
+    this.panelControls = controlsList('aster-panel__controls');
     panel.appendChild(this.panelControls);
     menu.appendChild(panel);
     this.menu = menu;
     this.panel = panel;
 
     // Photo bar
-    const photo = el('div', 'ds-layer ds-photo');
-    const bar = el('div', 'ds-bar');
+    const photo = el('div', 'aster-layer aster-photo');
+    const bar = el('div', 'aster-bar');
     bar.setAttribute('role', 'toolbar');
     bar.setAttribute('aria-label', 'Photo mode');
-    this.captureBtn = el('button', 'ds-btn ds-btn--primary', 'Capture');
+    this.captureBtn = el('button', 'aster-btn aster-btn--primary', 'Capture');
     this.captureBtn.type = 'button';
-    this.hideBtn = el('button', 'ds-btn', 'Hide figure');
+    this.hideBtn = el('button', 'aster-btn', 'Hide figure');
     this.hideBtn.type = 'button';
     this.hideBtn.setAttribute('aria-pressed', 'false');
-    const done = el('button', 'ds-btn', 'Done');
+    const done = el('button', 'aster-btn', 'Done');
     done.type = 'button';
-    const hint = el('p', 'ds-bar__hint');
+    const hint = el('p', 'aster-bar__hint');
     this.photoHint = hint;
     this.fillPhotoHint();
+    if (this.styles.length > 1) bar.append(this.stylePicker('aster-pick'));
     bar.append(this.captureBtn, this.hideBtn, done, hint);
     photo.appendChild(bar);
     this.photo = photo;
     this.bar = bar;
 
     // Toast
-    const toast = el('div', 'ds-toast');
+    const toast = el('div', 'aster-toast');
     toast.setAttribute('role', 'status');
     toast.setAttribute('aria-live', 'polite');
     this.toastEl = toast;
 
     // Touch-only affordances (hidden unless setTouch(true))
-    const pause = el('button', 'ds-pause');
+    const pause = el('button', 'aster-pause');
     pause.type = 'button';
     pause.setAttribute('aria-label', 'Pause');
-    pause.append(el('span', 'ds-pause__bar'), el('span', 'ds-pause__bar'));
+    pause.append(el('span', 'aster-pause__bar'), el('span', 'aster-pause__bar'));
     this.pauseBtn = pause;
-    const rotate = el('div', 'ds-rotate');
+    const rotate = el('div', 'aster-rotate');
     rotate.setAttribute('aria-hidden', 'true');
     rotate.innerHTML =
       '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2" transform="rotate(90 12 12)"/><path d="M4 8a8 8 0 0 1 3-3.5M4 4v4h4"/></svg>';
@@ -238,6 +264,7 @@ export class UI {
     // Wiring
     this.syncVolume();
     this.syncQuality();
+    this.syncStyle();
     slider.addEventListener('input', () => {
       this.volume = clamp01(Number(slider.value) / 100);
       writeStore(KEY_VOLUME, String(this.volume));
@@ -267,6 +294,12 @@ export class UI {
     // Restored / initial values
     this.hooks.onVolume(this.volume);
     this.hooks.onQuality(this.quality);
+    if (this.styles.length) this.hooks.onStyle(this.styleI);
+  }
+
+  /** The style currently chosen. */
+  get style(): StyleChoice | undefined {
+    return this.styles[this.styleI];
   }
 
   openMenu(): void {
@@ -296,7 +329,6 @@ export class UI {
     this.touch = on;
     this.host.classList.toggle('is-touch', on);
     this.beginEl.textContent = on ? 'Tap to begin' : 'Click to begin';
-    fillControls(this.titleControls, on ? TOUCH_CONTROLS : CONTROLS);
     fillControls(this.panelControls, on ? TOUCH_CONTROLS : CONTROLS);
     this.fillPhotoHint();
     this.syncPause();
@@ -332,7 +364,45 @@ export class UI {
 
   private fillPhotoHint(): void {
     if (this.touch) this.photoHint.textContent = 'Drag to orbit, pinch to zoom';
+    else if (this.styles.length > 1)
+      this.photoHint.replaceChildren('Drag to orbit. ', el('kbd', undefined, '['), ' ', el('kbd', undefined, ']'), ' style. ', el('kbd', undefined, 'C'), ' captures.');
     else this.photoHint.replaceChildren('Drag to orbit. ', el('kbd', undefined, 'C'), ' captures.');
+  }
+
+  /** ‹ Name › : steps through the styles. */
+  private stylePicker(cls: string, labelledBy?: string): HTMLElement {
+    const pick = el('div', cls);
+    pick.setAttribute('role', 'group');
+    if (labelledBy) pick.setAttribute('aria-labelledby', labelledBy);
+    else pick.setAttribute('aria-label', 'Style');
+    const prev = el('button', 'aster-pick__step', '\u2039');
+    prev.type = 'button';
+    prev.setAttribute('aria-label', 'Previous style');
+    const next = el('button', 'aster-pick__step', '\u203a');
+    next.type = 'button';
+    next.setAttribute('aria-label', 'Next style');
+    const name = el('span', 'aster-pick__name');
+    name.setAttribute('aria-live', 'polite');
+    this.styleNames.push(name);
+    prev.addEventListener('click', () => this.stepStyle(-1));
+    next.addEventListener('click', () => this.stepStyle(1));
+    pick.append(prev, name, next);
+    return pick;
+  }
+
+  private stepStyle(d: number): void {
+    const n = this.styles.length;
+    if (n < 2) return;
+    this.styleI = (this.styleI + d + n) % n;
+    writeStore(KEY_STYLE, this.styles[this.styleI].id);
+    this.syncStyle();
+    this.hooks.onStyle(this.styleI);
+    if (this._state === 'playing') this.toast(this.styles[this.styleI].name, 1200);
+  }
+
+  private syncStyle(): void {
+    const name = this.styles[this.styleI]?.name ?? '';
+    for (const n of this.styleNames) n.textContent = name;
   }
 
   private syncPause(): void {
@@ -415,7 +485,7 @@ export class UI {
   private syncVolume(): void {
     const pct = Math.round(this.volume * 100);
     this.slider.value = String(pct);
-    this.slider.style.setProperty('--ds-fill', `${pct}%`);
+    this.slider.style.setProperty('--aster-fill', `${pct}%`);
     this.slider.setAttribute('aria-valuetext', `${pct} percent`);
     this.volumeOut.textContent = String(pct);
   }
@@ -442,6 +512,12 @@ export class UI {
 
   private readonly onKey = (e: KeyboardEvent): void => {
     const s = this._state;
+    if ((s === 'playing' || s === 'photo') && (e.key === '[' || e.key === ']') && !(e.ctrlKey || e.metaKey || e.altKey)) {
+      e.preventDefault();
+      if (s === 'photo') this.wake();
+      this.stepStyle(e.key === '[' ? -1 : 1);
+      return;
+    }
     if (s === 'title') {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();

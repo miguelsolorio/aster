@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { PlayerState, Uniforms } from './contract';
+import { STYLE_GLSL } from '../render/styleGlsl';
 
 // The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
 // legs, a plain white face and a round hood.
@@ -75,6 +76,7 @@ uniform float uBody;   // 0 = dark cloth .. 1 = the white face
 uniform float uTone;   // 0 = the dress, near-black .. 1 = the cloak, a shade warmer
 varying vec3 vW;
 varying vec3 vN;
+${STYLE_GLSL}
 void main() {
   vec3 toCam = cameraPosition - vW;
   float dist = length(toCam);
@@ -85,8 +87,9 @@ void main() {
     n = -n;
     inside = 0.75;
   }
+  n = styleFacet(n, vW);
   float ndl = dot(n, uSunDir);
-  float l = smoothstep(-0.1, 0.35, ndl);
+  float l = styleBands(smoothstep(-0.1, 0.35, ndl), vW.xz);
   // cloth: a warm near-black that only just takes the light
   vec3 sh = uFig * mix(0.36, 0.66, uTone);
   vec3 li = mix(uFig, uFigLit, mix(0.03, 0.2, uTone));

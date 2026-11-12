@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Uniforms } from '../../game/contract';
 import { Glows, Writer, layoutOf } from '../build';
 import { CITY_SHADOW_GLSL } from '../cityGlsl';
+import { STYLE_GLSL } from '../../render/styleGlsl';
 import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, trackViewport } from '../cityShaders';
 import type { Extra, ExtraBuilder, ExtraCtx } from '../extras';
 import type { Building, CityKind } from '../types';
@@ -129,6 +130,7 @@ varying vec4 vInfo;
 varying vec2 vUv;
 varying float vFold;
 ${CITY_SHADOW_GLSL}
+${STYLE_GLSL}
 float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 
 vec3 dye(float t) {
@@ -145,12 +147,14 @@ void main() {
   float dist = length(cameraPosition - vW);
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
+  n = styleFacet(n, vW);
   float ndl = dot(n, uSunDir);
   float l = smoothstep(-0.12, 0.5, ndl);
   bool cloth = mat > 4.5 && mat < 5.5;
   // sun through the cloth: the far side glows a little
   if (cloth) l = max(l, 0.5 * smoothstep(-0.05, 0.5, -ndl));
   l *= cityShadow(vW + n * 0.45, uSunDir);
+  l = styleBands(l, vW.xz);
   l += (1.0 - l) * uNight * 0.16;
 
   vec3 sh;

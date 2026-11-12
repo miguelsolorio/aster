@@ -1,16 +1,22 @@
 // Rare things to stumble on: ruins, oases, arches, standing stones, great bones,
 // lantern towers, sundial plazas and half-buried shells. Placement is a
-// deterministic jittered grid (900 m cells, about one in three occupied); sites
+// deterministic jittered grid (675 m cells, about one in three occupied); sites
 // are built lazily near the player and disposed when far away.
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
+import { WORLD_SCALE } from './scale';
+import { STYLE_GLSL } from '../render/styleGlsl';
+import { TERRAIN, type Cave, type Massif } from './surface';
+import { CITY_CELL } from '../city/placement';
 
-const CELL = 900;
+const CELL = 900 * WORLD_SCALE;
 const MARGIN = 150; // keeps sites at least 300 m apart
 const SITE_P = 0.34;
 const BUILD_R = 2500;
 const DROP_R = 3500;
 const SCAN_EVERY = 0.3;
+const GROVE_P = 0.7; // chance an otherwise empty cell beside a river holds a grove
+const GROVE_REACH = 260; // metres from a river that counts as beside it
 
 // ------------------------------------------------------------------ hashing
 
@@ -94,10 +100,12 @@ varying vec3 vN;
 varying vec3 vTint;
 varying float vKind;
 ${NOISE}
+${STYLE_GLSL}
 void main() {
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
-  float l = smoothstep(-0.12, 0.42, dot(n, uSunDir));
+  n = styleFacet(n, vW);
+  float l = styleBands(smoothstep(-0.12, 0.42, dot(n, uSunDir)), vW.xz);
   vec3 sh = uShade;
   vec3 li = uLit;
   if (vKind < 0.5) { sh = uRockShade; li = uRockLit; }
@@ -192,10 +200,12 @@ uniform float uFog;
 varying vec3 vW;
 varying vec3 vN;
 varying float vK;
+${STYLE_GLSL}
 void main() {
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
-  float l = smoothstep(-0.2, 0.5, dot(n, uSunDir));
+  n = styleFacet(n, vW);
+  float l = styleBands(smoothstep(-0.2, 0.5, dot(n, uSunDir)), vW.xz);
   vec3 sh = uShade * vec3(0.42, 0.52, 0.34);
   vec3 li = uLit * vec3(0.46, 0.6, 0.3);
   vec3 col = mix(sh, li, l) * vK;
@@ -680,17 +690,22 @@ function buildOasis(c: Ctx): void {
 
   // palms
   const np = 3 + Math.floor(c.rng() * 5);
-  const top = new THREE.Vector3();
-  const pt = new THREE.Vector3();
   for (let p = 0; p < np; p++) {
     const a = (p / np) * Math.PI * 2 + c.r(-0.5, 0.5);
     const d = R * c.r(0.95, 1.5);
-    const bu = Math.cos(a) * d;
-    const bv = Math.sin(a) * d;
+    addPalm(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI + c.r(-0.9, 0.9)); // leaning mostly toward the water
+  }
+}
+
+/** One palm rooted at frame point (bu, bv), leaning toward the bearing la. */
+function addPalm(c: Ctx, bu: number, bv: number, la: number): void {
+  const st = c.stone;
+  const top = new THREE.Vector3();
+  const pt = new THREE.Vector3();
+  {
     const g = c.g(bu, bv);
     const H = c.r(8, 16);
     const lean = c.r(1.5, 5.5);
-    const la = a + Math.PI + c.r(-0.9, 0.9); // mostly toward the water
     const lu = Math.cos(la);
     const lv = Math.sin(la);
     const pts: THREE.Vector3[] = [];
@@ -747,6 +762,110 @@ function buildOasis(c: Ctx): void {
       }
     }
   }
+}
+
+/**
+ * A stand of palms and scrub on a riverbank. The site sits on the bank; onBank says whether a
+ * frame point is on the damp ground beside the water, and toWater is the bearing to the river.
+ */
+function buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: number): void {
+  const st = c.stone;
+  c.foot = 34;
+  const np = 3 + Math.floor(c.rng() * 6);
+  for (let p = 0, tries = 0; p < np && tries < 60; tries++) {
+    const a = c.rng() * Math.PI * 2;
+    const d = c.r(2, 34);
+    const u = Math.cos(a) * d;
+    const v = Math.sin(a) * d;
+    if (!onBank(u, v)) continue;
+    addPalm(c, u, v, toWater + c.r(-0.9, 0.9));
+    p++;
+  }
+  const nsh = 8 + Math.floor(c.rng() * 10);
+  for (let i = 0, tries = 0; i < nsh && tries < 80; tries++) {
+    const a = c.rng() * Math.PI * 2;
+    const d = c.r(1, 40);
+    const u = Math.cos(a) * d;
+    const v = Math.sin(a) * d;
+    if (!onBank(u, v)) continue;
+    const k = c.r(0.85, 1.1);
+    st.set(0.5 * k, 0.62 * k, 0.38 * k, 2, 0.15);
+    const s = c.r(0.7, 1.9);
+    c.prim(UNIT_BLOB, u, c.g(u, v) + s * 0.25, v, s * 1.3, s * 0.7, s * 1.2, c.rng() * 6);
+    i++;
+  }
+}
+
+/** A small cairn with a lantern on it: what waits at the back of a cave. */
+function buildCairn(c: Ctx, u: number, v: number): void {
+  const st = c.stone;
+  const tk = c.r(0.9, 1.05);
+  let y = c.g(u, v) - 0.3;
+  const layers = 4 + Math.floor(c.rng() * 2);
+  for (let i = 0; i < layers; i++) {
+    const r = THREE.MathUtils.lerp(1.1, 0.45, i / layers) * c.r(0.9, 1.1);
+    const hh = c.r(0.45, 0.6);
+    const k = c.r(0.88, 1.08);
+    st.set(tk * k, tk * k * 0.97, tk * k * 0.93, 0, 0.08 * r);
+    c.prim(UNIT_BLOB, u + c.r(-0.12, 0.12), y + hh * 0.6, v + c.r(-0.12, 0.12), r, hh * 0.75, r * c.r(0.85, 1.1), c.rng() * 6);
+    y += hh;
+  }
+  st.set(0.45, 0.38, 0.3, 2, 0);
+  c.prim(UNIT_BOX, u, y + 0.08, v, 0.5, 0.1, 0.5);
+  c.prim(UNIT_CONE, u, y + 0.75, v, 0.42, 0.3, 0.42, Math.PI / 4);
+  st.set(1, 1, 1, 3, 0);
+  c.prim(UNIT_BOX, u, y + 0.38, v, 0.3, 0.44, 0.3);
+  c.glow(u, y + 0.38, v, 1.2);
+  c.glow(u, y + 0.38, v, 6);
+}
+
+/**
+ * The rock over a cave. The terrain cuts the cave as an open slot; this caps it, from where the
+ * mountain stands a ceiling's height above the floor to the back wall. The frame's u axis runs
+ * into the mountain from the mouth. top gives the mountainside as it would be uncut, and floor
+ * the cave floor, both relative to the site's base.
+ */
+function buildCaveRoof(c: Ctx, top: (u: number, v: number) => number, floor: (u: number) => number): void {
+  const st = c.stone;
+  const HALF = TERRAIN.caveHalf + 2.6;
+  const NV = 6;
+  const STEP = 2.5;
+  const u0 = TERRAIN.caveRoofFrom - 2;
+  const NU = Math.ceil((TERRAIN.caveLen + 4 - u0) / STEP);
+  c.foot = TERRAIN.caveLen;
+  const P = new THREE.Vector3();
+  const put = (u: number, v: number, y: number) => {
+    c.at(u, v);
+    P.set(c.lx, y, c.lz);
+    st.vert(P.x, P.y, P.z);
+  };
+  const topY = (u: number, v: number) => top(u, v) + 0.35;
+  // the underside is level across the cave, and never above the mountainside
+  const lowY = (u: number, v: number) => Math.min(floor(u) + TERRAIN.caveHeight, topY(u, v) - 0.5);
+  for (let i = 0; i < NU; i++) {
+    const ua = u0 + i * STEP;
+    const ub = ua + STEP;
+    for (let j = 0; j < NV; j++) {
+      const va = -HALF + (j / NV) * 2 * HALF;
+      const vb = -HALF + ((j + 1) / NV) * 2 * HALF;
+      const k = c.r(0.9, 1.06);
+      // the mountainside over the cave
+      st.set(0.84 * k, 0.72 * k, 0.58 * k, 0, 0.12);
+      put(ua, va, topY(ua, va)); put(ua, vb, topY(ua, vb)); put(ub, va, topY(ub, va));
+      put(ub, va, topY(ub, va)); put(ua, vb, topY(ua, vb)); put(ub, vb, topY(ub, vb));
+      // the ceiling
+      st.set(0.5 * k, 0.38 * k, 0.3 * k, 0, 0.3);
+      put(ua, va, lowY(ua, va)); put(ub, va, lowY(ub, va)); put(ua, vb, lowY(ua, vb));
+      put(ub, va, lowY(ub, va)); put(ub, vb, lowY(ub, vb)); put(ua, vb, lowY(ua, vb));
+      // the brow over the mouth
+      if (i === 0) {
+        st.set(0.62 * k, 0.47 * k, 0.37 * k, 0, 0.1);
+        put(ua, va, lowY(ua, va)); put(ua, vb, lowY(ua, vb)); put(ua, va, topY(ua, va));
+        put(ua, va, topY(ua, va)); put(ua, vb, lowY(ua, vb)); put(ua, vb, topY(ua, vb));
+      }
+    }
+  }
+  buildCairn(c, TERRAIN.caveLen - 7, 0);
 }
 
 function buildArch(c: Ctx): void {
@@ -1150,6 +1269,7 @@ export class Discoveries {
   private readonly reached = new Set<number>();
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private readonly cellPos = { x: 0, z: 0 };
+  private readonly bankSample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private scanT = 0;
 
   constructor(world: World, uniforms: Uniforms) {
@@ -1185,14 +1305,15 @@ export class Discoveries {
   /** Site position for a cell, or false if the cell is empty. */
   private cellSite(cx: number, cz: number): boolean {
     const s = this.world.seed | 0;
-    if (hash4(cx, cz, s, 1) >= SITE_P) return false;
     this.cellPos.x = cx * CELL + MARGIN + hash4(cx, cz, s, 2) * (CELL - 2 * MARGIN);
     this.cellPos.z = cz * CELL + MARGIN + hash4(cx, cz, s, 3) * (CELL - 2 * MARGIN);
+    // Most cells are empty, but one beside a river usually holds a grove.
+    if (hash4(cx, cz, s, 1) >= SITE_P && !(hash4(cx, cz, s, 5) < GROVE_P && this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH)) return false;
     // The wilderness finds keep clear of cities.
     const cities = (this.world as Partial<{ cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>).cities;
     if (cities) {
       const c = cities.at(this.cellPos.x, this.cellPos.z);
-      if (Math.hypot(c.cx - this.cellPos.x, c.cz - this.cellPos.z) < c.radius + 1500) return false;
+      if (Math.hypot(c.cx - this.cellPos.x, c.cz - this.cellPos.z) < c.radius + 1500 * WORLD_SCALE) return false;
     }
     return true;
   }
@@ -1239,6 +1360,7 @@ export class Discoveries {
     const pcx = Math.floor(px / CELL);
     const pcz = Math.floor(pz / CELL);
     const span = Math.ceil(BUILD_R / CELL);
+    if (this.scanMassifs(px, pz)) return;
     for (let b = 0; b < maxBuilds; b++) {
       let best = Infinity;
       let bcx = 0;
@@ -1263,6 +1385,87 @@ export class Discoveries {
     }
   }
 
+  /**
+   * Builds the nearest unbuilt find that belongs to a massif: a lantern on its summit and the
+   * roof over its cave. Returns whether it built one.
+   */
+  private scanMassifs(px: number, pz: number): boolean {
+    const w = this.world as Partial<{
+      massif(gi: number, gj: number): Massif | null;
+      cave(gi: number, gj: number): Cave | null;
+      uncarved(x: number, z: number): number;
+    }>;
+    if (!w.massif || !w.cave || !w.uncarved) return false;
+    const gi0 = Math.round(px / CITY_CELL);
+    const gj0 = Math.round(pz / CITY_CELL);
+    for (let gj = gj0 - 1; gj <= gj0 + 1; gj++) {
+      for (let gi = gi0 - 1; gi <= gi0 + 1; gi++) {
+        const m = w.massif(gi, gj);
+        if (!m) continue;
+        const id = (gi + 32768) * 65536 + (gj + 32768);
+        const seed = Math.floor(hash4(gi, gj, this.world.seed | 0, 11) * 4294967296);
+        const summitKey = -(id * 2 + 1);
+        // (inside the build radius only: anything further is dropped again on the next scan)
+        if (!this.isBuilt(summitKey) && Math.hypot(m.x - px, m.z - pz) < BUILD_R) {
+          const ctx = new Ctx(this.world, m.x, m.z, this.world.height(m.x, m.z), mulberry32(seed), 0);
+          ctx.stone.salt = id & 1023;
+          buildLantern(ctx);
+          this.finishSite(summitKey, 'summit', m.x, m.z, ctx.baseY, ctx);
+          return true;
+        }
+        const caveKey = -(id * 2 + 2);
+        const cv = w.cave(gi, gj)!;
+        if (!this.isBuilt(caveKey) && Math.hypot(cv.x - px, cv.z - pz) < BUILD_R) {
+          // the frame's u axis runs into the mountain
+          const ctx = new Ctx(this.world, cv.x, cv.z, this.world.height(cv.x, cv.z), mulberry32(seed ^ 0x5f3a), Math.atan2(-cv.dz, cv.dx));
+          ctx.stone.salt = (id * 7) & 1023;
+          const uncarved = w.uncarved;
+          buildCaveRoof(
+            ctx,
+            (u, v) => {
+              ctx.at(u, v);
+              return uncarved(cv.x + ctx.lx, cv.z + ctx.lz) - ctx.baseY;
+            },
+            (u) => ctx.g(u, 0),
+          );
+          this.finishSite(caveKey, 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6, ctx.baseY, ctx);
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** Distance to the nearest river, if this world has rivers. */
+  private riverAt(x: number, z: number): number {
+    const river = (this.world as Partial<{ river(x: number, z: number): number }>).river;
+    return river ? river(x, z) : Infinity;
+  }
+
+  /**
+   * The nearest spot on a riverbank to (x, z), written to cellPos, or false if there is none:
+   * damp ground a little back from the water, where the river has not faded out.
+   */
+  private bankNear(x: number, z: number): boolean {
+    let best = Infinity;
+    for (let r = 0; r <= GROVE_REACH + 40; r += 12) {
+      for (let k = 0; k < 20; k++) {
+        const a = (k / 20) * Math.PI * 2;
+        const tx = x + Math.cos(a) * r;
+        const tz = z + Math.sin(a) * r;
+        const rd = this.riverAt(tx, tz);
+        if (rd < 20 || rd > 38 || r >= best) continue;
+        const sm = this.world.sample(tx, tz, this.bankSample);
+        if ((sm.green ?? 0) < 0.6 || sm.rock > 0.3) continue;
+        best = r;
+        this.cellPos.x = tx;
+        this.cellPos.z = tz;
+      }
+      if (best < Infinity) return true;
+    }
+    return false;
+  }
+
   private buildSite(cx: number, cz: number): void {
     this.cellSite(cx, cz);
     let x = this.cellPos.x;
@@ -1279,7 +1482,11 @@ export class Discoveries {
     mean /= 8;
     const r = rng();
     let kind: string;
-    if (s.rock > 0.45) kind = r < 0.45 ? 'arch' : r < 0.75 ? 'balancing-stones' : r < 0.9 ? 'lantern' : 'standing-stones';
+    if (this.riverAt(x, z) < GROVE_REACH && this.bankNear(x, z)) {
+      kind = 'grove';
+      x = this.cellPos.x;
+      z = this.cellPos.z;
+    } else if (s.rock > 0.45) kind = r < 0.45 ? 'arch' : r < 0.75 ? 'balancing-stones' : r < 0.9 ? 'lantern' : 'standing-stones';
     else if (s.salt > 0.35) kind = r < 0.4 ? 'standing-stones' : r < 0.7 ? 'sundial' : r < 0.85 ? 'lantern' : 'bones';
     else if (h < mean - 4 && r < 0.6) kind = 'oasis';
     else {
@@ -1320,6 +1527,27 @@ export class Discoveries {
     switch (kind) {
       case 'ruins': buildRuins(ctx); break;
       case 'oasis': buildOasis(ctx); break;
+      case 'grove': {
+        // bearing to the water, and a test for the damp bank, both in the site's own frame
+        let toWater = 0;
+        let near = Infinity;
+        for (let k = 0; k < 16; k++) {
+          const a = (k / 16) * Math.PI * 2;
+          ctx.at(Math.cos(a) * 14, Math.sin(a) * 14);
+          const rd = this.riverAt(x + ctx.lx, z + ctx.lz);
+          if (rd < near) {
+            near = rd;
+            toWater = a;
+          }
+        }
+        const onBank = (u: number, v: number): boolean => {
+          ctx.at(u, v);
+          const rd = this.riverAt(x + ctx.lx, z + ctx.lz);
+          return rd > TERRAIN.riverHalf + 2 && rd < TERRAIN.riverFloor + 6;
+        };
+        buildGrove(ctx, onBank, toWater);
+        break;
+      }
       case 'arch': buildArch(ctx); break;
       case 'balancing-stones': buildBalancing(ctx); break;
       case 'standing-stones': buildStones(ctx, onSalt); break;
@@ -1328,10 +1556,15 @@ export class Discoveries {
       case 'sundial': buildSundial(ctx, onSalt); break;
       default: buildShell(ctx); break;
     }
+    this.finishSite(cellKey(cx, cz), kind, x, z, baseY, ctx);
+  }
+
+  /** Turns what a builder made into meshes and records the site. */
+  private finishSite(key: number, kind: string, x: number, z: number, baseY: number, ctx: Ctx): void {
 
     const group = new THREE.Group();
     group.name = `site:${kind}`;
-    group.position.set(x, baseY, z);
+    group.position.set(ctx.x, baseY, ctx.z); // (x, z) is where the site counts as reached, which a cave puts inside it
     const sg = ctx.stone.build();
     if (sg) group.add(new THREE.Mesh(sg, this.stoneMat));
     const fg = ctx.fronds.build();
@@ -1371,7 +1604,7 @@ export class Discoveries {
     }
     this.group.add(group);
     this.sites.push({
-      key: cellKey(cx, cz),
+      key,
       x,
       z,
       kind,

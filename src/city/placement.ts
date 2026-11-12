@@ -2,13 +2,14 @@ import type { SurfaceSample } from '../game/contract';
 import type { CityKind, CitySite } from './types';
 import { CITY_REACH_EXTRA } from './cityGlsl';
 import { avenueBearings } from './plan';
+import { WORLD_SCALE } from '../world/scale';
 
-/** One city per cell, so neighbours are 8 to 12 km apart on average. */
-export const CITY_CELL = 10000;
+/** One city per cell, so neighbours are 6 to 9 km apart on average. */
+export const CITY_CELL = 10000 * WORLD_SCALE;
 
 type BaseSample = (x: number, z: number, out: SurfaceSample) => SurfaceSample;
 
-function hash(a: number, b: number, c: number): number {
+export function cellHash(a: number, b: number, c: number): number {
   let h = Math.imul(a | 0, 0x9e3779b1) ^ Math.imul(b | 0, 0x85ebca6b) ^ Math.imul(c | 0, 0xc2b2ae35);
   h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d);
   h = Math.imul(h ^ (h >>> 12), 0x297a2d39);
@@ -200,11 +201,11 @@ export class CityIndex {
     const key = ci + ',' + cj;
     let site = this.cache.get(key);
     if (site) return site;
-    const h0 = hash(ci, cj, this.seed);
-    const r = (n: number) => hash(h0, n, 0x51ed) / 4294967296;
-    // Keep the centre in the middle 56% of the cell so the plateau and its slopes never cross a border.
-    const cx = (ci + 0.22 + 0.56 * r(1)) * CITY_CELL;
-    const cz = (cj + 0.22 + 0.56 * r(2)) * CITY_CELL;
+    const h0 = cellHash(ci, cj, this.seed);
+    const r = (n: number) => cellHash(h0, n, 0x51ed) / 4294967296;
+    // Keep the centre in the middle 52% of the cell so the plateau and its slopes never cross a border.
+    const cx = (ci + 0.24 + 0.52 * r(1)) * CITY_CELL;
+    const cz = (cj + 0.24 + 0.52 * r(2)) * CITY_CELL;
     const radius = 320 + 280 * r(3);
 
     // Read the raw terrain around the centre to decide what kind of place this is.
@@ -249,7 +250,7 @@ export class CityIndex {
 
     site = {
       id: h0,
-      seed: hash(h0, 99, this.seed),
+      seed: cellHash(h0, 99, this.seed),
       cx,
       cz,
       radius,
@@ -267,18 +268,31 @@ export class CityIndex {
     return site;
   }
 
+  /**
+   * The two cities a site is joined to by track: the nearest two of the four cells that share an
+   * edge with its own. The terrain keeps those lines clear of mountains (see the passes in
+   * surface.ts), which it cannot do for a diagonal neighbour.
+   */
+  neighbours(site: CitySite): [CitySite, CitySite] {
+    const ci = Math.floor(site.cx / CITY_CELL);
+    const cj = Math.floor(site.cz / CITY_CELL);
+    const n = [this.cell(ci + 1, cj), this.cell(ci - 1, cj), this.cell(ci, cj + 1), this.cell(ci, cj - 1)];
+    n.sort((a, b) => Math.hypot(a.cx - site.cx, a.cz - site.cz) - Math.hypot(b.cx - site.cx, b.cz - site.cz));
+    return [n[0], n[1]];
+  }
+
   private waysCache = new Map<number, CityWays>();
   /**
-   * The ways out of a site: bearings toward its two nearest neighbours (as Cities.tracks gives the
+   * The ways out of a site: bearings toward its two neighbours (as Cities.tracks gives the
    * shaders) and its packed avenues, rounded to float32 like the uniforms.
    */
   ways(site: CitySite): CityWays {
     let w = this.waysCache.get(site.id);
     if (!w) {
-      const n = this.near(site.cx, site.cz, []);
+      const n = this.neighbours(site);
       w = {
-        t1: f32(Math.atan2(n[1].cz - site.cz, n[1].cx - site.cx)),
-        t2: f32(Math.atan2(n[2].cz - site.cz, n[2].cx - site.cx)),
+        t1: f32(Math.atan2(n[0].cz - site.cz, n[0].cx - site.cx)),
+        t2: f32(Math.atan2(n[1].cz - site.cz, n[1].cx - site.cx)),
         aveA: f32(site.aveA),
         aveB: f32(site.aveB),
       };

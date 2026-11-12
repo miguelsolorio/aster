@@ -1,12 +1,13 @@
 import * as THREE from 'three';
 import type { Uniforms } from './contract';
 
-const v = (hex: string) => {
+export const hexV = (hex: string, out = new THREE.Vector3()) => {
   const n = parseInt(hex.slice(1), 16);
-  return new THREE.Vector3(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
+  return out.set(((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255);
 };
 
-interface Key {
+/** One palette key, sitting at a sun elevation. */
+export interface Key {
   el: number; // sun elevation (sine) this key sits at
   top: THREE.Vector3;
   horizon: THREE.Vector3;
@@ -17,33 +18,59 @@ interface Key {
   rockShade: THREE.Vector3;
   saltLit: THREE.Vector3;
   saltShade: THREE.Vector3;
+  snowLit: THREE.Vector3;
+  snowShade: THREE.Vector3;
   fog: number;
   glow: number;
+  // post-mode inks and line colour (halftone, dither, contour and grid lines)
+  a: THREE.Vector3;
+  b: THREE.Vector3;
+  line: THREE.Vector3;
 }
+
+const INK = '#1a1410';
+const PAPER = '#f4ecdc';
 
 const key = (el: number, c: string[], fog: number, glow: number): Key => ({
   el,
-  top: v(c[0]),
-  horizon: v(c[1]),
-  lit: v(c[2]),
-  shade: v(c[3]),
-  sun: v(c[4]),
-  rockLit: v(c[5]),
-  rockShade: v(c[6]),
-  saltLit: v(c[7]),
-  saltShade: v(c[8]),
+  top: hexV(c[0]),
+  horizon: hexV(c[1]),
+  lit: hexV(c[2]),
+  shade: hexV(c[3]),
+  sun: hexV(c[4]),
+  rockLit: hexV(c[5]),
+  rockShade: hexV(c[6]),
+  saltLit: hexV(c[7]),
+  saltShade: hexV(c[8]),
+  snowLit: hexV(c[9]),
+  snowShade: hexV(c[10]),
   fog,
   glow,
+  a: hexV(INK),
+  b: hexV(PAPER),
+  line: hexV(INK),
 });
+
+/** Sun elevations of the four keys: night, twilight, sunset, day. */
+export const KEY_ELEVATIONS = [-0.24, -0.07, 0.09, 0.4] as const;
 
 // The "35 mm" look across the day, keyed on how high the sun is.
 // At the twilight key lit and shade nearly meet, which hides the hand-over from sun to moon.
-const KEYS: Key[] = [
-  key(-0.24, ['#050d1a', '#12303a', '#5f8a8c', '#0e1c24', '#d8f0e6', '#4a6a70', '#0c181e', '#8ab0b4', '#1a2a34'], 0.0004, 0.5),
-  key(-0.07, ['#10304a', '#b8785e', '#5a5058', '#2c2a36', '#ffb070', '#4c4248', '#262430', '#7a7078', '#3a3644'], 0.00055, 0.0),
-  key(0.09, ['#153a5c', '#e9a25a', '#d98a3c', '#4a2a22', '#ffcf8a', '#c46a34', '#3a2020', '#f0b888', '#6a4a48'], 0.0006, 1.7),
-  key(0.4, ['#0f4f6e', '#7fc3a6', '#d9a04e', '#6e4a24', '#fff1c9', '#a5643a', '#38211a', '#efe6d2', '#9a8c7a'], 0.00042, 1.0),
+export const FILM_KEYS: Key[] = [
+  key(-0.24, ['#050d1a', '#12303a', '#5f8a8c', '#0e1c24', '#d8f0e6', '#4a6a70', '#0c181e', '#8ab0b4', '#1a2a34', '#9cc2c8', '#1c3040'], 0.0004, 0.5),
+  key(-0.07, ['#10304a', '#b8785e', '#5a5058', '#2c2a36', '#ffb070', '#4c4248', '#262430', '#7a7078', '#3a3644', '#8e8690', '#444056'], 0.00055, 0.0),
+  key(0.09, ['#153a5c', '#e9a25a', '#d98a3c', '#4a2a22', '#ffcf8a', '#c46a34', '#3a2020', '#f0b888', '#6a4a48', '#ffd6a6', '#7c6a86'], 0.0006, 1.7),
+  key(0.4, ['#0f4f6e', '#7fc3a6', '#d9a04e', '#6e4a24', '#fff1c9', '#a5643a', '#38211a', '#efe6d2', '#9a8c7a', '#f8f5ec', '#8fa6be'], 0.00042, 1.0),
 ];
+
+/** Everything a style hands the day cycle. */
+export interface DayLook {
+  keys: Key[];
+  stars: number; // multiplier on star brightness
+  fig: THREE.Vector3; // base figure cloth colour, before it picks up the light
+}
+
+export const FILM_LOOK: DayLook = { keys: FILM_KEYS, stars: 1, fig: new THREE.Vector3(0.11, 0.082, 0.07) };
 
 const smooth = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -58,6 +85,7 @@ export class DayCycle {
   readonly sunDir = new THREE.Vector3();
   readonly moonDir = new THREE.Vector3();
   readonly lightDir = new THREE.Vector3();
+  private look: DayLook = FILM_LOOK;
 
   constructor(
     private u: Uniforms,
@@ -67,15 +95,22 @@ export class DayCycle {
   ) {
     this.day = start;
     const vec = (name: string) => (u[name] ??= { value: new THREE.Vector3() });
-    for (const n of ['uSunDir', 'uTop', 'uHorizon', 'uLit', 'uShade', 'uSunCol', 'uFogCol', 'uRockLit', 'uRockShade', 'uSaltLit', 'uSaltShade', 'uSunPos', 'uMoonPos', 'uFig', 'uFigLit']) {
+    for (const n of ['uSunDir', 'uTop', 'uHorizon', 'uLit', 'uShade', 'uSunCol', 'uFogCol', 'uRockLit', 'uRockShade', 'uSaltLit', 'uSaltShade', 'uSnowLit', 'uSnowShade', 'uSunPos', 'uMoonPos', 'uFig', 'uFigLit', 'uA', 'uB', 'uLine']) {
       vec(n);
     }
     for (const n of ['uFog', 'uNight', 'uGlow', 'uStars', 'uMoonVis']) u[n] ??= { value: 0 };
     this.update(0);
   }
 
+  /** Swaps the palette keys (a new style). Takes effect at once. */
+  setLook(look: DayLook) {
+    this.look = look;
+    this.update(0);
+  }
+
   update(dt: number) {
     const u = this.u;
+    const KEYS = this.look.keys;
     this.day = (this.day + dt / this.length) % 1;
     const a = (this.day - 0.25) * Math.PI * 2;
     this.sunDir.set(Math.cos(a), Math.sin(a) * 0.9, 0.36).normalize();
@@ -99,13 +134,18 @@ export class DayCycle {
     mix('uRockShade', k0.rockShade, k1.rockShade);
     mix('uSaltLit', k0.saltLit, k1.saltLit);
     mix('uSaltShade', k0.saltShade, k1.saltShade);
+    mix('uSnowLit', k0.snowLit, k1.snowLit);
+    mix('uSnowShade', k0.snowShade, k1.snowShade);
+    mix('uA', k0.a, k1.a);
+    mix('uB', k0.b, k1.b);
+    mix('uLine', k0.line, k1.line);
     (u.uFogCol.value as THREE.Vector3).copy(u.uHorizon.value);
     u.uFog.value = k0.fog + (k1.fog - k0.fog) * f;
     u.uGlow.value = k0.glow + (k1.glow - k0.glow) * f;
 
     this.night = smooth(0.02, -0.22, el);
     u.uNight.value = this.night;
-    u.uStars.value = smooth(-0.02, -0.2, el);
+    u.uStars.value = smooth(-0.02, -0.2, el) * this.look.stars;
     u.uMoonVis.value = smooth(-0.04, -0.14, el);
 
     // The light is the sun until twilight, then the moon. Never let it shine from below.
@@ -117,7 +157,7 @@ export class DayCycle {
     (u.uSunPos.value as THREE.Vector3).copy(this.sunDir);
     (u.uMoonPos.value as THREE.Vector3).copy(this.moonDir);
 
-    (u.uFig.value as THREE.Vector3).set(0.11, 0.082, 0.07).lerp(u.uShade.value, 0.25);
+    (u.uFig.value as THREE.Vector3).copy(this.look.fig).lerp(u.uShade.value, 0.25);
     (u.uFigLit.value as THREE.Vector3).copy(u.uFig.value).lerp(u.uLit.value, 0.45);
   }
 }

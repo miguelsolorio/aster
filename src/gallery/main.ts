@@ -34,7 +34,7 @@ let stage: Stage | null = null;
 try {
   stage = new Stage();
 } catch {
-  showMessage('Desertscape needs WebGL to draw these styles, and it could not be started in this browser.');
+  showMessage('Aster needs WebGL to draw these styles, and it could not be started in this browser.');
 }
 
 if (stage) {
@@ -100,7 +100,7 @@ function start(stage: Stage): void {
   const header = el('header', 'header');
   const brand = el('div', 'brand');
   brand.append(
-    el('h1', 'title', 'Desertscape'),
+    el('h1', 'title', 'Aster'),
     el('p', 'subtitle', 'Twenty ways to see the same dune. Pick one, or mix them.'),
   );
   header.append(brand, createSeg());

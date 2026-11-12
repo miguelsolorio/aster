@@ -4,6 +4,7 @@
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import type { CitySite } from './types';
+import { STYLE_GLSL } from '../render/styleGlsl';
 
 const RANGE = 2500;
 const FADE0 = 1200;
@@ -731,14 +732,16 @@ varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
+${STYLE_GLSL}
 void main() {
   vec3 toCam = cameraPosition - vW;
   float dist = length(toCam);
   vec3 V = toCam / max(dist, 1e-4);
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
+  n = styleFacet(n, vW);
   float ndl = dot(n, uSunDir);
-  float l = smoothstep(-0.35, 0.75, ndl);
+  float l = styleBands(smoothstep(-0.35, 0.75, ndl), vW.xz);
   float bright = clamp(uLit.g * 1.25, 0.12, 1.0);
   vec3 tint = mix(vec3(1.0), uLit / max(uLit.g, 0.02), 0.35);
   vec3 lit = vCol * tint * bright;
@@ -1029,7 +1032,7 @@ export class Caravans {
   readonly group = new THREE.Group();
 
   private readonly world: World;
-  private readonly cities: { near(x: number, z: number): CitySite[] };
+  private readonly cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite] };
 
   private readonly animalGeo: THREE.InstancedBufferGeometry;
   private readonly personGeo: THREE.InstancedBufferGeometry;
@@ -1068,7 +1071,7 @@ export class Caravans {
   private readonly P0 = { x: 0, z: 0 };
   private readonly P1 = { x: 0, z: 0 };
 
-  constructor(world: World, cities: { near(x: number, z: number): CitySite[] }, uniforms: Uniforms) {
+  constructor(world: World, cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite] }, uniforms: Uniforms) {
     this.world = world;
     this.cities = cities;
     this.group.name = 'caravans';
@@ -1180,7 +1183,9 @@ export class Caravans {
   private build(site: CitySite): Group[] {
     const groups: Group[] = [];
     const rng = mulberry32((this.world.seed ^ Math.imul(site.id | 0, 0x9e3779b1) ^ 0x51ed270b) >>> 0);
-    const nb = this.cities.near(site.cx, site.cz).filter((s) => s.id !== site.id);
+    // Caravans set out along the tracks, toward the two cities this one is joined to: the
+    // terrain keeps those lines clear of mountains.
+    const nb = this.cities.neighbours(site);
 
     // walking caravans
     const nRoutes = 1 + (rng() < 0.6 ? 1 : 0);
