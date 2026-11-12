@@ -104,6 +104,79 @@ export function planCity(site: CitySite): CityPlan {
   return new Planner(site).run();
 }
 
+/**
+ * World bearings (atan2(dz, dx) from the centre, radians) at which the avenues reach the edge of
+ * town, predicted from the site alone so the terrain around the city can leave ramps and gaps for
+ * them without planning the city. Mirrors the random draws of layoutSquare, buildRegion and
+ * layoutAvenues, and findGate: keep them in step. For a walled hill town this is where the road
+ * out of each gate (straight along the gate's normal) meets the plateau edge.
+ */
+export function avenueBearings(site: CitySite): number[] {
+  const r = makeRng(mix(site.seed | 0, 5));
+  const R = site.radius;
+  const hill = site.kind === 'hill';
+  const ez = site.kind === 'canyon' ? 1 / 1.5 : 1;
+
+  // Hill towns: the square, the walled region and the gates, as the planner makes them.
+  let findGate: ((theta: number) => Gate) | null = null;
+  if (hill) {
+    const r3 = makeRng(mix(site.seed | 0, 3));
+    const off = r3() * 8;
+    const a = r3() * TAU;
+    const sqx = Math.round(Math.cos(a) * off);
+    const sqz = Math.round(Math.sin(a) * off);
+    const ph = makeRng(mix(site.seed | 0, 4))() * TAU;
+    const cs = R >= 430 ? 32 : 24;
+    const cK = Math.ceil(R / cs) + 2;
+    const rw = 0.62 * R;
+    const region = (x: number, z: number): boolean => {
+      const i = Math.floor((x + cs / 2) / cs);
+      const j = Math.floor((z + cs / 2) / cs);
+      if (Math.abs(i) > cK || Math.abs(j) > cK) return false;
+      const t = Math.atan2(j * cs, i * cs);
+      return Math.hypot(i * cs, j * cs) < rw * (1 + 0.035 * Math.sin(2 * t + ph));
+    };
+    findGate = (theta: number): Gate => {
+      const dx = Math.cos(theta);
+      const dz = Math.sin(theta);
+      let t = 0;
+      while (t < 2 * R && region(sqx + dx * t, sqz + dz * t)) t += 0.5;
+      const ai = Math.floor((sqx + dx * (t - 0.5) + cs / 2) / cs);
+      const aj = Math.floor((sqz + dz * (t - 0.5) + cs / 2) / cs);
+      const bi = Math.floor((sqx + dx * t + cs / 2) / cs);
+      const bj = Math.floor((sqz + dz * t + cs / 2) / cs);
+      if (ai !== bi) return { x: (bi > ai ? ai + 1 : ai) * cs - cs / 2, z: aj * cs, nx: Math.sign(bi - ai), nz: 0 };
+      return { x: ai * cs, z: (bj > aj ? aj + 1 : aj) * cs - cs / 2, nx: 0, nz: Math.sign(bj - aj) };
+    };
+  }
+
+  let n = R > 470 ? 5 + (r() < 0.5 ? 1 : 0) : 4 + (r() < 0.6 ? 1 : 0);
+  if (site.kind === 'canyon') n = R > 450 ? 6 : 4;
+  const base = site.kind === 'canyon' ? 0 : r() * TAU;
+  const out: number[] = [];
+  const gates: Gate[] = [];
+  for (let k = 0; k < n; k++) {
+    const fixed = site.kind === 'canyon' && (k === 0 || k === n / 2);
+    let theta = base + (TAU * k) / n + (fixed ? 0 : (r() - 0.5) * 0.35 * (TAU / n));
+    if (findGate) {
+      let g = findGate(theta);
+      for (let tries = 0; tries < 8 && gates.some((o) => o.x === g.x && o.z === g.z); tries++) {
+        theta += tries % 2 === 0 ? 0.12 * (tries + 1) : -0.12 * (tries + 1);
+        g = findGate(theta);
+      }
+      gates.push(g);
+      // straight out of the gate to the plateau edge (radius R)
+      const gn = g.x * g.nx + g.z * g.nz;
+      const s = -gn + Math.sqrt(Math.max(0, gn * gn - (g.x * g.x + g.z * g.z) + R * R));
+      out.push(Math.atan2(g.z + g.nz * s, g.x + g.nx * s) + site.rot);
+    } else {
+      r(); // the avenue's width
+      out.push(Math.atan2(Math.sin(theta) * ez, Math.cos(theta)) + site.rot);
+    }
+  }
+  return out;
+}
+
 class Planner {
   private readonly site: CitySite;
   private readonly R: number;

@@ -7,7 +7,7 @@
 // Every constant below is emitted into the GLSL source, so tune them here.
 import type * as THREE from 'three';
 import type { SurfaceSample, World } from '../game/contract';
-import { CITY_SITES_GLSL } from '../city/cityGlsl';
+import { CITY_SHAPE_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 import { CityIndex, cityBlendAt, type CityBlend } from '../city/placement';
 
 // ---------------------------------------------------------------- tuning
@@ -66,6 +66,7 @@ const K_BIG = 6;
 const K_MID = 7;
 const K_SWELL = 8;
 const K_RIDGE = 9; // .. 9 + octaves - 1
+const K_CITY = 20; // buttes around canyon cities
 const SEED_SALT = 0x5bd1e995;
 
 const R2 = Math.fround(Math.SQRT1_2);
@@ -218,15 +219,19 @@ vec3 surfaceBase(vec2 p) {
 }
 
 ${CITY_SITES_GLSL}
+${CITY_SHAPE_GLSL}
 
-// The desert with cities: the ground is levelled into a plateau under each city,
-// and the built area counts as hard ground (rock = 1, no salt).
+// The desert with cities: the ground is levelled into a plateau under each city and
+// shaped around it (terraces, cliffs, dunes), and the built area counts as hard
+// ground (rock = 1, no salt).
 vec3 surface(vec2 p) {
   vec3 s = surfaceBase(p);
-  float ground;
-  vec2 cb = cityBlend(p, ground);
-  s.x = mix(s.x, ground, cb.x);
-  s.y = max(s.y, cb.y);
+  float h;
+  float rk;
+  uint ck = sfMix(uint(int(uSeed)) ^ ${SEED_SALT >>> 0}u) + ${KOFF(K_CITY)}u;
+  vec2 cb = cityBlend(p, s.x, ck, h, rk);
+  s.x = h;
+  s.y = max(s.y, max(cb.y, rk));
   s.z *= 1.0 - cb.x;
   return s;
 }
@@ -334,16 +339,17 @@ export function createWorld(seed: number): DesertWorld {
   }
 
   const cities = new CityIndex(Math.trunc(seed) | 0, base);
-  const blend: CityBlend = { flatten: 0, paved: 0, ground: 0 };
-  // Mirrors surface() in the GLSL: level the ground under the city of this cell.
+  const blend: CityBlend = { flatten: 0, paved: 0, ground: 0, h: 0, rock: 0 };
+  const kCity = key(K_CITY);
+  const cityNoise = (x: number, y: number): number => noise(x, y, kCity);
+  // Mirrors surface() in the GLSL: level and shape the ground around the city of this cell.
   function surface(x: number, z: number, out: SurfaceSample): SurfaceSample {
     base(x, z, out);
-    const cb = cityBlendAt(cities.at(x, z), x, z, blend);
-    if (cb.flatten > 0) {
-      out.h += (cb.ground - out.h) * cb.flatten;
-      out.rock = Math.max(out.rock, cb.paved);
-      out.salt *= 1 - cb.flatten;
-    }
+    const site = cities.at(x, z);
+    const cb = cityBlendAt(site, cities.ways(site), x, z, out.h, cityNoise, blend);
+    out.h = cb.h;
+    out.rock = Math.max(out.rock, cb.paved, cb.rock);
+    out.salt *= 1 - cb.flatten;
     return out;
   }
 

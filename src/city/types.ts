@@ -36,6 +36,12 @@ export interface CitySite {
   phase1: number;
   phase2: number;
   falloff: number;
+  /**
+   * Where the avenues leave town, packed for the terrain shader (uCityC.zw; see cityAveLat in
+   * cityGlsl.ts): aveA = 64 * step index + 8 * count + base bearing, aveB = 4-bit offsets.
+   */
+  aveA: number;
+  aveB: number;
 }
 
 export type RoofKind = 'flat' | 'parapet' | 'dome' | 'terrace' | 'windtower' | 'spire' | 'canopy' | 'none';

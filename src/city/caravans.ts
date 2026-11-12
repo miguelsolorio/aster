@@ -1137,7 +1137,8 @@ export class Caravans {
 
   private routeClear(r: Route): boolean {
     const p = this.P0;
-    for (let s = 0; s <= r.len; s += 60) {
+    // Finely near the start: the cliffs and terrace walls around a city are narrow.
+    for (let s = 0; s <= r.len; s += s < 900 ? 15 : 60) {
       routePoint(r, s, p);
       if (this.world.sample(p.x, p.z, this.sample).rock > 0.5) return false;
     }

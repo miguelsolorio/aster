@@ -126,8 +126,6 @@ uniform vec3 uFogCol;
 ${CITY_SITES_GLSL}
 ${CITY_SHADOW_GLSL}
 
-uniform vec4 uCityC[4]; // bearings (radians) of the two worn tracks leaving each city
-
 // Faint tracks worn into the sand, leading out of a city toward its neighbours and fading away.
 float cityTracks(vec2 p) {
   float m = 0.0;
@@ -235,8 +233,7 @@ void main() {
   float dist = length(toCam);
   // Built ground: packed earth and paving. It is hard ground for the player (rock = 1 in the
   // surface function), but it must not look like mountain rock.
-  float cityGround;
-  float pave = cityBlend(p.xz, cityGround).y;
+  float pave = cityPave(p.xz);
   float rock = clamp(vMask.x, 0.0, 1.0) * (1.0 - pave);
   float salt = clamp(vMask.y, 0.0, 1.0) * (1.0 - rock) * (1.0 - pave);
   float sandW = (1.0 - rock) * (1.0 - salt) * (1.0 - pave);
@@ -281,6 +278,14 @@ void main() {
     n0 = normalize(mix(n0, nH, nb));
   }
   vec3 n = n0;
+
+  // The terrace walls around a hill town are stone wherever they are steep.
+  float stone = cityStone(p.xz) * (1.0 - smoothstep(0.84, 0.95, n0.y));
+  if (stone > 0.0) {
+    rock = max(rock, stone);
+    salt *= 1.0 - stone;
+    sandW = (1.0 - rock) * (1.0 - salt) * (1.0 - pave);
+  }
 
   // Optional work shrinks toward the camera at low detail (1.0 at full detail).
   float dk = mix(0.45, 1.0, clamp(uDetail, 0.0, 1.0));
