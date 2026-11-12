@@ -254,7 +254,7 @@ export class Waymarks {
   readonly group = new THREE.Group();
 
   private readonly world: World;
-  private readonly cities: { near(x: number, z: number): CitySite[] };
+  private readonly cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite] };
   private readonly stoneMat: THREE.ShaderMaterial;
   private readonly glowMat: THREE.ShaderMaterial;
   private readonly routes = new Map<string, Route>();
@@ -264,7 +264,7 @@ export class Waymarks {
   private refresh = 0;
   private cell = '';
 
-  constructor(world: World, cities: { near(x: number, z: number): CitySite[] }, uniforms: Uniforms) {
+  constructor(world: World, cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite] }, uniforms: Uniforms) {
     this.world = world;
     this.cities = cities;
     this.group.name = 'waymarks';
@@ -311,10 +311,7 @@ export class Waymarks {
     for (let i = 0; i < near.length; i++) {
       const s = near[i];
       this.nearIds.add(s.id);
-      const nb = this.cities.near(s.cx, s.cz);
-      for (let k = 1; k <= 2 && k < nb.length; k++) {
-        const o = nb[k];
-        if (o.id === s.id) continue;
+      for (const o of this.cities.neighbours(s)) {
         const [a, b] = s.id < o.id ? [s, o] : [o, s];
         const key = a.id + ':' + b.id;
         if (!this.wanted.has(key)) this.wanted.set(key, [a, b]);

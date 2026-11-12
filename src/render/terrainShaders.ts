@@ -11,7 +11,7 @@
 // Run-time quality (shared uniforms, created by Clipmap; see game/quality.ts):
 //   float uShadowSteps  heightmap ray-march steps, 1..32 (30 = full quality)
 //   float uDetail       0..1 scale on optional fragment work (1 = full quality)
-import { SURFACE_GLSL } from '../world/surface';
+import { MAX_TERRAIN_H, SURFACE_GLSL, TERRAIN } from '../world/surface';
 import { CITY_SHADOW_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 
 // '35 mm' style, baked in.
@@ -22,7 +22,7 @@ const float RIPPLE = 0.9;
 const float RIPPLE_BIG = 0.45;
 const float SPARKLE = 0.35;
 const float TRAIL_NORMAL = 0.14; // depth 1.0 is roughly a 14 cm hollow
-const float MAX_TERRAIN_H = 620.0;
+const float MAX_TERRAIN_H = ${MAX_TERRAIN_H}.0;
 `;
 
 // Same helpers as the gallery shaders.
@@ -60,6 +60,25 @@ float fbm(vec2 p) {
     a *= 0.5;
   }
   return s / 0.9375;
+}
+`;
+
+// Snow and high haze, shared by the terrain and the far massifs so the two agree where they meet.
+const HIGH = /* glsl */ `
+const float SNOW_LINE = ${TERRAIN.snowLine}.0;
+
+// Haze lies low: it thins with height, so the high peaks stand clear of it.
+float hazeAt(float y) {
+  return mix(1.0, 0.3, smoothstep(250.0, 800.0, y));
+}
+
+// Snow cover 0..1: above a wandering snow line, on ground gentle enough to hold it.
+// The higher it is, the steeper the slope snow clings to.
+float snowAt(vec3 p, float ny) {
+  float sh = p.y + 70.0 * (fbm(p.xz * 0.006 + vec2(9.2, -4.4)) - 0.5) + 14.0 * (vnoise(p.xz * 0.07) - 0.5);
+  float s = smoothstep(SNOW_LINE, SNOW_LINE + 70.0, sh);
+  float hold = mix(0.8, 0.52, smoothstep(SNOW_LINE, SNOW_LINE + 260.0, p.y));
+  return s * smoothstep(hold - 0.05, hold + 0.05, ny);
 }
 `;
 
@@ -120,6 +139,8 @@ uniform vec3 uRockLit;
 uniform vec3 uRockShade;
 uniform vec3 uSaltLit;
 uniform vec3 uSaltShade;
+uniform vec3 uSnowLit;
+uniform vec3 uSnowShade;
 uniform vec3 uSunCol;
 uniform vec3 uFogCol;
 
@@ -158,6 +179,7 @@ varying vec2 vMask;
 
 ${LOOK}
 ${COMMON}
+${HIGH}
 
 // Explicit LOD everywhere: these run inside loops and branches.
 // The heightmap holds raw metres in both the 32-bit and the 16-bit float bake.
@@ -435,6 +457,11 @@ void main() {
   // trodden sand is a little darker and flatter than the dunes around it
   sandCol *= 1.0 - 0.13 * track;
   vec3 col = mix(mix(sandCol, saltCol, salt), rockCol, rock);
+  // ---- snow on the high peaks
+  if (p.y > SNOW_LINE - 50.0) {
+    float snow = snowAt(p, n.y);
+    col = mix(col, mix(uSnowShade * (0.85 + 0.15 * amb), uSnowLit, l), snow);
+  }
   // terrace walls: a slightly darker dressed stone, a light cap along the lip, a shadow at the foot
   col *= 1.0 - 0.1 * stone;
   col = mix(col, col * 1.16 + vec3(0.015), stoneLip);
@@ -475,8 +502,66 @@ void main() {
   }
 
   // ---- fog
-  col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));
+  col = mix(col, uFogCol, 1.0 - exp(-dist * uFog * hazeAt(p.y)));
 
+  gl_FragColor = vec4(col, 1.0);
+}
+`;
+
+// ---------------------------------------------------------------- FAR MASSIFS
+
+// A coarse mesh of each massif, drawn only beyond the reach of the clipmap.
+export const massifVert = /* glsl */ `
+attribute float aRock;
+varying vec3 vW;
+varying vec3 vN;
+varying float vRock;
+
+void main() {
+  vec3 wp = (modelMatrix * vec4(position, 1.0)).xyz;
+  vW = wp;
+  vN = normal;
+  vRock = aRock;
+  gl_Position = projectionMatrix * vec4(mat3(viewMatrix) * (wp - cameraPosition), 1.0);
+}
+`;
+
+export const massifFrag = /* glsl */ `
+precision highp float;
+
+uniform vec3 uSunDir;
+uniform float uNight;
+uniform float uFog;
+uniform vec3 uLit;
+uniform vec3 uShade;
+uniform vec3 uRockLit;
+uniform vec3 uRockShade;
+uniform vec3 uSnowLit;
+uniform vec3 uSnowShade;
+uniform vec3 uFogCol;
+uniform vec3 uNear; // xz centre and half-size of the square the clipmap covers
+
+varying vec3 vW;
+varying vec3 vN;
+varying float vRock;
+
+${LOOK}
+${COMMON}
+${HIGH}
+
+void main() {
+  vec2 dc = abs(vW.xz - uNear.xy);
+  if (max(dc.x, dc.y) < uNear.z) discard;
+  vec3 n = normalize(vN);
+  float ndl = dot(n, uSunDir);
+  float l = mix(clamp(ndl * 1.25, 0.0, 1.0), smoothstep(-0.02, 0.12, ndl), TERM_SHARP);
+  float amb = 0.5 + 0.5 * n.y;
+  l += (1.0 - l) * uNight * 0.14 * amb;
+  vec3 sandCol = mix(uShade * (0.82 + 0.18 * amb), uLit, l);
+  vec3 rockCol = mix(uRockShade * (0.8 + 0.2 * amb), uRockLit, l) * 0.94;
+  vec3 col = mix(sandCol, rockCol, clamp(vRock, 0.0, 1.0));
+  col = mix(col, mix(uSnowShade * (0.85 + 0.15 * amb), uSnowLit, l), snowAt(vW, n.y));
+  col = mix(col, uFogCol, 1.0 - exp(-length(cameraPosition - vW) * uFog * hazeAt(vW.y)));
   gl_FragColor = vec4(col, 1.0);
 }
 `;

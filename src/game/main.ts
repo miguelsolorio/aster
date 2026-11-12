@@ -22,6 +22,7 @@ import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
 import { DEFAULTS, type Params } from '../render/types';
 import { WORLD_SCALE } from '../world/scale';
+import { Massifs } from '../world/massifs';
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
@@ -127,7 +128,8 @@ function start() {
   const caravans = new Caravans(world, world.cities, u);
   const waymarks = new Waymarks(world, world.cities, u);
   const people = new People(u);
-  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, dust.group);
+  const massifs = new Massifs(world, u);
+  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, dust.group, massifs.group);
 
   const figure = new Figure(u);
   scene.add(figure.group);
@@ -532,6 +534,7 @@ function start() {
     trail.update(dt, st.pos.x, st.pos.z);
     dust.update(frame);
     discoveries.update(frame);
+    massifs.update(frame, clipmap.levelCount);
     wildlife.update(frame);
     const ambience = cities.frame(frame);
     audio.setAmbience(ambience);

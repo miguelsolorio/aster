@@ -17,6 +17,8 @@ interface Key {
   rockShade: THREE.Vector3;
   saltLit: THREE.Vector3;
   saltShade: THREE.Vector3;
+  snowLit: THREE.Vector3;
+  snowShade: THREE.Vector3;
   fog: number;
   glow: number;
 }
@@ -32,6 +34,8 @@ const key = (el: number, c: string[], fog: number, glow: number): Key => ({
   rockShade: v(c[6]),
   saltLit: v(c[7]),
   saltShade: v(c[8]),
+  snowLit: v(c[9]),
+  snowShade: v(c[10]),
   fog,
   glow,
 });
@@ -39,10 +43,10 @@ const key = (el: number, c: string[], fog: number, glow: number): Key => ({
 // The "35 mm" look across the day, keyed on how high the sun is.
 // At the twilight key lit and shade nearly meet, which hides the hand-over from sun to moon.
 const KEYS: Key[] = [
-  key(-0.24, ['#050d1a', '#12303a', '#5f8a8c', '#0e1c24', '#d8f0e6', '#4a6a70', '#0c181e', '#8ab0b4', '#1a2a34'], 0.0004, 0.5),
-  key(-0.07, ['#10304a', '#b8785e', '#5a5058', '#2c2a36', '#ffb070', '#4c4248', '#262430', '#7a7078', '#3a3644'], 0.00055, 0.0),
-  key(0.09, ['#153a5c', '#e9a25a', '#d98a3c', '#4a2a22', '#ffcf8a', '#c46a34', '#3a2020', '#f0b888', '#6a4a48'], 0.0006, 1.7),
-  key(0.4, ['#0f4f6e', '#7fc3a6', '#d9a04e', '#6e4a24', '#fff1c9', '#a5643a', '#38211a', '#efe6d2', '#9a8c7a'], 0.00042, 1.0),
+  key(-0.24, ['#050d1a', '#12303a', '#5f8a8c', '#0e1c24', '#d8f0e6', '#4a6a70', '#0c181e', '#8ab0b4', '#1a2a34', '#9cc2c8', '#1c3040'], 0.0004, 0.5),
+  key(-0.07, ['#10304a', '#b8785e', '#5a5058', '#2c2a36', '#ffb070', '#4c4248', '#262430', '#7a7078', '#3a3644', '#8e8690', '#444056'], 0.00055, 0.0),
+  key(0.09, ['#153a5c', '#e9a25a', '#d98a3c', '#4a2a22', '#ffcf8a', '#c46a34', '#3a2020', '#f0b888', '#6a4a48', '#ffd6a6', '#7c6a86'], 0.0006, 1.7),
+  key(0.4, ['#0f4f6e', '#7fc3a6', '#d9a04e', '#6e4a24', '#fff1c9', '#a5643a', '#38211a', '#efe6d2', '#9a8c7a', '#f8f5ec', '#8fa6be'], 0.00042, 1.0),
 ];
 
 const smooth = (a: number, b: number, x: number) => {
@@ -67,7 +71,7 @@ export class DayCycle {
   ) {
     this.day = start;
     const vec = (name: string) => (u[name] ??= { value: new THREE.Vector3() });
-    for (const n of ['uSunDir', 'uTop', 'uHorizon', 'uLit', 'uShade', 'uSunCol', 'uFogCol', 'uRockLit', 'uRockShade', 'uSaltLit', 'uSaltShade', 'uSunPos', 'uMoonPos', 'uFig', 'uFigLit']) {
+    for (const n of ['uSunDir', 'uTop', 'uHorizon', 'uLit', 'uShade', 'uSunCol', 'uFogCol', 'uRockLit', 'uRockShade', 'uSaltLit', 'uSaltShade', 'uSnowLit', 'uSnowShade', 'uSunPos', 'uMoonPos', 'uFig', 'uFigLit']) {
       vec(n);
     }
     for (const n of ['uFog', 'uNight', 'uGlow', 'uStars', 'uMoonVis']) u[n] ??= { value: 0 };
@@ -99,6 +103,8 @@ export class DayCycle {
     mix('uRockShade', k0.rockShade, k1.rockShade);
     mix('uSaltLit', k0.saltLit, k1.saltLit);
     mix('uSaltShade', k0.saltShade, k1.saltShade);
+    mix('uSnowLit', k0.snowLit, k1.snowLit);
+    mix('uSnowShade', k0.snowShade, k1.snowShade);
     (u.uFogCol.value as THREE.Vector3).copy(u.uHorizon.value);
     u.uFog.value = k0.fog + (k1.fog - k0.fog) * f;
     u.uGlow.value = k0.glow + (k1.glow - k0.glow) * f;
