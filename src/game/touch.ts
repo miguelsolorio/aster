@@ -28,6 +28,9 @@ interface Slot {
 const FLY_SVG =
   '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
   '<path d="M6 17.5 14 9.5l8 8"/><path d="M9.5 22 14 17.5l4.5 4.5"/></svg>';
+const DROP_SVG =
+  '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
+  '<path d="M7 11.5l7 7 7-7"/></svg>';
 
 export class TouchControls {
   used = false;
@@ -35,6 +38,8 @@ export class TouchControls {
   moveZ = 0;
   boost = false;
   flyHeld = false;
+  /** Drop button held: fall out of the glide. Only shown while airborne. */
+  dropHeld = false;
   onFirstTouch: (() => void) | null = null;
 
   private readonly hooks: TouchHooks;
@@ -42,6 +47,7 @@ export class TouchControls {
   private readonly ring: HTMLDivElement;
   private readonly dot: HTMLDivElement;
   private readonly fly: HTMLButtonElement;
+  private readonly drop: HTMLButtonElement;
 
   private mode: TouchMode = 'off';
   private mouseActive = false;
@@ -51,6 +57,8 @@ export class TouchControls {
   private stickCy = 0;
 
   private flyId = -1;
+  private dropId = -1;
+  private airborne = false;
 
   private readonly slots: Slot[] = [
     { id: -1, x: 0, y: 0 },
@@ -75,12 +83,20 @@ export class TouchControls {
     const fly = document.createElement('button');
     fly.type = 'button';
     fly.className = 'ds-touch__fly';
-    fly.setAttribute('aria-label', 'Leap, hold to fly');
+    fly.setAttribute('aria-label', 'Leap, hold to rise, let go to glide');
     fly.tabIndex = -1;
     fly.innerHTML = FLY_SVG;
     this.fly = fly;
 
-    layer.append(this.ring, this.dot, fly);
+    const drop = document.createElement('button');
+    drop.type = 'button';
+    drop.className = 'ds-touch__drop';
+    drop.setAttribute('aria-label', 'Drop');
+    drop.tabIndex = -1;
+    drop.innerHTML = DROP_SVG;
+    this.drop = drop;
+
+    layer.append(this.ring, this.dot, fly, drop);
     root.appendChild(layer);
 
     layer.addEventListener('pointerdown', this.onDown);
@@ -103,6 +119,14 @@ export class TouchControls {
     cl.remove('ds-touch--idle');
     this.armIdle();
     this.syncPointerEvents();
+  }
+
+  /** Show the drop button only while the figure is in the air. */
+  setAirborne(air: boolean): void {
+    if (air === this.airborne) return;
+    this.airborne = air;
+    this.layer.classList.toggle('ds-touch--air', air);
+    if (!air) this.endDrop();
   }
 
   private syncPointerEvents(): void {
@@ -150,7 +174,7 @@ export class TouchControls {
     if (!TouchControls.isTouch(e) || this.mode === 'off') return;
     e.preventDefault();
     const id = e.pointerId;
-    if (id === this.stickId || id === this.flyId) return;
+    if (id === this.stickId || id === this.flyId || id === this.dropId) return;
     if (this.findSlot(id) >= 0) return;
 
     const x = e.clientX;
@@ -165,6 +189,15 @@ export class TouchControls {
           this.fly.classList.add('is-held');
           this.capture(id);
           this.hooks.onJump();
+        }
+        return;
+      }
+      if (t && (t === this.drop || this.drop.contains(t))) {
+        if (this.dropId < 0 && this.airborne) {
+          this.dropId = id;
+          this.dropHeld = true;
+          this.drop.classList.add('is-held');
+          this.capture(id);
         }
         return;
       }
@@ -204,7 +237,7 @@ export class TouchControls {
       this.moveStick(e.clientX, e.clientY);
       return;
     }
-    if (id === this.flyId) {
+    if (id === this.flyId || id === this.dropId) {
       e.preventDefault();
       return;
     }
@@ -239,6 +272,9 @@ export class TouchControls {
     } else if (id === this.flyId) {
       if (e.type !== 'lostpointercapture') e.preventDefault();
       this.endFly();
+    } else if (id === this.dropId) {
+      if (e.type !== 'lostpointercapture') e.preventDefault();
+      this.endDrop();
     } else {
       const i = this.findSlot(id);
       if (i >= 0) {
@@ -302,9 +338,16 @@ export class TouchControls {
     this.fly.classList.remove('is-held');
   }
 
+  private endDrop(): void {
+    this.dropId = -1;
+    this.dropHeld = false;
+    this.drop.classList.remove('is-held');
+  }
+
   private releaseAll(): void {
     this.endStick();
     this.endFly();
+    this.endDrop();
     this.slots[0].id = -1;
     this.slots[1].id = -1;
     this.pinchDist = 0;

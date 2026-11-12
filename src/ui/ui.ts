@@ -16,12 +16,12 @@ export interface UIHooks {
 
 const KEY_VOLUME = 'desertscape.volume';
 const KEY_QUALITY = 'desertscape.quality';
-const CONTROLS = ['WASD glide', 'Mouse look', 'Shift boost', 'Space leap, hold to fly', 'In the air: S climb, W dive', 'Esc menu'];
+const CONTROLS = ['WASD glide', 'Mouse look', 'Shift boost', 'Space leap, hold to rise, let go to glide', 'In the air: WASD steer, Shift drop', 'Esc menu'];
 const TOUCH_CONTROLS = [
   'Left thumb: glide (push to the edge to boost)',
   'Right thumb: look, pinch to zoom',
-  'Button: leap, hold to fly',
-  'In the air: stick up dives, down climbs',
+  'Button: leap, hold to rise, let go to glide',
+  'In the air: stick steers, small button drops',
 ];
 const QUALITIES: Quality[] = ['mobile', 'low', 'high'];
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled])';

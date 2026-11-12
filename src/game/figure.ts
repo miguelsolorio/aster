@@ -144,6 +144,9 @@ export class Figure {
   private amp = 0;
   private slide = 0;
   private air = 0;
+  private glide = 0;
+  private rise = 0;
+  private flare = 0;
   private lean = 0;
   private bank = 0;
   private time = 0;
@@ -216,7 +219,8 @@ export class Figure {
    * Pose the figure for this frame.
    * m.turn: turning rate in rad/s, positive to the figure's left.
    * m.slopeAlong: rise over run of the ground in the direction of travel.
-   * m.gliding: airborne with arms spread. m.climb: flight path angle in radians.
+   * m.gliding: floating down on the glide. m.lifting: climbing on a held jump.
+   * m.alt: height above the ground in metres.
    */
   update(
     dt: number,
@@ -224,7 +228,7 @@ export class Figure {
     facing: number,
     wind: THREE.Vector2,
     gust: number,
-    m: { turn: number; slopeAlong: number; gliding: boolean; climb: number },
+    m: { turn: number; slopeAlong: number; gliding: boolean; lifting: boolean; alt: number },
   ) {
     const k = (rate: number) => 1 - Math.exp(-dt * rate);
     const walking = st.grounded && !st.sliding;
@@ -240,10 +244,20 @@ export class Figure {
     const rideT = st.sliding && st.grounded ? Math.min(1, Math.max(0, (st.speed - 1) / 6)) : 0;
     this.slide += (rideT - this.slide) * k(4);
     this.air += ((st.grounded ? 0 : 1) - this.air) * k(6);
-    const spreadT = m.gliding ? 1 : 0;
-    this.spreadU.value += (spreadT - this.spreadU.value) * k(5);
-    const spread = this.spreadU.value;
-    const fly = Math.max(this.slide, this.air);
+    // In the air the figure stays upright: a jump on the way up, a long floating fall on the glide.
+    this.glide += ((m.gliding ? 1 : 0) - this.glide) * k(4);
+    const glide = this.glide;
+    const riseT = !st.grounded && (m.lifting || st.vel.y > 1) ? 1 : 0;
+    this.rise += (riseT - this.rise) * k(5);
+    const rise = this.rise;
+    // Close to the ground on the way down, the legs swing forward to meet it.
+    const flareT = !st.grounded && st.vel.y < 0 && m.alt < 1.4 ? 1 : 0;
+    this.flare += (flareT - this.flare) * k(flareT ? 9 : 6);
+    const flare = this.flare;
+    const air = this.air;
+    // The cape opens only a little on the glide; it is cloth catching air, not a wing.
+    this.spreadU.value = glide * 0.3;
+    const fly = Math.max(this.slide, air);
 
     // bank like a bird, harder at speed
     const bankT = Math.max(-0.55, Math.min(0.55, m.turn * (0.14 + st.speed * 0.016)));
@@ -258,10 +272,19 @@ export class Figure {
       let thigh = -sg * s * this.amp;
       let knee = Math.max(0, sg * c) * this.amp * 1.5 + this.amp * 0.12;
       // flying: legs long and together, one a touch behind the other, trailing in the air
-      const fThigh = 0.05 * sg + sway * sg + this.air * 0.12;
-      const fKnee = 0.07 + this.air * 0.06;
-      thigh += (fThigh - thigh) * fly;
-      knee += (fKnee - knee) * fly;
+      const fThigh = 0.05 * sg + sway * sg;
+      const fKnee = 0.07;
+      thigh += (fThigh - thigh) * this.slide;
+      knee += (fKnee - knee) * this.slide;
+      // in the air: a jump. One knee tucked on the way up, both legs trailing a little
+      // on the glide, then swung forward for the landing.
+      const lead = sg > 0 ? 1 : 0;
+      let aThigh = 0.1 + 0.06 * sg + sway * sg + rise * (lead ? -0.5 : 0.22) + glide * 0.14;
+      let aKnee = 0.2 + rise * (lead ? 0.75 : 0.15) + glide * 0.1;
+      aThigh += (-0.5 - 0.1 * sg - aThigh) * flare;
+      aKnee += (0.45 - aKnee) * flare;
+      thigh += (aThigh - thigh) * air;
+      knee += (aKnee - knee) * air;
       this.hips[i].rotation.x = thigh;
       this.knees[i].rotation.x = knee;
 
@@ -271,30 +294,36 @@ export class Figure {
       const tip = inside * Math.abs(this.bank) * 0.8;
       const backX = 1.1 + Math.min(0.25, st.speed * 0.01);
       const backZ = 0.38 + tip + sway;
-      const wideX = 0.2;
-      const wideZ = 1.42 + tip * 0.6 + sway;
       let armX = sg * s * this.amp * 0.7;
       let armZ = 0.1;
-      armX += (backX + (wideX - backX) * spread - armX) * fly;
-      armZ += (backZ + (wideZ - backZ) * spread - armZ) * fly;
+      armX += (backX - armX) * this.slide;
+      armZ += (backZ - armZ) * this.slide;
+      // in the air: low and a little back on the way up, eased out to the sides for
+      // balance on the glide. Never forward, never spread like wings.
+      const jumpX = 0.3 + rise * 0.25 - flare * 0.25;
+      const jumpZ = 0.24 + tip * 0.4 + sway;
+      const glideX = 0.16 - flare * 0.2;
+      const glideZ = 0.62 + tip * 0.7 + sway * 2;
+      armX += (jumpX + (glideX - jumpX) * glide - armX) * air;
+      armZ += (jumpZ + (glideZ - jumpZ) * glide - armZ) * air;
       this.arms[i].rotation.x = armX;
       this.arms[i].rotation.z = -sg * armZ;
     }
 
     // Lean: forward from the ankles on the sand, more with speed and when diving down a face;
-    // nearly level in the air, nose following the flight path.
+    // upright in the air, with a modest forward lean on the glide.
     const slopeTilt = -Math.atan(m.slopeAlong) * 0.7;
     const groundLean = this.slide * (0.26 + Math.min(0.3, st.speed * 0.013)) + this.slide * slopeTilt + (1 - this.slide) * Math.min(0.12, st.speed * 0.012);
-    const airLean = 1.22 - m.climb * 0.85 - spread * 0.08;
+    const airLean = (0.07 + glide * 0.24 * Math.min(1, st.speed / 10)) * (1 - flare);
     const pitchT = st.grounded ? groundLean : airLean;
-    this.pitch += (pitchT - this.pitch) * k(st.grounded ? 5 : 3.5);
+    this.pitch += (pitchT - this.pitch) * k(5);
 
     this.torso.rotation.x = Math.sin(a * 2) * 0.02 * this.amp - this.air * 0.1;
     this.torso.rotation.y = s * 0.09 * this.amp;
     this.torso.rotation.z = c * 0.03 * this.amp;
 
     const g = this.group;
-    g.rotation.set(this.pitch, facing, -this.bank * fly + sway * fly);
+    g.rotation.set(this.pitch, facing, -this.bank * Math.max(this.slide, air * 0.5) + sway * fly);
     g.position.copy(st.pos);
     g.position.y += -0.03 - Math.abs(s) * 0.045 * this.amp;
     // In the air, turn about the hips so the body stays centred on the flight path.

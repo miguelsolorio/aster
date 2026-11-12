@@ -346,7 +346,7 @@ function start() {
     camera,
     player: player.state,
   };
-  const input: PlayerInput = { x: 0, z: 0, run: false, jump: false, glide: false, wind };
+  const input: PlayerInput = { x: 0, z: 0, run: false, jump: false, lift: false, drop: false, wind };
   const camTarget = new THREE.Vector3().copy(player.state.pos);
   const tmp = new THREE.Vector3();
   const tmp2 = new THREE.Vector3();
@@ -399,6 +399,9 @@ function start() {
       audio.land(strength);
       buzz(6 + Math.round(strength * 18));
     },
+    lift() {
+      audio.lift();
+    },
   };
 
   function update(dt: number) {
@@ -426,7 +429,8 @@ function start() {
     input.z = playing ? Math.max(-1, Math.min(1, kz + touch.moveZ)) : 0;
     input.run = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.boost);
     input.jump = playing && jumpQueued;
-    input.glide = playing && (keys.has('Space') || touch.flyHeld);
+    input.lift = playing && (keys.has('Space') || touch.flyHeld);
+    input.drop = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.dropHeld);
     jumpQueued = false;
     player.update(dt, input, camYaw, events);
 
@@ -465,7 +469,8 @@ function start() {
     {
       const sp = Math.max(st.speed, 0.01);
       const slopeAlong = st.grounded ? -(st.vel.x * player.downhill.x + st.vel.z * player.downhill.y) / sp * player.slope : 0;
-      figure.update(dt, st, player.facing, wind, frame.gust, { turn: player.turn, slopeAlong, gliding: player.gliding, climb: player.climb });
+      figure.update(dt, st, player.facing, wind, frame.gust, { turn: player.turn, slopeAlong, gliding: player.gliding, lifting: player.lifting, alt: player.alt });
+      touch.setAirborne(!st.grounded);
     }
 
     // Flying low drags a faint wake through the sand.

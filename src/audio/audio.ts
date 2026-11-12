@@ -441,6 +441,31 @@ export class AudioEngine {
     src.onended = () => disconnectAll(src, filt, env);
   }
 
+  /** The start of a climb: a soft swell of cloth catching air. */
+  lift(): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    const t = ctx.currentTime + 0.005;
+    const src = ctx.createBufferSource();
+    src.buffer = g.noise;
+    src.playbackRate.value = rand(0.7, 0.9);
+    const filt = ctx.createBiquadFilter();
+    filt.type = 'bandpass';
+    filt.Q.value = 0.7;
+    filt.frequency.setValueAtTime(rand(320, 420), t);
+    filt.frequency.exponentialRampToValueAtTime(rand(900, 1200), t + 0.28);
+    filt.frequency.exponentialRampToValueAtTime(500, t + 0.7);
+    const env = ctx.createGain();
+    env.gain.setValueAtTime(EPS, t);
+    env.gain.exponentialRampToValueAtTime(0.06, t + 0.2);
+    env.gain.exponentialRampToValueAtTime(EPS, t + 0.75);
+    src.connect(filt).connect(env).connect(g.sfxBus);
+    src.start(t, Math.random() * (g.noise.duration - 1));
+    src.stop(t + 0.8);
+    src.onended = () => disconnectAll(src, filt, env);
+  }
+
   land(strength: number): void {
     const ctx = this.ctx;
     const g = this.g;

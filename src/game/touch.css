@@ -116,6 +116,60 @@
   stroke-linejoin: round;
 }
 
+/* Drop: a smaller button above the fly button, shown only while airborne. */
+.ds-touch__drop {
+  position: absolute;
+  right: calc(env(safe-area-inset-right, 0px) + 32px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 104px);
+  width: 48px;
+  height: 48px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--ds-touch-ink);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--ds-touch-ink);
+  opacity: 0;
+  visibility: hidden;
+  touch-action: none;
+  cursor: default;
+  outline: none;
+  transition: opacity 300ms ease-out, background-color 120ms ease-out, visibility 0s linear 300ms;
+}
+
+.ds-touch--play.ds-touch--air .ds-touch__drop {
+  visibility: visible;
+  opacity: 0.28;
+  transition: opacity 200ms ease-out, background-color 120ms ease-out, visibility 0s;
+}
+
+.ds-touch--play.ds-touch--air .ds-touch__drop.is-held {
+  opacity: 0.5;
+  background: rgba(239, 230, 216, 0.1);
+}
+
+.ds-touch__drop svg {
+  width: 22px;
+  height: 22px;
+  display: block;
+  pointer-events: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-touch__drop,
+  .ds-touch--play.ds-touch--air .ds-touch__drop {
+    transition: none;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .ds-touch__ring,
   .ds-touch__dot,
