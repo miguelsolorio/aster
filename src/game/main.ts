@@ -63,31 +63,44 @@ function start() {
     const n = new THREE.Vector3();
     let x = 0;
     let z = 0;
-    // Somewhere in the open desert, with a city in sight a few kilometres off.
+    // Somewhere in the open desert, with a city in sight. Most cities are seen from 2 to 4.5 km
+    // off; an oasis hides in a basin behind its ring of dunes, so it is seen from on or just inside
+    // that ring, looking down at it. If the nearest city gives no clear view, the next ones are
+    // tried, and only then is any open sand accepted.
     let spawnCity: { cx: number; cz: number } | null = null;
     const ax = (Math.random() * 2 - 1) * SPAWN_RANGE;
     const az = (Math.random() * 2 - 1) * SPAWN_RANGE;
-    const city = world.cities.near(ax, az)[0];
-    for (let i = 0; i < 80; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const d = city.radius + 2000 + Math.random() * 2500;
-      x = city.cx + Math.cos(a) * d;
-      z = city.cz + Math.sin(a) * d;
-      world.sample(x, z, s);
-      world.normal(x, z, n);
-      if (s.rock >= 0.1 || n.y <= 0.95) continue;
-      // Dunes hide a city easily, so insist on a clear line of sight to its rooftops
-      // (the last attempts accept any open sand rather than fail).
-      let clear = true;
-      const eye = s.h + 3;
-      const roofs = city.groundY + 14;
-      for (let t = 0.02; t < 0.98 && clear; t += 0.02) {
-        if (world.height(x + (city.cx - x) * t, z + (city.cz - z) * t) > eye + (roofs - eye) * t) clear = false;
+    const cands = world.cities.near(ax, az).slice(0, 3);
+    let fallback: { x: number; z: number; city: (typeof cands)[number] } | null = null;
+    search: for (const city of cands) {
+      const oasis = city.kind === 'oasis';
+      for (let i = 0; i < 40; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const d = oasis ? city.radius + 250 + Math.random() * 400 : city.radius + 2000 + Math.random() * 2500;
+        x = city.cx + Math.cos(a) * d;
+        z = city.cz + Math.sin(a) * d;
+        world.sample(x, z, s);
+        world.normal(x, z, n);
+        if (s.rock >= 0.1 || n.y <= (oasis ? 0.93 : 0.95)) continue;
+        if (!fallback) fallback = { x, z, city };
+        // Dunes hide a city easily, so insist on a clear line of sight to its rooftops.
+        let clear = true;
+        const eye = s.h + 3;
+        // (into an oasis basin, see down to the lower roofs, not just the towers)
+        const roofs = city.groundY + (oasis ? 6 : 14);
+        for (let t = 0.02; t < 0.98 && clear; t += 0.02) {
+          if (world.height(x + (city.cx - x) * t, z + (city.cz - z) * t) > eye + (roofs - eye) * t) clear = false;
+        }
+        if (clear) {
+          spawnCity = city;
+          break search;
+        }
       }
-      if (clear || i > 70) {
-        spawnCity = city;
-        break;
-      }
+    }
+    if (!spawnCity && fallback) {
+      x = fallback.x;
+      z = fallback.z;
+      spawnCity = fallback.city;
     }
     // ?x=..&z=.. pins the spawn point (handy for sharing a place).
     if (qs.has('x') && qs.has('z')) {
