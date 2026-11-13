@@ -1203,7 +1203,7 @@ export class People {
   private readonly fallback: Uniforms;
   private readonly windL = new THREE.Vector2();
 
-  // The miner: one in every canyon city, always sat at the same spot (chosen from the plan's
+  // The miner: one in every city, always sat at the same spot (chosen from the plan's
   // own by the city's seed), with a spare pick stood beside them. Not one of the pool: they do
   // not come and go. Drawn as one more instance of the same figure.
   private readonly minerGeo: THREE.InstancedBufferGeometry;
@@ -1426,11 +1426,11 @@ export class People {
     this.miner.heldT = 0.3;
   }
 
-  /** Sit the miner down in a canyon city, at one of the plan's own spots, and keep everyone else off it. */
+  /** Sit the miner down in a city, at one of the plan's own spots, and keep everyone else off it. */
   private placeMiner(c: CityData) {
     const m = this.miner;
     m.on = false;
-    if (c.site.kind === 'canyon') {
+    {
       const ok: number[] = [];
       for (const k of [K_SHADE, K_BENCH, K_GATHER]) {
         for (const sp of c.byKind[k]) if (c.sEdge[sp] >= 0 && c.sSlotN[sp] > 0) ok.push(sp);

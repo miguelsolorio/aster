@@ -352,7 +352,7 @@ function start() {
     out.y = trav.y + (1.72 - 0.62 * trav.sit) * trav.h;
     out.pitch = 120 + trav.seed * 110;
   };
-  // ---- the miner of a canyon city: wants a lamp fetched, and gives the pick for it
+  // ---- the miner, one in every city: wants a lamp fetched, and gives the pick for it
   const minerP = { x: 0, z: 0, h: 1, sit: 1 };
   const setMiner = (out: Speaker) => {
     out.kind = 'miner';
@@ -512,9 +512,9 @@ function start() {
       const d = day.day;
       const hour = d < 0.2 || d > 0.82 ? TOWNSFOLK.night : d < 0.32 ? TOWNSFOLK.dawn : d > 0.7 ? TOWNSFOLK.dusk : d > 0.42 && d < 0.58 ? TOWNSFOLK.noon : [];
       const pool = [...TOWNSFOLK.any, ...(site ? TOWNSFOLK[site.kind] : []), ...hour, ...(save.has('board') ? [] : [...TOWNSFOLK.onFoot, ...TOWNSFOLK.onFoot])];
-      // a relic at the belt gets noticed, and in a canyon city someone with no pick is sent to the miner
+      // a relic at the belt gets noticed, and in any city someone with no pick is sent to the miner
       if (save.data.items.relic) pool.push(...TOWNSFOLK.relic, ...TOWNSFOLK.relic);
-      if (site?.kind === 'canyon' && !save.has('pick')) pool.push(...TOWNSFOLK.noPick);
+      if (site && !save.has('pick')) pool.push(...TOWNSFOLK.noPick);
       return { lines: [(lastLine = pick(pool, lastLine))] };
     },
     voice: (pitch) => audio.murmur(pitch),
@@ -1115,14 +1115,14 @@ function start() {
         pickedUp(st.pos.x, st.pos.y + 0.4, st.pos.z);
       }
     }
-    // The miner's lamp lies out in the desert until it is carried back: by the nearest canyon city's spring.
+    // The miner's lamp lies out in the desert until it is carried back: by the nearest city's spring.
     lampT -= dt;
     if (lampT <= 0) {
       lampT = 1;
       people.minerLamp = save.data.roles.miner === 2;
       const at: { x: number; z: number }[] = [];
       if (save.data.roles.miner !== 2 && !save.data.items.lamp) {
-        const near = world.cities.near(st.pos.x, st.pos.z).find((c) => c.kind === 'canyon');
+        const near = world.cities.near(st.pos.x, st.pos.z)[0];
         if (near) {
           const spot = lampSpot(near);
           at.push(spot);
