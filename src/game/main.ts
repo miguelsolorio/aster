@@ -415,6 +415,7 @@ function start() {
     buzz(12);
   };
   let lampT = 0;
+  const digAt = { x: 0, y: 0, z: 0 };
 
   const setFolk = (out: Speaker) => {
     out.kind = 'townsfolk';
@@ -1058,6 +1059,16 @@ function start() {
     talk.setKey(touch.used ? '' : 'E');
     talk.update(camera, st.pos.x, st.pos.z, playing);
     touch.setTalk(talk.available, canDig() && st.onRock < 0.5);
+    // Standing where a strike would count, with a pick: the key shows over the cracked sand.
+    {
+      const cv = playing && canDig() && !discoveries.drainingCavern ? discoveries.sealedNear(st.pos.x + Math.sin(player.facing) * 0.75, st.pos.z + Math.cos(player.facing) * 0.75, discoveries.digReach) : null;
+      if (cv) {
+        digAt.x = cv.x + cv.dx * cv.spot;
+        digAt.z = cv.z + cv.dz * cv.spot;
+        digAt.y = world.height(digAt.x, digAt.z) + 0.9;
+      }
+      talk.mark(camera, cv ? digAt : null);
+    }
 
     cities.update(dt, st.pos);
     bake.update(st.pos);
@@ -1102,7 +1113,11 @@ function start() {
     // Over a sealed cavern the sand drifts slowly, where everywhere else the wind takes it.
     {
       const cv = discoveries.sealedNear(st.pos.x, st.pos.z, 110);
-      if (cv && dt > 0) dust.wisp(cv.x, world.height(cv.x, cv.z), cv.z, 4.5, dt);
+      if (cv && dt > 0) {
+        const sx = cv.x + cv.dx * cv.spot;
+        const sz = cv.z + cv.dz * cv.spot;
+        dust.wisp(sx, world.height(sx, sz), sz, 3.5, dt);
+      }
     }
     // Sand draining into a cavern: it slides in from the rim, and dust hangs over the hole.
     {

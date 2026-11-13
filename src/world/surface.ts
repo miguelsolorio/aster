@@ -135,9 +135,14 @@ export const MAX_CAVERNS = 4;
  * the GLSL and the TypeScript cannot drift apart over a site.
  */
 export interface Cavern {
-  /** The spot over the top of the ramp: where the sand gives way. */
+  /** The top of the ramp: where u is measured from. */
   x: number;
   z: number;
+  /**
+   * u of the spot it is dug at: part way down the ramp, in the middle of what becomes the open
+   * sinkhole, so the sand gives way under whoever breaks through.
+   */
+  spot: number;
   /** Unit direction the ramp runs down and the chamber lies. */
   dx: number;
   dz: number;
@@ -626,7 +631,7 @@ ${CITY_SHAPE_GLSL}
 
 // The nearest caverns (see Cavern in surface.ts; len 0 means unused):
 // uCavA = (x, z, dir x, dir z), uCavB = (top, floor, open 0..1, roof u),
-// uCavC = (half, bend, bulge, len), uCavD = (ramp, pool radius, dimple, unused).
+// uCavC = (half, bend, bulge, len), uCavD = (ramp, pool radius, dimple, spot u).
 uniform vec4 uCavA[${MAX_CAVERNS}];
 uniform vec4 uCavB[${MAX_CAVERNS}];
 uniform vec4 uCavC[${MAX_CAVERNS}];
@@ -647,7 +652,8 @@ vec2 sfCaverns(vec2 p, float h) {
     if (d2 > ${F(T.cavernReach * T.cavernReach)}) continue;
     vec4 cb = uCavB[i];
     vec4 cd = uCavD[i];
-    float dm = 1.0 - smoothstep(0.0, 50.0, d2);
+    vec2 ds = d - ca.zw * cd.w;
+    float dm = 1.0 - smoothstep(0.0, 50.0, dot(ds, ds));
     h -= cd.z * dm * dm;
     if (cb.z <= 0.0) continue;
     float u = dot(d, ca.zw);
@@ -750,7 +756,7 @@ export function writeCaverns(u: Record<string, { value: unknown }>, list: readon
     a[i].set(cv.x, cv.z, cv.dx, cv.dz);
     b[i].set(cv.top, cv.floor, cv.open, cv.roof);
     c[i].set(cv.half, cv.bend, cv.bulge, cv.len);
-    d[i].set(cv.ramp, cv.pool, cv.dimple, 0);
+    d[i].set(cv.ramp, cv.pool, cv.dimple, cv.spot);
   }
 }
 
@@ -1091,7 +1097,7 @@ export function createWorld(seed: number): DesertWorld {
   };
 
   // Caverns (mirrors sfCaverns in the GLSL). The numbers are kept as the float32 the shaders get.
-  const CV = 15; // floats per cavern
+  const CV = 16; // floats per cavern
   const cav = new Float32Array(MAX_CAVERNS * CV);
   let cavN = 0;
   /** Where a point lies in cavern i: u along, v off its (bent) centre line, the half-width there. */
@@ -1113,7 +1119,9 @@ export function createWorld(seed: number): DesertWorld {
       const ddz = f(pz - cav[o + 1]);
       const d2 = ddx * ddx + ddz * ddz;
       if (d2 > T.cavernReach * T.cavernReach) continue;
-      const dm = 1 - smoothstep(0, 50, d2);
+      const sx = ddx - cav[o + 2] * cav[o + 15];
+      const sz = ddz - cav[o + 3] * cav[o + 15];
+      const dm = 1 - smoothstep(0, 50, sx * sx + sz * sz);
       out.h -= cav[o + 14] * dm * dm;
       const open = cav[o + 13];
       if (open <= 0 || !caveOn) continue;
@@ -1193,7 +1201,7 @@ export function createWorld(seed: number): DesertWorld {
       cavN = Math.min(MAX_CAVERNS, list.length);
       for (let i = 0; i < cavN; i++) {
         const c = list[i];
-        cav.set([c.x, c.z, c.dx, c.dz, c.top, c.floor, c.half, c.bend, c.bulge, c.len, c.ramp, c.roof, c.pool, c.open, c.dimple], i * CV);
+        cav.set([c.x, c.z, c.dx, c.dz, c.top, c.floor, c.half, c.bend, c.bulge, c.len, c.ramp, c.roof, c.pool, c.open, c.dimple, c.spot], i * CV);
       }
     },
     cavernCeil(x: number, z: number): number {

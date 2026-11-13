@@ -1798,9 +1798,7 @@ export class Discoveries {
       const z = Math.fround(z0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 50 + spot) - 0.5) * 240));
       if (k % 6 === 0) {
         w.sample(x, z, q);
-        // (and the spot itself must be close to level, or the dip that marks it could not be seen)
-        const tilt = Math.max(Math.abs(w.height(x + 6, z) - w.height(x - 6, z)), Math.abs(w.height(x, z + 6) - w.height(x, z - 6)));
-        if (q.rock > 0.08 || q.salt > 0.25 || tilt > 1.3) {
+        if (q.rock > 0.08 || q.salt > 0.25) {
           k += 5;
           continue;
         }
@@ -1809,6 +1807,12 @@ export class Discoveries {
       const yaw = yaw0 + (k * Math.PI) / 3;
       const dx = Math.fround(Math.cos(yaw));
       const dz = Math.fround(Math.sin(yaw));
+      {
+        // the spot to dig lies some way down the ramp, and must be close to level, or the mark on it could not be seen
+        const px = x + dx * 15;
+        const pz = z + dz * 15;
+        if (Math.max(Math.abs(w.height(px + 6, pz) - w.height(px - 6, pz)), Math.abs(w.height(px, pz + 6) - w.height(px, pz - 6))) > 1.3) continue;
+      }
       let lo = Infinity;
       let hi = -Infinity;
       let ok = true;
@@ -1839,7 +1843,8 @@ export class Discoveries {
       const open = this.opened.has(key) ? 1 : 0;
       return {
         key,
-        cav: { x, z, dx, dz, top, floor, half, bend, bulge, len: 2 + ramp + chamber, ramp, roof: 2 + ramp * a, pool, open, dimple: DIMPLE },
+        // (the spot to dig is 40% of the way down the ramp: well inside the open sinkhole, short of the roof)
+        cav: { x, z, spot: 2 + ramp * 0.4, dx, dz, top, floor, half, bend, bulge, len: 2 + ramp + chamber, ramp, roof: 2 + ramp * a, pool, open, dimple: DIMPLE },
         variant,
         vein,
         carvings,
@@ -1925,7 +1930,7 @@ export class Discoveries {
     let bd = HOLLOW_R;
     for (const cs of this.active) {
       if (cs.cav.open > 0) continue;
-      const d = Math.hypot(cs.cav.x - x, cs.cav.z - z);
+      const d = Math.hypot(cs.cav.x + cs.cav.dx * cs.cav.spot - x, cs.cav.z + cs.cav.dz * cs.cav.spot - z);
       if (d < bd) {
         bd = d;
         best = cs;
@@ -1948,6 +1953,8 @@ export class Discoveries {
 
   /** How long the sand takes to drain once a cavern breaks open (s). */
   readonly drainTime = DRAIN;
+  /** How near the spot a strike must land to count toward breaking through (m). */
+  readonly digReach = DIG_R;
 
   /** The cavern whose sand is running out now, if any. */
   get drainingCavern(): Cavern | null {
@@ -1959,7 +1966,7 @@ export class Discoveries {
     let best: Cavern | null = null;
     for (const cs of this.active) {
       if (cs.cav.open > 0) continue;
-      const d = Math.hypot(cs.cav.x - x, cs.cav.z - z);
+      const d = Math.hypot(cs.cav.x + cs.cav.dx * cs.cav.spot - x, cs.cav.z + cs.cav.dz * cs.cav.spot - z);
       if (d < r) {
         r = d;
         best = cs.cav;
@@ -1970,7 +1977,8 @@ export class Discoveries {
 
   /**
    * The nearest cavern to a point, searching out ring by ring over the cells (they are rare, so
-   * this can look several kilometres). `sealed` leaves out the ones already open.
+   * this can look several kilometres). `sealed` leaves out the ones already open. The spot to
+   * dig is `spot` metres along (dx, dz) from its (x, z).
    */
   nearestCavern(x: number, z: number, sealed = true): Cavern | null {
     const pcx = Math.floor(x / CELL);
