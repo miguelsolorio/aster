@@ -192,7 +192,7 @@ function start() {
   }
   const splash = new Splash(u);
   const wildlife = new Wildlife(world, u);
-  const caravans = new Caravans(world, world.cities, u);
+  const caravans = new Caravans(world, world.cities, cities.routes, u);
   caravans.landmarks = (out) => discoveries.landmarks(out);
   const fauna = new Fauna(world, u);
   fauna.landmarks = (out) => discoveries.landmarks(out);
@@ -200,7 +200,7 @@ function start() {
     const c = cities.nearest(x, z);
     return Math.hypot(c.cx - x, c.cz - z) < c.radius + 300 || discoveries.nearSolids(x, z, 12);
   };
-  const waymarks = new Waymarks(world, world.cities, u);
+  const waymarks = new Waymarks(world, world.cities, cities.routes, u);
   const people = new People(u);
   const massifs = new Massifs(world, u);
   // Rocks and cacti out in the open, kept off the finds and their caverns, and off where you start.
@@ -1430,8 +1430,10 @@ function start() {
     wildlife.update(frame);
     fauna.update(frame);
     const ambience = cities.frame(frame);
-    audio.setAmbience(ambience);
     caravans.update(frame);
+    // the camp fires out on the routes crackle like the city's own
+    ambience.fire = Math.min(1, Math.hypot(ambience.fire, caravans.fireLevel(frame.player.pos.x, frame.player.pos.z)));
+    audio.setAmbience(ambience);
     waymarks.update(frame);
     people.setCity(cities.active);
     people.update(frame);

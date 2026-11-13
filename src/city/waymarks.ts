@@ -6,6 +6,7 @@ import type { FrameState, Uniforms, World } from '../game/contract';
 import type { CitySite } from './types';
 import { Writer, polyCap, taper } from './build';
 import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, trackViewport } from './cityShaders';
+import { routeLat, routeSlope, type RouteNet } from './routes';
 
 const SPACING = 300;
 const JITTER = 30;
@@ -33,11 +34,6 @@ function mulberry32(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
-}
-
-/** Lateral offset (metres, along +perp) of the worn track at `dist` from a city, matching cityTracks. */
-function trackWobble(dist: number, bearing: number): number {
-  return -(Math.sin(dist * 0.011 + bearing * 7) * 14 + Math.sin(dist * 0.031 + bearing * 3) * 4);
 }
 
 // ------------------------------------------------------------------ marker shapes (local frame: +z is the front)
@@ -254,7 +250,7 @@ export class Waymarks {
   readonly group = new THREE.Group();
 
   private readonly world: World;
-  private readonly cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite] };
+  private readonly cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite]; partners(site: CitySite): CitySite[] };
   private readonly stoneMat: THREE.ShaderMaterial;
   private readonly glowMat: THREE.ShaderMaterial;
   private readonly routes = new Map<string, Route>();
@@ -264,7 +260,12 @@ export class Waymarks {
   private refresh = 0;
   private cell = '';
 
-  constructor(world: World, cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite] }, uniforms: Uniforms) {
+  constructor(
+    world: World,
+    cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite]; partners(site: CitySite): CitySite[] },
+    private readonly net: RouteNet,
+    uniforms: Uniforms,
+  ) {
     this.world = world;
     this.cities = cities;
     this.group.name = 'waymarks';
@@ -311,7 +312,7 @@ export class Waymarks {
     for (let i = 0; i < near.length; i++) {
       const s = near[i];
       this.nearIds.add(s.id);
-      for (const o of this.cities.neighbours(s)) {
+      for (const o of this.cities.partners(s)) {
         const [a, b] = s.id < o.id ? [s, o] : [o, s];
         const key = a.id + ':' + b.id;
         if (!this.wanted.has(key)) this.wanted.set(key, [a, b]);
@@ -347,10 +348,10 @@ export class Waymarks {
     if (len < 1) return;
     const ux = dx / len;
     const uz = dz / len;
-    const vx = -uz; // perpendicular (the shader's lateral axis for bearing atan2(dz, dx))
+    const vx = -uz; // perpendicular (the route's lateral axis, v)
     const vz = ux;
-    const bearA = Math.atan2(dz, dx);
-    const bearB = Math.atan2(-dz, -dx);
+    const path = this.net.route(A, B);
+    const camps = this.net.camps(path);
     const t0 = A.radius * EDGE;
     const t1 = len - B.radius * EDGE;
     if (t1 - t0 < SPACING * 0.5) {
@@ -376,14 +377,11 @@ export class Waymarks {
       let t = t0 + step * i + (i === 0 || i === count ? 0 : (rng() * 2 - 1) * JITTER);
       t = Math.min(t1, Math.max(t0, t));
       side = -side;
-      const off = 4.6 + rng() * 2.4;
-      // keep clear of the worn track, which wanders about the straight line near each city
-      const dA = t;
-      const dB = len - t;
-      let wob = 0;
-      if (dA < A.radius + 2200 && dA <= dB) wob = trackWobble(dA, bearA);
-      else if (dB < B.radius + 2200) wob = -trackWobble(dB, bearB);
-      const lat = wob + side * off;
+      // beside the worn path (measured square to it where it runs aslant), clear of the camps
+      const sl = routeSlope(path, t);
+      const off = (4.6 + rng() * 2.4) * Math.sqrt(1 + sl * sl);
+      if (camps.some((c) => Math.abs(c.u - t) < 30 && c.side === side)) continue;
+      const lat = routeLat(path, t) + side * off;
       const x = A.cx + ux * t + vx * lat;
       const z = A.cz + uz * t + vz * lat;
 
