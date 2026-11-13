@@ -537,6 +537,36 @@ export class AudioEngine {
     }
   }
 
+  /** A fennec fox barking somewhere out in the dark: two or three thin, rising yips, quieter with distance (m). */
+  yip(dist: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    const level = 0.035 * Math.max(0.15, 1 - dist / 260);
+    let t = ctx.currentTime + 0.05;
+    const count = 2 + Math.floor(Math.random() * 2);
+    const base = rand(900, 1150);
+    for (let i = 0; i < count; i++) {
+      const osc = ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(base * 0.75, t);
+      osc.frequency.exponentialRampToValueAtTime(base * rand(1.2, 1.35), t + 0.07);
+      osc.frequency.exponentialRampToValueAtTime(base * 0.9, t + 0.16);
+      const filt = ctx.createBiquadFilter();
+      filt.type = 'lowpass';
+      filt.frequency.value = 3200 - Math.min(dist, 250) * 8;
+      const env = ctx.createGain();
+      env.gain.setValueAtTime(EPS, t);
+      env.gain.exponentialRampToValueAtTime(level, t + 0.03);
+      env.gain.exponentialRampToValueAtTime(EPS, t + 0.17);
+      osc.connect(filt).connect(env).connect(g.chimeBus);
+      osc.start(t);
+      osc.stop(t + 0.2);
+      osc.onended = () => disconnectAll(osc, filt, env);
+      t += rand(0.22, 0.32);
+    }
+  }
+
   land(strength: number): void {
     const ctx = this.ctx;
     const g = this.g;

@@ -10,8 +10,9 @@ import { Dust } from '../world/dust';
 import { Splash } from '../world/splash';
 import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
+import { Fauna } from '../world/fauna';
 import { Cities } from '../city/cities';
-import { Caravans } from '../city/caravans';
+import { Caravans, ROLE_KEEPER, ROLE_PILGRIM } from '../city/caravans';
 import { Waymarks } from '../city/waymarks';
 import { People } from '../city/people';
 import { Figure } from './figure';
@@ -27,7 +28,7 @@ import { WORLD_SCALE } from '../world/scale';
 import { Massifs } from '../world/massifs';
 import { Save } from './save';
 import { Talk, type Speaker } from './talk';
-import { MINER, TOWNSFOLK, TRAVELLER, type Line } from './lines';
+import { KEEPER, MINER, PILGRIM, TOWNSFOLK, TRAVELLER, type Line } from './lines';
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
@@ -155,10 +156,17 @@ function start() {
   const splash = new Splash(u);
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, u);
+  caravans.landmarks = (out) => discoveries.landmarks(out);
+  const fauna = new Fauna(world, u);
+  fauna.landmarks = (out) => discoveries.landmarks(out);
+  fauna.blocked = (x, z) => {
+    const c = cities.nearest(x, z);
+    return Math.hypot(c.cx - x, c.cz - z) < c.radius + 300 || discoveries.nearSolids(x, z, 12);
+  };
   const waymarks = new Waymarks(world, world.cities, u);
   const people = new People(u);
   const massifs = new Massifs(world, u);
-  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, dust.group, splash.group, massifs.group);
+  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, fauna.group, dust.group, splash.group, massifs.group);
 
   const figure = new Figure(u);
   figure.board = player.board;
@@ -334,10 +342,10 @@ function start() {
   };
   const text = (l: Line) => (typeof l === 'string' ? l : touch.used ? l.touch : l.keys);
   let lastLine: string | null = null;
-  const trav = { ref: null as unknown, x: 0, y: 0, z: 0, h: 1, sit: 0, seed: 0 };
+  const trav = { ref: null as unknown, x: 0, y: 0, z: 0, h: 1, sit: 0, seed: 0, role: 0 };
   const folk = { id: -1, x: 0, z: 0, h: 1, sit: 0 };
   const setTraveller = (out: Speaker) => {
-    out.kind = 'traveller';
+    out.kind = trav.role === ROLE_PILGRIM ? 'pilgrim' : trav.role === ROLE_KEEPER ? 'keeper' : 'traveller';
     out.ref = trav.ref;
     out.x = trav.x;
     out.z = trav.z;
@@ -456,7 +464,7 @@ function start() {
         setMiner(s);
         return true;
       }
-      if (s.kind === 'traveller') {
+      if (s.kind === 'traveller' || s.kind === 'pilgrim' || s.kind === 'keeper') {
         caravans.hold(s.ref);
         caravans.personAt(s.ref, trav);
         setTraveller(s);
@@ -473,6 +481,13 @@ function start() {
         syncKnown();
       }
       if (s.kind === 'miner') return minerScript();
+      if (s.kind === 'pilgrim' || s.kind === 'keeper') {
+        const lines = s.kind === 'pilgrim' ? PILGRIM : KEEPER;
+        const dark = day.day < 0.22 || day.day > 0.78;
+        const pool = [...lines.any, ...(dark ? [...lines.night, ...lines.night] : [])];
+        if (s.kind === 'keeper' && save.data.items.relic) pool.push(...KEEPER.relic, ...KEEPER.relic);
+        return { lines: [(lastLine = pick(pool, lastLine))] };
+      }
       if (s.kind === 'traveller') {
         if (!save.has('board')) {
           return {
@@ -507,6 +522,7 @@ function start() {
   onLook = (l) => talk.setColours(l.ink, l.paper);
   onLook(look);
   discoveries.onReach = () => audio.chime();
+  fauna.onCall = (_sp, dist) => audio.yip(dist);
   cities.onReach = () => audio.chime();
   // Roofs you can land on: buildings, and the rock over a cave once you are above its ceiling.
   // (ceilings: the caves in the massifs, the caps over the springs, and the sand left over an open cavern)
@@ -1143,6 +1159,7 @@ function start() {
     }
     massifs.update(frame, clipmap.levelCount);
     wildlife.update(frame);
+    fauna.update(frame);
     const ambience = cities.frame(frame);
     audio.setAmbience(ambience);
     caravans.update(frame);
@@ -1194,7 +1211,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, splash, waterAt, water, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let frozen = false;

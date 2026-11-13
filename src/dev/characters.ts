@@ -1,20 +1,38 @@
 // Dev-only review sheet: the characters standing in a row at day, golden hour and night.
 // Served by the dev server at /characters.html; it is not part of the production build.
 // ?still=1 freezes the animation. ?people shows the townsfolk instead of the hero, one row per
-// kind of city (hill, canyon, oasis, trade); add &day=0..1 to change the hour.
+// kind of city (hill, canyon, oasis, trade); add &day=0..1 to change the hour. ?animals shows the
+// desert animals at noon, golden hour and midnight: oryx standing, walking, grazing and running,
+// then a fox, a hare, a lizard (drawn four times its size) and a vulture.
 import * as THREE from 'three';
 import type { PlayerState, Uniforms } from '../game/contract';
 import { DayCycle } from '../game/daycycle';
 import { Figure } from '../game/figure';
 import { townsfolkSheet, type SheetPerson } from '../city/people';
 import type { CityKind } from '../city/types';
+import { FOX, HARE, LIZARD, ORYX, VULTURE, faunaSheet, type SheetAnimal } from '../world/fauna';
 
 const qs = new URLSearchParams(location.search);
 const still = qs.has('still');
 const KINDS: CityKind[] = ['hill', 'canyon', 'oasis', 'trade'];
 const showPeople = qs.has('people');
+const showAnimals = qs.has('animals');
 const peopleDay = qs.has('day') ? Number(qs.get('day')) : 0.5;
 const TIMES = showPeople ? KINDS.map(() => peopleDay) : [0.5, 0.268, 0.0]; // noon, golden hour, midnight
+
+const SIDE = Math.PI / 2;
+const ANIMALS: SheetAnimal[] = [
+  { sp: ORYX, x: -6.6, z: 0, facing: 0.5, gait: 0 },
+  { sp: ORYX, x: -4.4, z: 0, facing: SIDE, gait: 1 },
+  { sp: ORYX, x: -2.3, z: 0, facing: SIDE + 0.3, gait: 0, pose: 1 },
+  { sp: ORYX, x: -0.1, z: 0, facing: SIDE, gait: 2 },
+  { sp: FOX, x: 1.6, z: 0, facing: 0.5, gait: 0 },
+  { sp: FOX, x: 2.5, z: 0, facing: SIDE, gait: 1 },
+  { sp: HARE, x: 3.4, z: 0, facing: 0.5, gait: 0 },
+  { sp: HARE, x: 4.2, z: 0, facing: SIDE, gait: 2 },
+  { sp: LIZARD, x: 5.1, z: 0, facing: SIDE, gait: 1, scale: 4 },
+  { sp: VULTURE, x: 7.0, z: 0, facing: SIDE - 0.4, gait: 0 },
+];
 
 // Each silhouette three times (front, side walking, from behind), then a child.
 const CROWD: SheetPerson[] = [];
@@ -79,7 +97,9 @@ const panels = TIMES.map((time, row) => {
   const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400).rotateX(-Math.PI / 2), new THREE.ShaderMaterial({ uniforms: u, vertexShader: groundVert, fragmentShader: groundFrag }));
   scene.add(ground);
   if (showPeople) scene.add(townsfolkSheet(u, KINDS[row], CROWD.map((p, i) => ({ ...p, seed: 1 + row * 97 + i * 13 }))));
-  const figures = (showPeople ? [] : SLOTS).map((slot) => {
+  const animals = showAnimals ? faunaSheet(u, ANIMALS) : null;
+  if (animals) scene.add(animals.group);
+  const figures = (showPeople || showAnimals ? [] : SLOTS).map((slot) => {
     const figure = new Figure(u);
     scene.add(figure.group);
     const st: PlayerState = {
@@ -94,7 +114,7 @@ const panels = TIMES.map((time, row) => {
     };
     return { figure, slot, st };
   });
-  return { u, day, scene, figures };
+  return { u, day, scene, figures, animals };
 });
 
 function resize() {
@@ -112,11 +132,12 @@ function frame(now: number) {
   const h = innerHeight / panels.length;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  camera.position.set(0.2, 1.35, showPeople ? 11 : 7.2);
+  camera.position.set(0.2, showAnimals ? 1.6 : 1.35, showPeople || showAnimals ? 12 : 7.2);
   camera.lookAt(0.2, 1.0, 0);
   panels.forEach((p, i) => {
     const step = still && warm <= 0 ? 0 : still ? 1 / 30 : dt;
     p.u.uTime.value += step;
+    p.animals?.update(step);
     for (const f of p.figures) {
       f.figure.update(step, f.st, f.slot.facing, wind, 0.3, { turn: 0, slopeAlong: 0, gliding: !!f.slot.gliding, lifting: false, alt: 5 });
     }

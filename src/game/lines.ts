@@ -39,6 +39,42 @@ export const TRAVELLER = {
   ],
 };
 
+/** Pilgrims walking the avenues out from the temples. One line each. */
+export const PILGRIM = {
+  any: [
+    'We walk to the temple and back. That\'s the whole of it.',
+    'My feet know this avenue better than my own street.',
+    'Kneel at the stair if you like. Nobody asks why.',
+    'The keepers say the stones were here before the sand. I believe them.',
+    'Walk with us a while. It goes quicker with company.',
+    'Leave something by the door. A jar, a stone. It doesn\'t matter what.',
+    'I came to ask the temple a question. I\'ve forgotten what it was.',
+  ],
+  night: [
+    'The braziers are lit. You can see them from the next dune.',
+    'We carry our own light. The temple keeps the rest.',
+    'The stones hold the day\'s heat. Put your hand on one.',
+  ],
+};
+
+/** The keepers who tend each temple, by the door and at the foot of the stair. One line each. */
+export const KEEPER = {
+  any: [
+    'Welcome. Mind the step. It\'s worn in the middle.',
+    'We sweep the avenue every morning. By evening the sand is back.',
+    'The flame inside hasn\'t gone out in my lifetime. Or my teacher\'s.',
+    'Pilgrims come from every city. They all leave a jar by the door.',
+    'Go in if you want. It\'s the coolest room for a day\'s walk.',
+    'The carvings were sharp once. The wind is patient.',
+  ],
+  night: [
+    'We light the braziers at dusk, so the walkers can find their way back.',
+    'Late to be out. Stand by the fire a while.',
+  ],
+  /** Only to someone carrying a relic from under the sand. */
+  relic: ['What you carry came from under the sand. So did we, if you go back far enough.'],
+};
+
 /** People in the cities. One line each, drawn from these pools. */
 export const TOWNSFOLK = {
   /** Said by anyone, anywhere. */

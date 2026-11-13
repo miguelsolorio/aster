@@ -1,4 +1,4 @@
-// Rare things to stumble on: ruins, oases, arches, standing stones, great bones,
+// Rare things to stumble on: tended temples, ruins, oases, arches, standing stones, great bones,
 // lantern towers, sundial plazas and half-buried shells. Placement is a
 // deterministic jittered grid (675 m cells, about one in three occupied); sites
 // are built lazily near the player and disposed when far away.
@@ -467,6 +467,8 @@ class Ctx {
   light: [number, number, number, number] | null = null;
   /** Where a relic lies, local. */
   relic: [number, number, number] | null = null;
+  /** A temple's marks, local: the stair's foot, the avenue's end, the way out, and where keepers stand (x, y, z, yaw). */
+  temple: { foot: [number, number, number]; end: [number, number, number]; yaw: number; keep: [number, number, number, number][] } | null = null;
   /** What the wanderer walks into and stands on: one shape per stone, drum and length of bone. */
   readonly solids = new Solids();
   /** Off while building things you pass straight through (scrub, paving flush with the ground). */
@@ -1404,6 +1406,207 @@ function buildShell(c: Ctx): void {
   }
 }
 
+/**
+ * A tended temple: a stepped sandstone platform with a walled shrine on top, a columned porch,
+ * a stair down to an avenue of obelisks, and braziers that burn after dark. Its keepers stand
+ * by the door and pilgrims walk the avenue, so it records where they go.
+ */
+function buildTemple(c: Ctx): void {
+  const st = c.stone;
+  const tk = c.r(0.95, 1.05);
+  const sand = (k: number, rough = 0.05) => st.set(1.22 * tk * k, 1.1 * tk * k, 0.94 * tk * k, 0, rough);
+  const L = c.r(26, 32); // platform, along the axis
+  const W = c.r(18, 22);
+  const TIERS = 3;
+  const TH = 0.8; // each tier: low enough to step up
+  const SET = 1.3; // and set this far in from the one below
+
+  // A footing from below the lowest ground to just above the highest, so it sits level.
+  let gmin = Infinity;
+  let gmax = -Infinity;
+  for (let i = -2; i <= 2; i++) {
+    for (let j = -2; j <= 2; j++) {
+      const g = c.g((i / 2) * (L / 2 + 1), (j / 2) * (W / 2 + 1));
+      gmin = Math.min(gmin, g);
+      gmax = Math.max(gmax, g);
+    }
+  }
+  const base = gmax + 0.2;
+  sand(0.9, 0.08);
+  c.prim(UNIT_BOX, 0, (gmin - 1.5 + base) / 2, 0, L + 1, base - gmin + 1.5, W + 1);
+  let y = base;
+  for (let t = 0; t < TIERS; t++) {
+    sand(t % 2 ? 0.95 : 1.02);
+    c.prim(UNIT_BOX, 0, y + TH / 2, 0, L - t * 2 * SET, TH, W - t * 2 * SET);
+    y += TH;
+  }
+  const top = y;
+  const tl = L - (TIERS - 1) * 2 * SET;
+  const tw = W - (TIERS - 1) * 2 * SET;
+
+  // The stair: from the sand in front up onto the top tier.
+  const SW = 6;
+  const TREAD = 0.75;
+  const front = tl / 2;
+  const gFoot = c.g(front + 8, 0);
+  const n = Math.max(2, Math.ceil((top - gFoot) / 0.42));
+  const rise = (top - gFoot) / n;
+  sand(0.97, 0.03);
+  for (let k = 0; k < n; k++) {
+    const u0 = front + (n - 1 - k) * TREAD;
+    const uc = u0 + TREAD / 2;
+    const stepTop = gFoot + (k + 1) * rise;
+    const bottom = Math.min(gFoot, c.g(uc, 0)) - 0.6;
+    c.prim(UNIT_BOX, uc, (bottom + stepTop) / 2, 0, TREAD + 0.02, stepTop - bottom, SW);
+  }
+  const foot = front + n * TREAD; // where the stair meets the sand
+  // cheek walls either side of the stair
+  sand(0.9, 0.06);
+  for (const s of [-1, 1]) {
+    const len = n * TREAD;
+    const tilt = Math.atan2(top - gFoot, len);
+    c.prim(UNIT_BOX, front + len / 2, (top + gFoot) / 2 - 0.1, s * (SW / 2 + 0.5), len / Math.cos(tilt) + 0.4, 1.1, 1.0, 0, 0, -tilt);
+  }
+
+  // The shrine: four walls with a doorway, set toward the back of the top tier.
+  const cu = -tl * 0.12;
+  const Lc = tl * 0.56;
+  const Wc = tw * 0.64;
+  const Hc = c.r(7, 9);
+  const WT = 1.1;
+  const D = 3.2;
+  const Dh = 4.6;
+  sand(1.0, 0.07);
+  c.prim(UNIT_BOX, cu - Lc / 2 + WT / 2, top + Hc / 2, 0, WT, Hc, Wc);
+  for (const s of [-1, 1]) c.prim(UNIT_BOX, cu, top + Hc / 2, s * (Wc / 2 - WT / 2), Lc, Hc, WT);
+  const fu = cu + Lc / 2 - WT / 2;
+  const side = (Wc - D) / 2;
+  for (const s of [-1, 1]) c.prim(UNIT_BOX, fu, top + Hc / 2, s * (D / 2 + side / 2), WT, Hc, side);
+  c.prim(UNIT_BOX, fu, top + Dh + (Hc - Dh) / 2, 0, WT, Hc - Dh, D + 0.2);
+  // pilasters down the long walls, and a darker carved band near the top
+  sand(0.93, 0.05);
+  const np = Math.max(3, Math.round(Lc / 3.2));
+  for (let i = 0; i <= np; i++) {
+    const u = cu - Lc / 2 + 0.4 + (i / np) * (Lc - 0.8);
+    for (const s of [-1, 1]) c.prim(UNIT_BOX, u, top + Hc / 2, s * (Wc / 2 + 0.15), 0.7, Hc, 0.4);
+  }
+  st.set(0.98 * tk, 0.82 * tk, 0.68 * tk, 0, 0.04);
+  c.prim(UNIT_BOX, cu, top + Hc * 0.74, 0, Lc + 0.5, 0.7, Wc + 0.5);
+  // the door frame stands proud
+  c.prim(UNIT_BOX, fu + 0.35, top + Dh + 0.35, 0, 0.5, 0.7, D + 1.4);
+  for (const s of [-1, 1]) c.prim(UNIT_BOX, fu + 0.35, top + Dh / 2, s * (D / 2 + 0.35), 0.5, Dh, 0.7);
+
+  // The porch: a row of columns in front of the door, under one roof with the shrine.
+  const pu = fu + 3.4;
+  sand(1.03, 0.04);
+  const vs = [-(Wc / 2 - 0.9), -(D / 2 + 1.0), D / 2 + 1.0, Wc / 2 - 0.9];
+  for (const v of vs) {
+    c.prim(UNIT_BOX, pu, top + 0.25, v, 1.6, 0.5, 1.6);
+    let yy = top + 0.5;
+    const capY = top + Hc - 0.7;
+    while (yy < capY - 0.1) {
+      const dh = Math.min(1.6, capY - yy);
+      c.prim(UNIT_CYL, pu, yy + dh / 2, v, 0.58, dh * 0.99, 0.58, c.rng() * 3);
+      yy += dh;
+    }
+    c.prim(UNIT_BOX, pu, top + Hc - 0.35, v, 1.5, 0.7, 1.5);
+  }
+  // roof: a slab over shrine and porch, a cornice, and a stepped crown
+  sand(1.0, 0.05);
+  const r0 = cu - Lc / 2 - 0.8;
+  const r1 = pu + 1.2;
+  c.prim(UNIT_BOX, (r0 + r1) / 2, top + Hc + 0.45, 0, r1 - r0, 0.9, Wc + 1.6);
+  sand(0.94, 0.04);
+  c.prim(UNIT_BOX, (r0 + r1) / 2, top + Hc + 1.2, 0, r1 - r0 - 1.2, 0.6, Wc + 0.4);
+  sand(1.02, 0.05);
+  c.prim(UNIT_BOX, cu, top + Hc + 2.0, 0, Lc * 0.62, 1.0, Wc * 0.58);
+  c.prim(UNIT_BOX, cu, top + Hc + 2.9, 0, Lc * 0.3, 0.8, Wc * 0.28);
+  // a carved disc on the pediment, facing out
+  st.set(0.96 * tk, 0.8 * tk, 0.66 * tk, 0, 0.02);
+  c.prim(UNIT_CYL, r1 + 0.05, top + Hc + 1.25, 0, 0.9, 0.3, 0.9, 0, 0, Math.PI / 2);
+
+  // Inside: an altar with a flame on it, seen through the door.
+  sand(0.88, 0.04);
+  const au = cu - Lc / 2 + WT + 1.6;
+  c.prim(UNIT_BOX, au, top + 0.6, 0, 1.8, 1.2, 3.0);
+  st.set(1, 1, 1, 3, 0);
+  c.prim(UNIT_BOX, au, top + 1.35, 0, 0.5, 0.3, 0.5, 0.6);
+  c.glow(au, top + 1.6, 0, 0.9);
+  c.glow(au, top + 1.8, 0, 4.5);
+
+  // Braziers: either side of the door and of the stair's foot. They burn after dark.
+  const brazier = (u: number, v: number, gy: number) => {
+    sand(0.86, 0.03);
+    c.prim(UNIT_CYL, u, gy + 0.55, v, 0.36, 1.1, 0.36);
+    st.set(0.42, 0.36, 0.3, 2, 0);
+    c.prim(UNIT_CYL, u, gy + 1.22, v, 0.62, 0.26, 0.62);
+    st.set(1, 1, 1, 3, 0);
+    c.prim(UNIT_BOX, u, gy + 1.44, v, 0.45, 0.22, 0.45, 0.7);
+    c.glow(u, gy + 1.7, v, 1.0);
+    c.glow(u, gy + 1.9, v, 6.5);
+  };
+  for (const s of [-1, 1]) {
+    brazier(front - 1.0, s * (SW / 2 + 1.0), top);
+    const bu = foot + 1.6;
+    const bv = s * (SW / 2 + 1.4);
+    brazier(bu, bv, c.g(bu, bv));
+  }
+
+  // Clay jars of offerings by the door: small enough to walk through.
+  c.solid = false;
+  for (let i = 0; i < 5; i++) {
+    const s = i % 2 ? 1 : -1;
+    const v = s * c.r(D / 2 + 0.5, D / 2 + 2.2);
+    const u = fu + c.r(0.9, 2.2);
+    const k = c.r(0.85, 1.1);
+    st.set(0.62 * k, 0.38 * k, 0.26 * k, 2, 0.02);
+    const r = c.r(0.22, 0.32);
+    c.prim(UNIT_BLOB, u, top + r * 0.9, v, r, r * 1.3, r, c.rng() * 6);
+  }
+
+  // The avenue: paving out from the stair, with pairs of obelisks along it.
+  const A = c.r(26, 44);
+  sand(0.9, 0.02);
+  for (let u = foot + 0.6; u < foot + A; u += 2.05) {
+    const g = c.g(u, 0);
+    const tilt = Math.atan2(c.g(u + 1, 0) - c.g(u - 1, 0), 2);
+    // flush with the sand, and sometimes drifted over
+    if (c.rng() < 0.12) continue;
+    c.prim(UNIT_BOX, u, g - 0.06, c.r(-0.1, 0.1), 1.95, 0.12, SW - 1.6, c.r(-0.02, 0.02), 0, tilt);
+  }
+  c.solid = true;
+  for (let u = foot + 7; u < foot + A - 2; u += c.r(8, 11)) {
+    for (const s of [-1, 1]) {
+      const v = s * (SW / 2 + 1.8);
+      const g = c.g(u, v);
+      const H = c.r(4.5, 6.5) * (c.rng() < 0.2 ? c.r(0.35, 0.6) : 1);
+      sand(c.r(0.92, 1.04), 0.04);
+      c.prim(UNIT_BOX, u, g + 0.2, v, 1.5, 0.8, 1.5);
+      c.prim(UNIT_SLAB, u, g + 0.6 + H / 2, v, 0.85, H, 0.85, 0, c.r(-0.03, 0.03), c.r(-0.03, 0.03));
+      c.prim(UNIT_CONE, u, g + 0.6 + H + 0.35, v, 0.5, 0.7, 0.5, Math.PI / 4);
+    }
+  }
+
+  c.foot = Math.max(L, W) / 2 + 12;
+  // Where people go: the door (keepers stand either side), and the stair's foot (pilgrims kneel there).
+  const yawOut = Math.atan2(c.cy, -c.sy);
+  const local = (u: number, v: number, yy: number): [number, number, number] => {
+    c.at(u, v);
+    return [c.lx, yy, c.lz];
+  };
+  const keepU = (pu + front) / 2 + 0.6;
+  const kv = -(SW / 2 + 2.6);
+  c.temple = {
+    foot: local(foot + 2.5, 0, c.g(foot + 2.5, 0)),
+    end: local(foot + A, 0, c.g(foot + A, 0)),
+    yaw: yawOut,
+    keep: [
+      [...local(keepU, D / 2 + 1.6, top), yawOut + c.r(-0.4, 0.2)],
+      [...local(foot + 1.6, kv, c.g(foot + 1.6, kv)), yawOut + c.r(0.4, 1.2)],
+    ],
+  };
+}
+
 // ------------------------------------------------------------------ caverns
 
 /** A cavern as the discoveries know it: the shape the terrain cuts, and what is inside. */
@@ -1641,7 +1844,32 @@ interface Site {
   /** For a cavern: what lights it (world position, reach) and the relic lying in it, if any. */
   light?: THREE.Vector4;
   relic?: { x: number; y: number; z: number; obj: THREE.Object3D };
+  temple?: TempleMarks;
 }
+
+/** Where people go at a temple, in world coordinates. */
+export interface TempleMarks {
+  /** The foot of the stair, where pilgrims arrive and kneel. */
+  foot: { x: number; y: number; z: number };
+  /** The far end of the avenue. */
+  end: { x: number; y: number; z: number };
+  /** Heading straight out along the avenue (atan2(dx, dz)). */
+  yaw: number;
+  /** Where the keepers stand, and which way they face. */
+  keep: { x: number; y: number; z: number; yaw: number }[];
+}
+
+/** A built place in the open desert that people might walk to. */
+export interface Landmark {
+  key: number;
+  kind: string;
+  x: number;
+  z: number;
+  temple?: TempleMarks;
+}
+
+/** Sites that are not somewhere to walk to: underground, or up a mountain. */
+const NOT_LANDMARKS = new Set(['cavern', 'lamp', 'summit', 'cave', 'spring']);
 
 export class Discoveries {
   readonly group = new THREE.Group();
@@ -2481,6 +2709,17 @@ export class Discoveries {
     return ceil;
   }
 
+  /** The places built now that people walk between: temples, oases, ruins and the rest. */
+  landmarks(out: Landmark[]): Landmark[] {
+    out.length = 0;
+    for (let i = 0; i < this.sites.length; i++) {
+      const s = this.sites[i];
+      if (NOT_LANDMARKS.has(s.kind)) continue;
+      out.push({ key: s.key, kind: s.kind, x: s.x, z: s.z, temple: s.temple });
+    }
+    return out;
+  }
+
   /** Whether (x, z) is within reach of any site's stones, give or take a margin. */
   nearSolids(x: number, z: number, margin: number): boolean {
     for (let i = 0; i < this.sites.length; i++) {
@@ -2559,14 +2798,17 @@ export class Discoveries {
     else {
       const q = rng();
       kind =
-        q < 0.22 ? 'ruins'
-        : q < 0.42 ? 'bones'
-        : q < 0.56 ? 'shell'
-        : q < 0.7 ? 'standing-stones'
-        : q < 0.84 ? 'lantern'
+        q < 0.17 ? 'temple'
+        : q < 0.35 ? 'ruins'
+        : q < 0.51 ? 'bones'
+        : q < 0.62 ? 'shell'
+        : q < 0.73 ? 'standing-stones'
+        : q < 0.85 ? 'lantern'
         : q < 0.92 && h < mean + 2 ? 'oasis'
         : 'sundial';
     }
+    // A temple wants open, fairly level sand: on a steep slope it would stand on a cliff of footing.
+    if (kind === 'temple' && Math.abs(w.height(x + 20, z) - w.height(x - 20, z)) + Math.abs(w.height(x, z + 20) - w.height(x, z - 20)) > 9) kind = 'ruins';
     if (kind === 'oasis') {
       // settle into the lowest nearby ground
       let bh = w.height(x, z);
@@ -2621,6 +2863,7 @@ export class Discoveries {
       case 'bones': buildBones(ctx); break;
       case 'lantern': buildLantern(ctx); break;
       case 'sundial': buildSundial(ctx, onSalt); break;
+      case 'temple': buildTemple(ctx); break;
       default: buildShell(ctx); break;
     }
     this.finishSite(cellKey(cx, cz), kind, x, z, baseY, ctx);
@@ -2691,6 +2934,7 @@ export class Discoveries {
       pools,
       light: ctx.light ? new THREE.Vector4(ctx.x + ctx.light[0], baseY + ctx.light[1], ctx.z + ctx.light[2], ctx.light[3]) : undefined,
       relic,
+      temple: ctx.temple ? templeMarks(ctx, baseY) : undefined,
     });
   }
 
@@ -2749,6 +2993,12 @@ export class Discoveries {
     this.shaftMat.dispose();
     this.underWaterMat.dispose();
   }
+}
+
+function templeMarks(ctx: Ctx, baseY: number): TempleMarks {
+  const t = ctx.temple!;
+  const w = (p: readonly number[]) => ({ x: ctx.x + p[0], y: baseY + p[1], z: ctx.z + p[2] });
+  return { foot: w(t.foot), end: w(t.end), yaw: t.yaw, keep: t.keep.map((k) => ({ ...w(k), yaw: k[3] })) };
 }
 
 function cellKey(cx: number, cz: number): number {
