@@ -1204,14 +1204,31 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       const yaw = Math.atan2(x - tx, z - tz);
       const g = gat(tx, tz);
       const tw = cellAt(tx, tz, g - 0.3);
-      if (rng() < 0.55) ridgeTent(tw, F.set(tx, g, tz, yaw), (small ? 3.0 : 3.4) + rng() * (small ? 0.6 : 1.4), 2.6 + rng() * 0.6, 1.9 + rng() * 0.5, rng);
-      else bellTent(tw, tx, tz, g, yaw, (small ? 1.7 : 1.9) + rng() * (small ? 0.3 : 0.6), 2.4 + rng() * 0.6, rng);
+      if (rng() < 0.55) {
+        const tl = (small ? 3.0 : 3.4) + rng() * (small ? 0.6 : 1.4), tW = 2.6 + rng() * 0.6, tH = 1.9 + rng() * 0.5;
+        const tf = F.set(tx, g, tz, yaw);
+        ridgeTent(tw, tf, tl, tW, tH, rng);
+        // the slopes lean in, so the walls are a little narrower than the ground plan; cut into
+        // pieces along the ridge so a turned tent is not one fat box
+        const nseg = Math.ceil(tl / 1.0), seg = tl / nseg;
+        for (let q = 0; q < nseg; q++) {
+          const lz = -tl / 2 + seg * (q + 0.5);
+          const hx = Math.abs(tf.c) * tW * 0.4 + Math.abs(tf.s) * seg * 0.5;
+          const hz = Math.abs(tf.s) * tW * 0.4 + Math.abs(tf.c) * seg * 0.5;
+          solids.push({ x: tf.X(0, lz), z: tf.Z(0, lz), hw: hx, hd: hz, y0: g - 1, y1: g + tH });
+        }
+      } else {
+        const br = (small ? 1.7 : 1.9) + rng() * (small ? 0.3 : 0.6), bH = 2.4 + rng() * 0.6;
+        bellTent(tw, tx, tz, g, yaw, br, bH, rng);
+        solids.push({ x: tx, z: tz, hw: br * 0.8, hd: br * 0.8, y0: g - 1, y1: g + bH });
+      }
       counts.tents++;
       // a lantern on a pole by some of the doors
       if (lanterns < 2 && rng() < 0.6) {
         const lo = small ? 1.9 : 2.4;
         const lx = tx + Math.sin(yaw) * lo + Math.cos(yaw) * 1.2, lz = tz + Math.cos(yaw) * lo - Math.sin(yaw) * 1.2;
         lanternPost(tw, lx, lz, gat(lx, lz), rng);
+        solids.push({ x: lx, z: lz, hw: 0.12, hd: 0.12, y0: gat(lx, lz) - 1, y1: gat(lx, lz) + 2.1 });
         lanterns++;
       }
     }
@@ -1374,6 +1391,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     w.tint = 12;
     const hx = x - hw + 1.6, hz = z - hd + 1.6;
     taper(w, hx, hz, 1.1, 0.25, gat(hx, hz) - 0.1, gat(hx, hz) + 0.9, 7, rng());
+    solids.push({ x: hx, z: hz, hw: 0.7, hd: 0.7, y0: gat(hx, hz) - 1, y1: gat(hx, hz) + 0.9 });
     // the animals, mostly resting
     const F = new Frame();
     const na = Math.max(2, Math.round((2 + rng() * 4) * Math.max(0.6, dens)));

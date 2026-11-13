@@ -7,6 +7,7 @@ import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contrac
 import { GB } from '../city/caravans';
 import type { Landmark } from './discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
+import { steer, steered, type SolidQuery } from './avoid';
 
 const CAP = 128;
 const BIG_CELL = 320; // one oryx herd at most per cell
@@ -14,6 +15,7 @@ const SMALL_CELL = 90; // one small animal (or a few) at most per cell
 const BIG_R = 720; // herds are kept within this of the player
 const SMALL_R = 240; // small animals within this: further out they're specks
 const SCAN_EVERY = 0.5;
+const AVOID_R = 300; // animals walk round a site's stones within this of the player; further out nobody can tell
 const TAU = Math.PI * 2;
 
 export const ORYX = 0;
@@ -32,15 +34,16 @@ interface Spec {
   runStride: number;
   turn: number; // rad/s
   roam: number; // wanders this far from home (m)
+  body: number; // kept this far (m) from anything standing in the way
   coat: V3;
 }
 
 const SPEC: Spec[] = [
-  { walk: 1.0, run: 9, flee: 30, stride: 1.5, runStride: 3.6, turn: 2.0, roam: 35, coat: [0.86, 0.8, 0.7] },
-  { walk: 1.1, run: 6.5, flee: 13, stride: 0.42, runStride: 1.1, turn: 4.0, roam: 30, coat: [0.88, 0.74, 0.54] },
-  { walk: 1.0, run: 8, flee: 10, stride: 0.5, runStride: 1.5, turn: 5.0, roam: 14, coat: [0.6, 0.5, 0.38] },
-  { walk: 0.4, run: 4, flee: 5, stride: 0.1, runStride: 0.22, turn: 8.0, roam: 3, coat: [0.66, 0.55, 0.4] },
-  { walk: 9, run: 9, flee: 0, stride: 1, runStride: 1, turn: 1, roam: 0, coat: [0.3, 0.24, 0.2] },
+  { walk: 1.0, run: 9, flee: 30, stride: 1.5, runStride: 3.6, turn: 2.0, roam: 35, body: 0.6, coat: [0.86, 0.8, 0.7] },
+  { walk: 1.1, run: 6.5, flee: 13, stride: 0.42, runStride: 1.1, turn: 4.0, roam: 30, body: 0.25, coat: [0.88, 0.74, 0.54] },
+  { walk: 1.0, run: 8, flee: 10, stride: 0.5, runStride: 1.5, turn: 5.0, roam: 14, body: 0.2, coat: [0.6, 0.5, 0.38] },
+  { walk: 0.4, run: 4, flee: 5, stride: 0.1, runStride: 0.22, turn: 8.0, roam: 3, body: 0.08, coat: [0.66, 0.55, 0.4] },
+  { walk: 9, run: 9, flee: 0, stride: 1, runStride: 1, turn: 1, roam: 0, body: 0, coat: [0.3, 0.24, 0.2] },
 ];
 
 // ------------------------------------------------------------------ geometry
@@ -617,6 +620,8 @@ interface Animal {
   sp: number;
   x: number;
   z: number;
+  /** Ground under it last frame. */
+  y: number;
   yaw: number;
   spd: number;
   ph: number;
@@ -639,6 +644,10 @@ interface Animal {
   alt: number;
   flap: number;
   burst: number;
+  /** The side it passes things on (+1, -1; 0 not yet chosen), and a heading round one held for avT s. */
+  dodge: number;
+  avT: number;
+  avYaw: number;
 }
 
 interface Herd {
@@ -659,6 +668,8 @@ export class Fauna {
   landmarks: ((out: Landmark[]) => Landmark[]) | null = null;
   /** Whether (x, z) is no place for animals to live: in a city, or among a site's stones. Set by the game. */
   blocked: ((x: number, z: number) => boolean) | null = null;
+  /** What stands in an animal's way: the top over (x, z) for feet at y, or -Infinity (as the wanderer's roof). Set by the game. */
+  solid: SolidQuery | null = null;
   /** An animal has called out, this far from the player (m). */
   onCall: ((sp: number, dist: number) => void) | null = null;
 
@@ -715,6 +726,7 @@ export class Fauna {
       sp,
       x,
       z,
+      y: this.world.height(x, z),
       yaw: rng() * TAU,
       spd: 0,
       ph: rng(),
@@ -735,6 +747,9 @@ export class Fauna {
       alt: 0,
       flap: rng() * 6,
       burst: rng() * 6,
+      dodge: 0,
+      avT: 0,
+      avYaw: 0,
     };
   }
 
@@ -959,6 +974,11 @@ export class Fauna {
           poseT = grazing && !wary ? (h.sp === ORYX ? 1 : 0.6) : 0;
         }
       }
+      // on the way round something in its path: keep to the heading that clears it a moment
+      if (a.avT > 0) {
+        a.avT -= dt;
+        if (targetSpd > 0) targetYaw = a.avYaw;
+      }
       // turn, and speed up or slow down
       const err = angDiff(targetYaw, a.yaw);
       const tr = spec.turn * (a.state === 2 ? 1.6 : 1) * dt;
@@ -968,6 +988,8 @@ export class Fauna {
       if (a.spd < 0.01) a.spd = 0;
       a.pose += (poseT - a.pose) * k(1.5);
       // keep a little apart from the others in the herd
+      let mx = 0;
+      let mz = 0;
       for (let j = 0; j < h.animals.length; j++) {
         if (j === i) continue;
         const b = h.animals[j];
@@ -976,12 +998,35 @@ export class Fauna {
         const sd = Math.hypot(sx, sz);
         const want = h.sp === ORYX ? 2.2 : 0.6;
         if (sd > 1e-3 && sd < want) {
-          a.x += (sx / sd) * (want - sd) * k(2);
-          a.z += (sz / sd) * (want - sd) * k(2);
+          mx += (sx / sd) * (want - sd) * k(2);
+          mz += (sz / sd) * (want - sd) * k(2);
         }
       }
-      a.x += Math.sin(a.yaw) * a.spd * dt;
-      a.z += Math.cos(a.yaw) * a.spd * dt;
+      mx += Math.sin(a.yaw) * a.spd * dt;
+      mz += Math.cos(a.yaw) * a.spd * dt;
+      // never into a standing stone, a fallen column, a wall: round it, the same side each time
+      if (this.solid && d < AVOID_R && (mx !== 0 || mz !== 0)) {
+        if (a.dodge === 0) a.dodge = a.seed < 0.5 ? 1 : -1;
+        if (steer(this.solid, a.x, a.z, a.y, mx, mz, spec.body, a.dodge)) {
+          a.dodge = steered.side;
+          a.avT = 0.8;
+          if (steered.turn !== 0) a.avYaw = Math.atan2(steered.x - a.x, steered.z - a.z);
+          else {
+            // boxed in: turn well away, and give up on getting anywhere past it
+            a.avYaw = a.yaw + a.dodge * 2.2;
+            a.spd *= 0.5;
+            if (a.state === 1) {
+              a.state = 0;
+              a.t = 1 + Math.random() * 3;
+            }
+          }
+        }
+        a.x = steered.x;
+        a.z = steered.z;
+      } else {
+        a.x += mx;
+        a.z += mz;
+      }
       const running = a.spd > spec.walk * 1.5;
       const stride = running ? spec.runStride : spec.stride;
       a.ph = (a.ph + (a.spd * dt) / stride) % 1;
@@ -996,6 +1041,7 @@ export class Fauna {
       }
       a.look += (look - a.look) * k(3);
       const y = w.height(a.x, a.z);
+      a.y = y;
       w.normal(a.x, a.z, this.nrm);
       // stand mostly upright on a slope (a lizard lies flat to it)
       const tilt = h.sp === LIZARD ? 1 : 0.45;
