@@ -971,6 +971,10 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   potSink = null;
   const bx = new Float32Array(bounds);
   near.userData.triangles = tris;
+  // crowns that shade the ground under them (read by Cities into the city map)
+  const crowns: number[] = [];
+  for (let i = 0; i < tx.length; i++) crowns.push(tx[i], tz[i], 1.2 + 0.22 * th[i]);
+  near.userData.crowns = crowns;
   near.userData.counts = { trees: tx.length, shrubs: nShrubs, reeds: nReeds, vines: nVines, pots: nPots };
 
   // ---------------------------------------------------------------- sound: leaves in the groves
