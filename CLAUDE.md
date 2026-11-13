@@ -1,3 +1,17 @@
+# Git workflow
+
+All new work happens in a git worktree on its own branch, never directly on `main`. This repo does not use pull requests.
+
+1. Start: create a worktree and branch from `main`, for example `git worktree add .claude/worktrees/<name> -b <name> main`. Do all edits, builds, and commits there.
+2. Finish: when the work is complete and verified, merge the branch into `main` from the main checkout with a merge commit (`git merge --no-ff <name>`, message "Merge <name> into main").
+3. Clean up: remove the worktree (`git worktree remove`) and delete the branch (`git branch -d`), plus its remote branch if one was pushed. Nothing from the finished work should be left in `git worktree list` or `git branch`.
+
+- Never open a PR, and never offer to.
+- Only merge finished work. If the work is paused or abandoned, leave the worktree and say so instead of merging.
+- Clean up only the worktrees and branches of the work you just merged. Other worktrees may belong to sessions still in progress; leave them alone unless Miguel asks.
+- If the merge conflicts or the build fails on `main` after merging, stop and tell Miguel before going further.
+- Subagents work inside the worktree you name in the brief. They do not commit, merge, or create branches; the orchestrator does that.
+
 # Orchestration
 
 The main session runs on Fable and acts as the orchestrator. You plan, split the work, hand each piece to the cheapest model that will do it well, check what comes back, and talk to Miguel. The goal is to get the most out of the plan's limits: the best model for each task, no tokens burned on work a smaller model does equally well, and no agent left spinning.
