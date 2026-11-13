@@ -1,9 +1,10 @@
-// Travellers and caravans on the open desert around cities.
-// Four draw calls: pack animals, travellers, ground props, fire/smoke.
+// Travellers and caravans on the open desert around cities, and the pilgrims and keepers of the
+// temples out in the wilderness. Four draw calls: pack animals, people, ground props, fire/smoke.
 // Everything is instanced; all animation (walk, sit, sway, head turn) is in the vertex shaders.
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import type { CitySite } from './types';
+import type { Landmark } from '../world/discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
 
 const RANGE = 2500;
@@ -11,7 +12,7 @@ const FADE0 = 1200;
 const CAP_A = 160;
 const CAP_P = 160;
 const CAP_PROP = 200;
-const CAP_FIRE = 160;
+const CAP_FIRE = 240;
 const TAU = Math.PI * 2;
 
 type V3 = [number, number, number];
@@ -26,7 +27,7 @@ interface Ring {
   w?: number;
 }
 
-class GB {
+export class GB {
   pos: number[] = [];
   nrm: number[] = [];
   rig: number[] = [];
@@ -419,6 +420,12 @@ function personGeometry(): { geo: THREE.InstancedBufferGeometry; tris: number } 
   );
   b.set(0, 4, 2).box(0, 1.12, -0.27, 0.4, 0.5, 0.26);
   b.set(0, 5, 4).box(-0.3, 0.72, -0.12, 0.22, 0.3, 0.2);
+  // a lantern hung from the left hand, swinging with the arm (pilgrims, after dark)
+  const lv: V3 = [-0.25, 1.36, 0];
+  b.set(6, 6, 8, 0, lv).box(-0.3, 0.8, 0.06, 0.02, 0.1, 0.02);
+  b.box(-0.3, 0.75, 0.06, 0.16, 0.03, 0.16);
+  b.box(-0.3, 0.6, 0.06, 0.15, 0.03, 0.15);
+  b.set(6, 12, 8, 0, lv).box(-0.3, 0.675, 0.06, 0.11, 0.12, 0.11);
   return { geo: b.geometry(), tris: b.tris };
 }
 
@@ -504,7 +511,8 @@ vec3 matColor(float m, vec3 coat, vec3 load) {
   else if (m < 8.5) c = vec3(0.07, 0.055, 0.05);
   else if (m < 9.5) c = coat * 0.8 + vec3(0.05);
   else if (m < 10.5) c = vec3(0.42, 0.38, 0.34);
-  else c = vec3(0.97, 0.95, 0.9);
+  else if (m < 11.5) c = vec3(0.97, 0.95, 0.9);
+  else c = vec3(1.0, 0.78, 0.42);
   return c;
 }
 `;
@@ -523,13 +531,14 @@ varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
+varying float vEm;
 ${common}
 void main() {
   float vis = 1.0;
   if (aMP.y > 0.5) vis = mod(floor(iLoad.w / aMP.y + 0.01), 2.0);
   if (vis < 0.5 || iMot.w < 0.01) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0;
+    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0; vEm = 0.0;
     return;
   }
   float TAU = 6.2831853;
@@ -607,6 +616,7 @@ void main() {
   vN = normalize(r * n.x + up * n.y + f * n.z);
   vY = localY;
   vCol = matColor(aMP.x, iCoat.rgb, iLoad.rgb);
+  vEm = step(11.5, aMP.x);
   if (fringe) vCol *= 1.0 - 0.22 * aRig.z;
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }
@@ -626,13 +636,14 @@ varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
+varying float vEm;
 ${common}
 void main() {
   float vis = 1.0;
   if (aMP.y > 0.5) vis = mod(floor(iLoad.w / aMP.y + 0.01), 2.0);
   if (vis < 0.5 || iMot.w < 0.01) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0;
+    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0; vEm = 0.0;
     return;
   }
   float TAU = 6.2831853;
@@ -669,6 +680,14 @@ void main() {
     p.y += 0.02 * g * sin(2.0 * th + 0.5) * smoothstep(0.3, 1.0, localY);
     p.y += 0.006 * sin(T * 1.5 + seed * 30.0) * smoothstep(0.3, 1.0, localY);
   }
+  // the head turns to look (iUp.w): the hood and face, blended in at the neck
+  float hk = smoothstep(1.36, 1.5, localY) * iUp.w;
+  if (abs(hk) > 1e-4) {
+    float c = cos(hk);
+    float s = sin(hk);
+    p.xz = vec2(p.x * c + p.z * s, -p.x * s + p.z * c);
+    n.xz = vec2(n.x * c + n.z * s, -n.x * s + n.z * c);
+  }
   if (leg) {
     p.y -= sit * 0.6;
     p.y = max(p.y, 0.02);
@@ -687,6 +706,7 @@ void main() {
   vN = normalize(r * n.x + up * n.y + f * n.z);
   vY = localY;
   vCol = matColor(aMP.x, iCoat.rgb, iLoad.rgb);
+  vEm = step(11.5, aMP.x);
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }
 `;
@@ -700,11 +720,12 @@ varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
+varying float vEm;
 ${common}
 void main() {
   if (abs(aMP.y - iProp.x) > 0.5 || iProp.y < 0.01) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0;
+    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0; vEm = 0.0;
     return;
   }
   float c = cos(iPos.w);
@@ -715,6 +736,7 @@ void main() {
   vN = vec3(normal.x * c + normal.z * s, normal.y, -normal.x * s + normal.z * c);
   vY = position.y;
   vCol = matColor(aMP.x, iCol.rgb, iCol.rgb);
+  vEm = 0.0;
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }
 `;
@@ -732,10 +754,17 @@ varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
+varying float vEm;
 ${STYLE_GLSL}
 void main() {
   vec3 toCam = cameraPosition - vW;
   float dist = length(toCam);
+  if (vEm > 0.5) {
+    // a lantern's flame: lit from inside, brighter the darker it gets
+    vec3 fc = vCol * (0.7 + 0.8 * uNight);
+    gl_FragColor = vec4(mix(fc, uFogCol, (1.0 - exp(-dist * uFog)) * 0.5), 1.0);
+    return;
+  }
   vec3 V = toCam / max(dist, 1e-4);
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
@@ -778,9 +807,10 @@ void main() {
   vec2 q = position.xy;
   vec3 wp;
   vA = 1.0;
-  if (kind < 0.5) {
-    float s = 7.0 * fade;
-    wp = c + vec3(0.0, 0.9, 0.0) + right * q.x * s + vec3(0.0, 1.0, 0.0) * q.y * s * 0.8;
+  if (kind < 0.5 || kind > 2.5) {
+    bool lamp = kind > 2.5;
+    float s = (lamp ? 2.6 : 7.0) * fade;
+    wp = c + vec3(0.0, lamp ? 0.0 : 0.9, 0.0) + right * q.x * s + vec3(0.0, 1.0, 0.0) * q.y * s * 0.8;
     vUv = q;
   } else if (kind < 1.5) {
     float fl = 0.82 + 0.18 * sin(uTime * 11.0 + seed * 40.0) + 0.1 * sin(uTime * 17.0 + seed * 13.0);
@@ -821,10 +851,10 @@ varying float vDist;
 varying float vSeed;
 void main() {
   float fogK = exp(-vDist * uFog);
-  if (vKind < 0.5) {
+  if (vKind < 0.5 || vKind > 2.5) {
     float r = length(vUv);
     float a = pow(max(1.0 - r, 0.0), 2.2);
-    float inten = (0.05 + 0.95 * uNight) * 0.55;
+    float inten = vKind > 2.5 ? uNight * 0.9 : (0.05 + 0.95 * uNight) * 0.55;
     gl_FragColor = vec4(vec3(1.0, 0.5, 0.2) * a * inten * (0.5 + 0.5 * fogK), 0.0);
   } else if (vKind < 1.5) {
     float y = vUv.y;
@@ -897,9 +927,31 @@ const LOADS: V3[] = [
 ];
 const ANIMAL_LOADS = [1, 2, 4, 5, 6, 1, 2, 5];
 const PERSON_LOADS = [1, 3, 5, 0, 1, 2, 7, 1];
+// The temple people share one look: pilgrims in undyed linen, keepers in saffron and rust.
+const PILGRIM_ROBES: V3[] = [
+  [0.86, 0.82, 0.72],
+  [0.8, 0.74, 0.62],
+  [0.74, 0.68, 0.56],
+  [0.84, 0.78, 0.66],
+];
+const KEEPER_ROBES: V3[] = [
+  [0.74, 0.42, 0.16],
+  [0.66, 0.32, 0.14],
+  [0.78, 0.5, 0.2],
+];
+const PILGRIM_LOADS = [0, 1, 1, 2, 3, 0];
+/** Who someone is, for what they say: a traveller, a pilgrim, or a temple keeper. */
+export const ROLE_TRAVELLER = 0;
+export const ROLE_PILGRIM = 1;
+export const ROLE_KEEPER = 2;
 
 interface Agent {
   animal: boolean;
+  role: number;
+  /** Which way a keeper faces when nobody needs them. */
+  yaw0: number;
+  /** Carrying a lit lantern now. */
+  lamp: boolean;
   s: number;
   o: number;
   lo: number;
@@ -930,6 +982,11 @@ interface Agent {
 }
 
 interface Route {
+  /** Walked dead straight for this far before the meander starts (an avenue). */
+  s0?: number;
+  /** After s0, heads on this way instead (unit x, z). */
+  bx?: number;
+  bz?: number;
   ax: number;
   az: number;
   dx: number;
@@ -955,9 +1012,14 @@ interface PropI {
   col: V3;
 }
 
-// kind: 0 walking caravan, 1 camp, 2 lone walkers
+// kind: 0 walking caravan, 1 camp, 2 lone walkers, 3 pilgrims, 4 temple keepers
 interface Group {
   kind: number;
+  /** Pilgrims walk together: where they are along the route, which way, how fast, and how long they stay put. */
+  s: number;
+  dir: number;
+  v: number;
+  wait: number;
   agents: Agent[];
   route: Route | null;
   ax: number; // anchor
@@ -974,8 +1036,16 @@ interface Group {
 }
 
 function routePoint(r: Route, s: number, out: { x: number; z: number }): void {
-  const env = s <= 0 ? 0 : ss(0, 150, s);
+  const s0 = r.s0 ?? 0;
+  const env = s <= s0 ? 0 : ss(s0, s0 + 150, s);
   const m = env * (r.a1 * Math.sin(s * r.k1 + r.p1) + r.a2 * Math.sin(s * r.k2 + r.p2));
+  if (r.bx !== undefined && r.bz !== undefined && s > s0) {
+    const x0 = r.ax + r.dx * s0;
+    const z0 = r.az + r.dz * s0;
+    out.x = x0 + r.bx * (s - s0) - r.bz * m;
+    out.z = z0 + r.bz * (s - s0) + r.bx * m;
+    return;
+  }
   out.x = r.ax + r.dx * s + r.px * m;
   out.z = r.az + r.dz * s + r.pz * m;
 }
@@ -987,6 +1057,9 @@ function newAgent(animal: boolean, rng: () => number): Agent {
   const vars = animal ? ANIMAL_LOADS : PERSON_LOADS;
   return {
     animal,
+    role: ROLE_TRAVELLER,
+    yaw0: 0,
+    lamp: false,
     s: 0,
     o: 0,
     lo: 0,
@@ -1014,6 +1087,18 @@ function newAgent(animal: boolean, rng: () => number): Agent {
     ny: 1,
     nz: 0,
   };
+}
+
+/** Someone out on the sand, as the talking needs them. role is ROLE_TRAVELLER, ROLE_PILGRIM or ROLE_KEEPER. */
+export interface PersonOut {
+  ref: unknown;
+  x: number;
+  y: number;
+  z: number;
+  h: number;
+  sit: number;
+  seed: number;
+  role: number;
 }
 
 class Inst {
@@ -1063,6 +1148,11 @@ export class Caravans {
   private nF = 0;
 
   private readonly cache = new Map<number, Group[]>();
+  /** The pilgrims and keepers of each temple, by its site key. */
+  private readonly shrines = new Map<number, Group[]>();
+  private readonly marks: Landmark[] = [];
+  /** The places built now in the open desert (temples among them). Set by the game. */
+  landmarks: ((out: Landmark[]) => Landmark[]) | null = null;
   private readonly live: Group[] = [];
   private readonly placed: Group[] = []; // camps put down by the game, not by a city
   private held: Agent | null = null; // someone the player is talking to
@@ -1169,7 +1259,7 @@ export class Caravans {
    * The nearest traveller within maxD metres of (px, pz). out.y is the ground under
    * them, out.h their height scale and out.sit how far they are sat down (0..1).
    */
-  nearestPerson(px: number, pz: number, maxD: number, out: { ref: unknown; x: number; y: number; z: number; h: number; sit: number; seed: number }): boolean {
+  nearestPerson(px: number, pz: number, maxD: number, out: PersonOut): boolean {
     let best: Agent | null = null;
     let bd = maxD;
     for (let i = 0; i < this.live.length; i++) {
@@ -1189,9 +1279,10 @@ export class Caravans {
   }
 
   /** Where a traveller is now. */
-  personAt(ref: unknown, out: { ref: unknown; x: number; y: number; z: number; h: number; sit: number; seed: number }): boolean {
+  personAt(ref: unknown, out: PersonOut): boolean {
     const a = ref as Agent;
     out.ref = a;
+    out.role = a.role;
     out.x = a.x;
     out.y = a.y;
     out.z = a.z;
@@ -1321,7 +1412,7 @@ export class Caravans {
   }
 
   private emptyGroup(kind: number, ax: number, az: number, reach: number): Group {
-    return { kind, agents: [], route: null, ax, az, reach, pres: 0, active: false, maxO: 0, props: [], fx: 0, fy: 0, fz: 0, fseed: 0 };
+    return { kind, s: 0, dir: 1, v: 1, wait: 0, agents: [], route: null, ax, az, reach, pres: 0, active: false, maxO: 0, props: [], fx: 0, fy: 0, fz: 0, fseed: 0 };
   }
 
   private buildCaravan(rng: () => number, route: Route, site: CitySite): Group {
@@ -1423,6 +1514,194 @@ export class Caravans {
     return g;
   }
 
+  // ---------------------------------------------------------------- temples
+
+  /** A temple's people: keepers at the door and the stair, and pilgrims walking out and back along its avenue. */
+  private buildShrine(l: Landmark, all: readonly Landmark[]): Group[] {
+    const t = l.temple!;
+    const rng = mulberry32((this.world.seed ^ Math.imul(l.key | 0, 0x2c1b3c6d) ^ 0x7e3a11c5) >>> 0);
+    const groups: Group[] = [];
+    const robe = (list: V3[]): V3 => {
+      const c = list[Math.floor(rng() * list.length)];
+      const j = 0.94 + rng() * 0.1;
+      return [c[0] * j, c[1] * j, c[2] * j];
+    };
+
+    const kg = this.emptyGroup(4, t.foot.x, t.foot.z, 60);
+    for (const k of t.keep) {
+      const a = newAgent(false, rng);
+      a.role = ROLE_KEEPER;
+      a.coat = robe(KEEPER_ROBES);
+      a.variant = 0;
+      a.x = k.x;
+      a.y = k.y;
+      a.z = k.z;
+      a.yaw = a.yaw0 = k.yaw;
+      kg.agents.push(a);
+    }
+    // a pilgrim or two kneeling at the foot of the stair, at any hour
+    const nk = rng() < 0.6 ? 1 : 2;
+    for (let i = 0; i < nk; i++) {
+      const a = newAgent(false, rng);
+      a.role = ROLE_PILGRIM;
+      a.coat = robe(PILGRIM_ROBES);
+      a.variant = 0;
+      const side = i === 0 ? -1.4 : 1.6;
+      // face the stair: back the way the avenue runs
+      const fx0 = Math.sin(t.yaw);
+      const fz0 = Math.cos(t.yaw);
+      a.x = t.foot.x + fz0 * side + fx0 * (1.5 + rng());
+      a.z = t.foot.z - fx0 * side + fz0 * (1.5 + rng());
+      a.y = this.world.height(a.x, a.z);
+      a.yaw = a.yaw0 = t.yaw + Math.PI + (rng() - 0.5) * 0.3;
+      a.sit = a.sitTarget = 1;
+      kg.agents.push(a);
+    }
+    groups.push(kg);
+
+    // Out along the avenue, then on toward whatever lies ahead: another temple, an oasis, a ruin.
+    // Nobody heads back past the temple itself, so only places in front of it are chosen.
+    const fx = Math.sin(t.yaw);
+    const fz = Math.cos(t.yaw);
+    const s0 = Math.hypot(t.end.x - t.foot.x, t.end.z - t.foot.z) + 8;
+    const ex = t.foot.x + fx * s0;
+    const ez = t.foot.z + fz * s0;
+    const ahead: Landmark[] = [];
+    for (const o of all) {
+      if (o.key === l.key) continue;
+      const dx = o.x - ex;
+      const dz = o.z - ez;
+      const d = Math.hypot(dx, dz);
+      if (d < 350 || d > 2400 || (dx * fx + dz * fz) / d < 0.5) continue;
+      ahead.push(o);
+    }
+    const nGroups = 2 + (rng() < 0.5 ? 1 : 0);
+    for (let i = 0; i < nGroups; i++) {
+      let route: Route | null = null;
+      for (let tries = 0; tries < 5 && !route; tries++) {
+        let bx: number;
+        let bz: number;
+        let len: number;
+        const dest = ahead.length ? ahead[(i + tries) % ahead.length] : null;
+        if (i === 0) {
+          // one group only walks the avenue and a little past it, so there's nearly always someone close
+          const a = t.yaw + (rng() - 0.5) * 0.5;
+          bx = Math.sin(a);
+          bz = Math.cos(a);
+          len = s0 + 60 + rng() * 140;
+        } else if (dest && tries < 3) {
+          const d = Math.hypot(dest.x - ex, dest.z - ez);
+          bx = (dest.x - ex) / d;
+          bz = (dest.z - ez) / d;
+          len = s0 + d - 40; // stop short of its stones
+        } else {
+          const a = t.yaw + (rng() - 0.5) * 1.2;
+          bx = Math.sin(a);
+          bz = Math.cos(a);
+          len = s0 + 450 + rng() * 650;
+        }
+        const r = this.makeRoute(rng, t.foot.x, t.foot.z, Math.atan2(fz, fx), 0, len, 14 + rng() * 14);
+        r.s0 = s0;
+        r.bx = bx;
+        r.bz = bz;
+        if (this.routeClear(r)) route = r;
+      }
+      if (!route) continue;
+      const g = this.emptyGroup(3, 0, 0, 0);
+      const mid = { x: 0, z: 0 };
+      routePoint(route, route.len * 0.5, mid);
+      g.ax = mid.x;
+      g.az = mid.z;
+      g.reach = route.len * 0.5 + 100;
+      g.route = route;
+      g.v = 0.85 + rng() * 0.25;
+      g.fseed = rng();
+      const n = rng() < 0.45 ? 1 : rng() < 0.7 ? 2 : 3;
+      for (let k = 0; k < n; k++) {
+        const a = newAgent(false, rng);
+        a.role = ROLE_PILGRIM;
+        a.coat = robe(PILGRIM_ROBES);
+        a.load = robe(KEEPER_ROBES);
+        a.variant = PILGRIM_LOADS[Math.floor(rng() * PILGRIM_LOADS.length)];
+        a.lat = (k - (n - 1) / 2) * 1.15;
+        g.agents.push(a);
+      }
+      groups.push(g);
+    }
+    return groups;
+  }
+
+  private stepPilgrims(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
+    const r = g.route as Route;
+    const k = (rate: number) => 1 - Math.exp(-dt * rate);
+    let held = false;
+    for (let i = 0; i < g.agents.length; i++) if (g.agents[i] === this.held) held = true;
+    if (g.wait > 0) {
+      g.wait -= dt;
+      if (g.wait <= 0) g.dir = -g.dir;
+    } else if (!held) {
+      g.s += g.dir * g.v * dt;
+      if (g.dir > 0 && g.s >= r.len) {
+        g.s = r.len;
+        g.wait = 3 + Math.random() * 4; // a rest at the far end
+      } else if (g.dir < 0 && g.s <= 0) {
+        g.s = 0;
+        g.wait = 10 + Math.random() * 10; // kneel at the foot of the stair
+      }
+    }
+    const moving = g.wait <= 0 && !held;
+    const kneel = !moving && !held && g.s <= 0.01;
+    const lamp = f.night > 0.35;
+    for (let i = 0; i < g.agents.length; i++) {
+      const a = g.agents[i];
+      a.s = g.s;
+      a.dirSign = g.dir;
+      routePoint(r, a.s, this.P0);
+      routePoint(r, a.s + 3, this.P1);
+      let tx = this.P1.x - this.P0.x;
+      let tz = this.P1.z - this.P0.z;
+      const tl = Math.hypot(tx, tz) || 1;
+      tx /= tl;
+      tz /= tl;
+      const ty = a === this.held ? Math.atan2(px - a.x, pz - a.z) : Math.atan2(tx, tz) + (g.dir < 0 ? Math.PI : 0);
+      const err = angDiff(ty, a.yaw);
+      const tr = 1.8 * dt;
+      a.yaw += Math.max(-tr, Math.min(tr, err));
+      a.spd += ((moving ? g.v : 0) - a.spd) * k(2);
+      if (a.spd < 0.01) a.spd = 0;
+      a.ph += (a.spd * dt) / a.stride;
+      a.sitTarget = kneel ? 1 : 0;
+      a.sit += Math.max(-dt * 0.7, Math.min(dt * 0.7, a.sitTarget - a.sit));
+      a.lamp = lamp;
+      // step aside for a player standing on the way
+      const ex = px - this.P0.x;
+      const ez = pz - this.P0.z;
+      let tgt = 0;
+      if (ex * ex + ez * ez < 100) {
+        const along = ex * tx + ez * tz;
+        const rel = ex * tz - ez * tx - a.lat;
+        if (Math.abs(along) < 8 && Math.abs(rel) < 2.4) tgt = (rel >= 0 ? -1 : 1) * (2.4 - Math.abs(rel)) * (1 - ss(5, 8, Math.abs(along)));
+      }
+      a.drift += (tgt - a.drift) * k(1.8);
+      const lat = a.lat + a.drift;
+      const x = this.P0.x + tz * lat;
+      const z = this.P0.z - tx * lat;
+      const w = this.world;
+      w.normal(x, z, this.nrm);
+      this.put(a, x, w.height(x, z), z, this.nrm.x, this.nrm.y, this.nrm.z, g, dt, px, pz);
+    }
+  }
+
+  private stepKeepers(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
+    for (let i = 0; i < g.agents.length; i++) {
+      const a = g.agents[i];
+      // Mostly still, looking out over the avenue; they turn to whoever speaks to them.
+      const ty = a === this.held ? Math.atan2(px - a.x, pz - a.z) : a.yaw0 + 0.35 * Math.sin(f.time * 0.06 + a.seed * 40);
+      a.yaw += angDiff(ty, a.yaw) * (1 - Math.exp(-dt * (a === this.held ? 4 : 0.8)));
+      this.put(a, a.x, a.y, a.z, 0, 1, 0, g, dt, px, pz);
+    }
+  }
+
   // ---------------------------------------------------------------- update
 
   update(f: FrameState): void {
@@ -1446,6 +1725,19 @@ export class Caravans {
         for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
       }
       for (let k = 0; k < this.placed.length; k++) this.live.push(this.placed[k]);
+      if (this.landmarks) {
+        const ls = this.landmarks(this.marks);
+        for (let i = 0; i < ls.length; i++) {
+          const l = ls[i];
+          if (!l.temple || Math.hypot(l.x - px, l.z - pz) > RANGE + 1500) continue;
+          let gs = this.shrines.get(l.key);
+          if (!gs) {
+            gs = this.buildShrine(l, ls);
+            this.shrines.set(l.key, gs);
+          }
+          for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
+        }
+      }
     }
     this.heldT -= dt;
     if (this.heldT <= 0) this.held = null;
@@ -1459,7 +1751,8 @@ export class Caravans {
     for (let i = 0; i < this.live.length; i++) {
       const g = this.live[i];
       const inRange = Math.hypot(g.ax - px, g.az - pz) < RANGE + g.reach;
-      const want = inRange && (g.kind === 1 || walkOk);
+      // camps, keepers and pilgrims (who carry lanterns) stay out after dark
+      const want = inRange && (g.kind === 1 || g.kind >= 3 || walkOk);
       g.pres = Math.min(1, Math.max(0, g.pres + (want ? 1 : -1) * dt * 0.4));
       if (g.pres <= 0 && !want) {
         g.active = false;
@@ -1471,6 +1764,8 @@ export class Caravans {
       }
       if (g.kind === 0) this.stepCaravan(g, f, dt, px, pz);
       else if (g.kind === 2) this.stepWalkers(g, f, dt, px, pz);
+      else if (g.kind === 3) this.stepPilgrims(g, f, dt, px, pz);
+      else if (g.kind === 4) this.stepKeepers(g, f, dt, px, pz);
       else this.stepCamp(g, f, dt, px, pz);
     }
 
@@ -1490,6 +1785,21 @@ export class Caravans {
   private snap(g: Group, f: FrameState): void {
     const r = g.route;
     if (g.kind === 1 || !r) return;
+    if (g.kind === 3) {
+      // anywhere on the way out and back, as if they had been walking all along
+      const t = (f.time * g.v + g.fseed * 2 * r.len) % (2 * r.len);
+      g.s = t > r.len ? 2 * r.len - t : t;
+      g.dir = t > r.len ? -1 : 1;
+      g.wait = 0;
+      for (const a of g.agents) {
+        a.s = g.s;
+        a.dirSign = g.dir;
+        a.spd = g.v;
+        a.sit = 0;
+        this.faceRoute(a, r);
+      }
+      return;
+    }
     if (g.kind === 2) {
       for (const a of g.agents) {
         const t = (f.time * a.vmax + a.s) % (2 * r.len);
@@ -1647,16 +1957,16 @@ export class Caravans {
     const pr = g.pres * g.pres * (3 - 2 * g.pres);
     const sc = a.scale * pr * (1 - ss(FADE0, RANGE, d));
     if (sc < 0.02) return;
-    if (a.animal) {
-      // head turns toward a player within 12 m
+    {
+      // the head turns toward a player within 12 m (an animal's whole neck; a person's hood)
       let target = 0;
-      if (d < 12) {
+      if (d < 12 && a !== this.held) {
         const c = Math.cos(a.yaw);
         const s = Math.sin(a.yaw);
         const lx = -dx * c + dz * s;
         const lz = -dx * s - dz * c;
         const ang = Math.atan2(lx, lz);
-        target = Math.max(-1.1, Math.min(1.1, ang));
+        target = a.animal ? Math.max(-1.1, Math.min(1.1, ang)) : Math.abs(ang) < 1.6 ? Math.max(-0.9, Math.min(0.9, ang)) : 0;
       }
       a.look += (target - a.look) * (1 - Math.exp(-dt * 3));
     }
@@ -1688,8 +1998,25 @@ export class Caravans {
     L.arr[o] = a.load[0];
     L.arr[o + 1] = a.load[1];
     L.arr[o + 2] = a.load[2];
-    L.arr[o + 3] = a.variant;
+    L.arr[o + 3] = a.variant + (a.lamp ? 8 : 0);
     if (a.animal) this.nA++;
     else this.nP++;
+    if (a.lamp && this.nF < CAP_FIRE) {
+      // the lantern's glow, where the left hand holds it
+      const c = Math.cos(a.yaw);
+      const s = Math.sin(a.yaw);
+      const lx = -0.3 * sc;
+      const lz = 0.06 * sc;
+      const q = this.nF * 4;
+      this.fBase.arr[q] = x + c * lx + s * lz;
+      this.fBase.arr[q + 1] = y + (0.68 - 0.4 * a.sit) * sc;
+      this.fBase.arr[q + 2] = z - s * lx + c * lz;
+      this.fBase.arr[q + 3] = sc / a.scale;
+      this.fKind.arr[q] = 3;
+      this.fKind.arr[q + 1] = a.seed;
+      this.fKind.arr[q + 2] = 0;
+      this.fKind.arr[q + 3] = 0;
+      this.nF++;
+    }
   }
 }
