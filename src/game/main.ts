@@ -26,7 +26,7 @@ import { DEFAULTS, type Params } from '../render/types';
 import { LOOKS, stylesUnlocked, type Look } from './looks';
 import { WORLD_SCALE } from '../world/scale';
 import { Massifs } from '../world/massifs';
-import { Save } from './save';
+import { Save, loadSpawn, saveSpawn, clearSpawn, clearProgress } from './save';
 import { Talk, type Speaker } from './talk';
 import { KEEPER, MINER, PILGRIM, TOWNSFOLK, TRAVELLER, type Line } from './lines';
 
@@ -85,7 +85,7 @@ function start() {
 
   let seekMiner = false;
   // ---- spawn somewhere new each visit, on open sand
-  {
+  const arrival = (): { x: number; z: number; city: { cx: number; cz: number } | null } => {
     const s = { h: 0, rock: 0, salt: 0 };
     const n = new THREE.Vector3();
     let x = 0;
@@ -129,8 +129,18 @@ function start() {
       z = fallback.z;
       spawnCity = fallback.city;
     }
+    return { x, z, city: spawnCity };
+  };
+  {
+    // Where to arrive: ?x=&z=, then ?miner, then the spawn saved from the menu, then somewhere new.
+    const pinned = qs.has('x') && qs.has('z');
+    const saved = !pinned && !qs.has('miner') ? loadSpawn() : null;
+    const r = saved ? null : arrival();
+    let x = saved ? saved.x : r!.x;
+    let z = saved ? saved.z : r!.z;
+    let spawnCity = r ? r.city : null;
     // ?x=..&z=.. pins the spawn point (handy for sharing a place).
-    if (qs.has('x') && qs.has('z')) {
+    if (pinned) {
       x = Number(qs.get('x'));
       z = Number(qs.get('z'));
     }
@@ -145,8 +155,8 @@ function start() {
       }
     }
     player.place(x, z);
-    // Face the city, so the first thing you see is somewhere to go.
-    player.facing = spawnCity ? Math.atan2(spawnCity.cx - x, spawnCity.cz - z) : Math.random() * Math.PI * 2;
+    // Face the city, so the first thing you see is somewhere to go (or the way a saved spawn faced).
+    player.facing = saved ? saved.facing : spawnCity ? Math.atan2(spawnCity.cx - x, spawnCity.cz - z) : Math.random() * Math.PI * 2;
   }
 
   // ---- scene
@@ -358,6 +368,27 @@ function start() {
     onStyle(i) {
       applyLook(LOOKS[i]);
       stillDrawn = false;
+    },
+    // A spawn is kept for the open sand only: not down in a cavern, or in the vault under the strata.
+    canSetSpawn: () => !player.under && !discoveries.deepIn,
+    onSetSpawn: () => saveSpawn({ x: player.state.pos.x, z: player.state.pos.z, facing: camYaw + Math.PI }),
+    onClearSpawn: () => clearSpawn(),
+    // A fresh arrival now, found the way a new visit finds one, whatever spawn is saved.
+    onRespawn() {
+      const at = arrival();
+      seekMiner = false;
+      player.place(at.x, at.z);
+      player.facing = at.city ? Math.atan2(at.city.cx - at.x, at.city.cz - at.z) : Math.random() * Math.PI * 2;
+      camYaw = player.facing + Math.PI;
+      camTarget.copy(player.state.pos);
+      cities.setFocus(at.x, at.z);
+    },
+    // Forget the journey and the spawn, keep the settings, and arrive somewhere new.
+    onReset() {
+      clearProgress();
+      const url = new URL(window.location.href);
+      for (const k of ['x', 'z', 'miner', 'reset', 'tools', 'deep']) url.searchParams.delete(k);
+      window.location.replace(url.toString());
     },
     },
     { quality: auto.tier, styles: unlocked ? LOOKS.map(({ id, name }) => ({ id, name })) : [], style: unlocked ? qs.get('style') : null },

@@ -22,7 +22,26 @@ export interface UIHooks {
   onHideFigure(hidden: boolean): void;
   onCapture(): void;
   onStyle(index: number): void;
+  /** Whether a spawn may be saved where the player stands (open ground only). */
+  canSetSpawn(): boolean;
+  /** Save here, facing the way the player looks, as where to arrive. Returns false if it could not be kept. */
+  onSetSpawn(): boolean;
+  onClearSpawn(): void;
+  /** Move to a fresh random arrival point now. */
+  onRespawn(): void;
+  /** Forget the journey and the saved spawn (settings stay) and start again. */
+  onReset(): void;
 }
+
+type TabId = 'audio' | 'graphics' | 'controls' | 'game';
+const TABS: Array<{ id: TabId; label: string }> = [
+  { id: 'audio', label: 'Audio' },
+  { id: 'graphics', label: 'Graphics' },
+  { id: 'controls', label: 'Controls' },
+  { id: 'game', label: 'Game' },
+];
+/** How long an inline status line stays up, in ms. */
+const STATUS_MS = 2600;
 
 export interface StyleChoice {
   id: string;
@@ -121,6 +140,16 @@ export class UI {
   private readonly captureBtn: HTMLButtonElement;
   private readonly hideBtn: HTMLButtonElement;
   private readonly panelControls: HTMLElement;
+  private readonly tabBtns: Record<TabId, HTMLButtonElement>;
+  private readonly tabPanes: Record<TabId, HTMLElement>;
+  private readonly spawnBtn: HTMLButtonElement;
+  private readonly spawnHint: HTMLElement;
+  private readonly statusEl: HTMLElement;
+  private readonly resetBtn: HTMLButtonElement;
+  private readonly resetCancel: HTMLButtonElement;
+  private readonly resetAsk: HTMLElement;
+  private tab: TabId = 'audio';
+  private statusTimer = 0;
   private readonly photoHint: HTMLElement;
   private readonly pauseBtn: HTMLButtonElement;
   private readonly styleNames: HTMLElement[] = [];
@@ -176,8 +205,32 @@ export class UI {
     h.id = 'aster-menu-title';
     panel.appendChild(h);
 
-    // Levels. Music and Effects sit under the overall Volume; 100 on each is the mix as tuned.
-    panel.append(
+    // Tabs. Resume and Photo mode sit below them, always in reach.
+    const tablist = el('div', 'aster-tabs');
+    tablist.setAttribute('role', 'tablist');
+    tablist.setAttribute('aria-label', 'Settings');
+    const panes = el('div', 'aster-panes');
+    this.tabBtns = {} as Record<TabId, HTMLButtonElement>;
+    this.tabPanes = {} as Record<TabId, HTMLElement>;
+    for (const t of TABS) {
+      const tab = el('button', 'aster-tab', t.label);
+      tab.type = 'button';
+      tab.id = `aster-tab-${t.id}`;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-controls', `aster-pane-${t.id}`);
+      tab.addEventListener('click', () => this.selectTab(t.id));
+      const pane = el('div', 'aster-pane');
+      pane.id = `aster-pane-${t.id}`;
+      pane.setAttribute('role', 'tabpanel');
+      pane.setAttribute('aria-labelledby', tab.id);
+      this.tabBtns[t.id] = tab;
+      this.tabPanes[t.id] = pane;
+      tablist.appendChild(tab);
+      panes.appendChild(pane);
+    }
+
+    // Audio. Music and Effects sit under the overall Volume; 100 on each is the mix as tuned.
+    this.tabPanes.audio.append(
       this.level('aster-volume', 'Volume', KEY_VOLUME, initial?.volume ?? 0.7, (v) => this.hooks.onVolume(v)),
       this.level('aster-music', 'Music', KEY_MUSIC, 1, (v) => this.hooks.onMusic(v)),
       this.level(
@@ -192,7 +245,7 @@ export class UI {
 
     const gfx = el('div', 'aster-field');
     const gfxHead = el('div', 'aster-field__head');
-    const gfxLabel = el('span', undefined, 'Graphics');
+    const gfxLabel = el('span', undefined, 'Quality');
     gfxLabel.id = 'aster-gfx-label';
     gfxHead.appendChild(gfxLabel);
     const seg = el('div', 'aster-seg');
@@ -208,7 +261,7 @@ export class UI {
     };
     this.qualityBtns = { mobile: mk('mobile', 'Mobile'), low: mk('low', 'Low'), high: mk('high', 'High') };
     gfx.append(gfxHead, seg);
-    panel.appendChild(gfx);
+    this.tabPanes.graphics.appendChild(gfx);
 
     if (this.styles.length > 1) {
       const sty = el('div', 'aster-field');
@@ -217,8 +270,74 @@ export class UI {
       styLabel.id = 'aster-style-label';
       styHead.appendChild(styLabel);
       sty.append(styHead, this.stylePicker('aster-pick aster-pick--wide', 'aster-style-label'));
-      panel.appendChild(sty);
+      this.tabPanes.graphics.appendChild(sty);
     }
+
+    // Controls: read-only, and only the set for the device in hand.
+    this.panelControls = el('ul', 'aster-panel__controls');
+    fillControls(this.panelControls, keyControls(this.known));
+    this.tabPanes.controls.appendChild(this.panelControls);
+
+    // Game
+    const game = this.tabPanes.game;
+    const btn = (label: string, cls = 'aster-btn'): HTMLButtonElement => {
+      const b = el('button', cls, label);
+      b.type = 'button';
+      return b;
+    };
+    this.spawnBtn = btn('Set spawn here');
+    this.spawnHint = el('span', 'aster-hint');
+    this.spawnHint.id = 'aster-spawn-hint';
+    const clearBtn = btn('Clear saved spawn');
+    const respawnBtn = btn('Respawn elsewhere');
+    const spawnRow = el('div', 'aster-stack');
+    spawnRow.append(this.spawnBtn, this.spawnHint, clearBtn, respawnBtn);
+    this.statusEl = el('p', 'aster-status');
+    this.statusEl.setAttribute('role', 'status');
+    this.statusEl.setAttribute('aria-live', 'polite');
+    this.resetBtn = btn('Start over', 'aster-btn aster-btn--danger');
+    const resetAsk = el('div', 'aster-confirm');
+    resetAsk.hidden = true;
+    resetAsk.setAttribute('role', 'group');
+    resetAsk.setAttribute('aria-label', 'Start over');
+    const resetQ = el('span', 'aster-confirm__q', 'Really reset?');
+    resetQ.id = 'aster-reset-q';
+    resetAsk.setAttribute('aria-labelledby', 'aster-reset-q');
+    this.resetCancel = btn('Cancel');
+    const resetYes = btn('Confirm', 'aster-btn aster-btn--danger');
+    resetAsk.append(resetQ, this.resetCancel, resetYes);
+    this.resetAsk = resetAsk;
+    const danger = el('div', 'aster-danger');
+    const dangerNote = el('p', 'aster-hint', 'Clears your journey and saved spawn. Settings stay.');
+    danger.append(dangerNote, this.resetBtn, resetAsk);
+    game.append(spawnRow, this.statusEl, danger);
+
+    this.spawnBtn.addEventListener('click', () => {
+      if (!this.hooks.canSetSpawn()) {
+        this.syncSpawn();
+        return;
+      }
+      this.say(this.hooks.onSetSpawn() ? 'Spawn saved' : 'Could not save the spawn');
+    });
+    clearBtn.addEventListener('click', () => {
+      this.hooks.onClearSpawn();
+      this.say('Saved spawn cleared');
+    });
+    respawnBtn.addEventListener('click', () => {
+      this.closeMenu();
+      this.hooks.onRespawn();
+    });
+    this.resetBtn.addEventListener('click', () => this.askReset(true));
+    this.resetCancel.addEventListener('click', () => {
+      this.askReset(false);
+      this.resetBtn.focus();
+    });
+    resetYes.addEventListener('click', () => {
+      resetYes.disabled = true;
+      this.hooks.onReset();
+    });
+
+    panel.append(tablist, panes);
 
     const actions = el('div', 'aster-actions');
     this.resumeBtn = el('button', 'aster-btn aster-btn--primary', 'Resume');
@@ -227,9 +346,6 @@ export class UI {
     photoBtn.type = 'button';
     actions.append(this.resumeBtn, photoBtn);
     panel.appendChild(actions);
-    this.panelControls = el('ul', 'aster-panel__controls');
-    fillControls(this.panelControls, keyControls(this.known));
-    panel.appendChild(this.panelControls);
     menu.appendChild(panel);
     this.menu = menu;
     this.panel = panel;
@@ -285,6 +401,7 @@ export class UI {
     // Wiring
     this.syncQuality();
     this.syncStyle();
+    this.selectTab('audio');
     this.resumeBtn.addEventListener('click', () => this.closeMenu());
     photoBtn.addEventListener('click', () => this.enterPhoto());
     this.captureBtn.addEventListener('click', () => this.hooks.onCapture());
@@ -322,11 +439,14 @@ export class UI {
     this.returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.setState('menu');
     this.hooks.onPause();
+    this.syncSpawn();
     this.resumeBtn.focus();
   }
 
   closeMenu(): void {
     if (this._state !== 'menu') return;
+    this.askReset(false);
+    this.say('');
     this.setState('playing');
     this.restoreFocus();
     this.hooks.onResume();
@@ -498,6 +618,59 @@ export class UI {
     this.hooks.onHideFigure(hidden);
   }
 
+  private selectTab(id: TabId, focus = false): void {
+    this.tab = id;
+    for (const t of TABS) {
+      const on = t.id === id;
+      this.tabBtns[t.id].setAttribute('aria-selected', String(on));
+      this.tabBtns[t.id].tabIndex = on ? 0 : -1;
+      this.tabPanes[t.id].hidden = !on;
+    }
+    this.askReset(false);
+    this.say('');
+    if (id === 'game') this.syncSpawn();
+    if (focus) this.tabBtns[id].focus();
+  }
+
+  /** Left and Right (and Home, End) move between tabs, which open as they are reached. */
+  private arrowTab(e: KeyboardEvent): boolean {
+    if (!(e.target instanceof HTMLElement) || e.target.getAttribute('role') !== 'tab') return false;
+    const i = TABS.findIndex((t) => t.id === this.tab);
+    const n = TABS.length;
+    let j: number;
+    if (e.key === 'ArrowRight') j = (i + 1) % n;
+    else if (e.key === 'ArrowLeft') j = (i - 1 + n) % n;
+    else if (e.key === 'Home') j = 0;
+    else if (e.key === 'End') j = n - 1;
+    else return false;
+    this.selectTab(TABS[j].id, true);
+    return true;
+  }
+
+  /** The spawn button follows where the player stands: open ground only. */
+  private syncSpawn(): void {
+    const ok = this.hooks.canSetSpawn();
+    this.spawnBtn.disabled = !ok;
+    this.spawnHint.textContent = ok ? '' : 'Surface only';
+    this.spawnHint.hidden = ok;
+    if (ok) this.spawnBtn.removeAttribute('aria-describedby');
+    else this.spawnBtn.setAttribute('aria-describedby', 'aster-spawn-hint');
+  }
+
+  /** A short line of feedback in the Game tab. */
+  private say(text: string): void {
+    window.clearTimeout(this.statusTimer);
+    this.statusEl.textContent = text;
+    if (text) this.statusTimer = window.setTimeout(() => (this.statusEl.textContent = ''), STATUS_MS);
+  }
+
+  /** Start over asks twice: the button turns into a question with Confirm and Cancel. */
+  private askReset(on: boolean): void {
+    this.resetBtn.hidden = on;
+    this.resetAsk.hidden = !on;
+    if (on) this.resetCancel.focus();
+  }
+
   private chooseQuality(q: Quality): void {
     if (q === this.quality) return;
     this.quality = q;
@@ -628,7 +801,10 @@ export class UI {
         this.closeMenu();
       } else if (e.key === 'Tab') {
         this.trapTab(e);
-      } else if (e.key.startsWith('Arrow') && this.arrowSegment(e)) {
+      } else if (
+        (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') &&
+        (this.arrowTab(e) || (e.key.startsWith('Arrow') && this.arrowSegment(e)))
+      ) {
         e.preventDefault();
       }
       return;
