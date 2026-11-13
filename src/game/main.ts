@@ -904,6 +904,7 @@ function start() {
   let cityNear = 0;
   let bustle = 0;
   let airCam = 0;
+  let camLift = 0; // how much steeper the eye looks down while a wall is behind it, eased
   let clearDist = -1; // how far back the eye sits clear of walls on the surface, eased
   let deepDist = -1; // how far back the eye sits underground, eased; -1 up on the sand
   let figNear = false; // the eye is drawn in so close underground that the figure is not shown
@@ -1197,10 +1198,47 @@ function start() {
     tmp.copy(st.pos);
     tmp.y += 1.5;
     camTarget.lerp(tmp, 1 - Math.exp(-dt * 12));
-    const cp = Math.cos(camPitch);
-    tmp2.set(Math.sin(camYaw) * cp, Math.sin(camPitch), Math.cos(camYaw) * cp);
-    // pull back and rise a little while airborne
     const reach = camDist * (1 + 0.6 * airCam);
+    // Against a wall the eye is lifted: of a few steeper angles, the one that leaves the most
+    // room (a little steeper costs a little room) is eased into, so the figure is seen from above
+    // the wall instead of from inside it. Open ground leaves the angle alone.
+    if (!discoveries.deepIn) {
+      let bestLift = 0;
+      let maxFree = 0;
+      const frees = [0, 0, 0, 0];
+      for (let l = 0; l <= 3; l++) {
+        const pitch = Math.min(Math.max(camPitch, 1.05), camPitch + l * 0.3);
+        const c2 = Math.cos(pitch);
+        const dx = Math.sin(camYaw) * c2;
+        const dy = Math.sin(pitch);
+        const dz = Math.cos(camYaw) * c2;
+        let free = reach;
+        for (let d = 0.4; d <= reach; d += 0.3) {
+          const x = camTarget.x + dx * d;
+          const y = camTarget.y + dy * d;
+          const z = camTarget.z + dz * d;
+          if (cities.solidAt(x, y, z, 0.3) || discoveries.solidAt(x, y, z, 0.3)) {
+            free = d - 0.3;
+            break;
+          }
+        }
+        frees[l] = free;
+        maxFree = Math.max(maxFree, free);
+        // (open all the way back: the first such angle will do, and the flattest is preferred)
+        if (free >= reach) {
+          bestLift = l * 0.3;
+          maxFree = Infinity;
+          break;
+        }
+      }
+      // the steepest angle that costs hardly any room: as high as the wall and roof allow
+      if (maxFree < Infinity) for (let l = 0; l <= 3; l++) if (frees[l] >= maxFree * 0.85) bestLift = l * 0.3;
+      camLift += (bestLift - camLift) * (1 - Math.exp(-dt * (bestLift > camLift ? 5 : 1.5)));
+    } else camLift = 0;
+    const lp = Math.min(camPitch + camLift, Math.max(camPitch, 1.05));
+    const cp = Math.cos(lp);
+    tmp2.set(Math.sin(camYaw) * cp, Math.sin(lp), Math.cos(camYaw) * cp);
+    // pull back and rise a little while airborne
     tmp2.y += 0.12 * airCam;
     tmp2.normalize();
     let dist = reach;
