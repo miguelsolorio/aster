@@ -186,6 +186,17 @@ export class Solids {
     return top;
   }
 
+  /** Whether the point (x, y, z) lies inside a solid, grown by a margin all round. */
+  contains(x: number, y: number, z: number, m = 0): boolean {
+    const items = this.items;
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (x < it.minX - m || x > it.maxX + m || z < it.minZ - m || z > it.maxZ + m) continue;
+      if (span(it, x, z) && lo - m <= y && y <= hi + m) return true;
+    }
+    return false;
+  }
+
   /** Underside of the lowest solid over (x, z) that feet at height y are underneath, or Infinity. */
   ceilAt(x: number, z: number, y: number): number {
     let ceil = Infinity;

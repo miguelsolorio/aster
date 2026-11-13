@@ -885,6 +885,7 @@ function start() {
   let cityNear = 0;
   let bustle = 0;
   let airCam = 0;
+  let clearDist = -1; // how far back the eye sits clear of walls on the surface, eased
   let deepDist = -1; // how far back the eye sits underground, eased; -1 up on the sand
   let figNear = false; // the eye is drawn in so close underground that the figure is not shown
   let underK = 0; // 0 under the sky .. 1 well down in a deep, eased
@@ -1226,9 +1227,30 @@ function start() {
         break;
       }
     }
+    // Walls and roofs of buildings, shrines and ruins stand in the eye's way too: it is drawn in
+    // until nothing solid is between it and the figure. Quickly in, slowly back out, so a pass
+    // along a doorway or a ragged wall does not shake the view.
+    let hit = Infinity;
+    if (!deepIn && dist > 0.3) {
+      for (let d = 0.4; d <= dist; d += 0.2) {
+        const x = camTarget.x + tmp2.x * d;
+        const y = camTarget.y + tmp2.y * d;
+        const z = camTarget.z + tmp2.z * d;
+        if (cities.solidAt(x, y, z, 0.3) || discoveries.solidAt(x, y, z, 0.3)) {
+          hit = Math.max(0.12, d - 0.3);
+          break;
+        }
+      }
+    }
+    const room = Math.min(hit, dist);
+    if (clearDist < 0 || dt <= 0) clearDist = room;
+    else clearDist += (room - clearDist) * (1 - Math.exp(-dt * (room < clearDist ? 14 : 1.4)));
+    clearDist = Math.min(clearDist, hit); // never past the wall itself
+    const walled = clearDist < dist - 0.01;
+    if (walled) dist = Math.max(0.12, clearDist);
     camera.position.copy(camTarget).addScaledVector(tmp2, dist);
     // drawn right in against a wall, the eye is inside the figure: see past it, not its lining
-    const tooNear = !!deepIn && dist < 0.75;
+    const tooNear = (!!deepIn || walled) && dist < 0.75;
     if (tooNear !== figNear) {
       figNear = tooNear;
       figure.group.visible = !tooNear;
@@ -1248,7 +1270,7 @@ function start() {
     const fov = 50 + Math.min(14, st.speed * 0.55);
     // Underground the eye is often a hand's width from a wall, and the half metre it does not
     // draw in front of itself up on the sand would cut a window through one.
-    const near = deepIn ? 0.06 : 0.5;
+    const near = deepIn || walled ? 0.06 : 0.5;
     if (Math.abs(camera.fov - fov) > 0.05 || camera.near !== near) {
       camera.fov += (fov - camera.fov) * (1 - Math.exp(-dt * 3));
       camera.near = near;
