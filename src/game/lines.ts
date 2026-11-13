@@ -95,8 +95,14 @@ export const TOWNSFOLK = {
     'My grandmother kept one of those on a shelf. She never said where it came from.',
     'Don\'t sell that. Whatever they offer.',
   ],
-  /** In any city, to someone with no pick: points at the miner. */
+  /** In any city, to someone with no pick: points at the miner. {way} and {far} are worked out from the speaker to the miner. */
   noPick: [
+    'The miner has lost a lamp and won\'t stop talking about it. Sits {way} of here, {far}. Go and listen, if you\'ve the patience.',
+    'Looking for something to do? Ask the miner. Sits by a pick all day, sorting stones. {way} of here, {far}.',
+    'You want the miner? {way}, {far}. Follow the lanes and look for the heap of stones.',
+  ],
+  /** Same, when the miner can't be placed in this city. */
+  noPickBlind: [
     'The miner has lost a lamp and won\'t stop talking about it. Go and listen, if you\'ve the patience.',
     'Looking for something to do? Ask the miner. Sits by a pick all day, sorting stones.',
   ],

@@ -83,6 +83,7 @@ function start() {
   player.board = save.has('board');
   player.carpet = save.has('carpet');
 
+  let seekMiner = false;
   // ---- spawn somewhere new each visit, on open sand
   {
     const s = { h: 0, rock: 0, salt: 0 };
@@ -132,6 +133,16 @@ function start() {
     if (qs.has('x') && qs.has('z')) {
       x = Number(qs.get('x'));
       z = Number(qs.get('z'));
+    }
+    // ?miner drops you at a city (?miner=2 for the second nearest) and, once it has loaded, in front of its miner.
+    if (qs.has('miner')) {
+      const c = world.cities.near(x, z)[Math.max(0, (Number(qs.get('miner')) || 1) - 1)];
+      if (c) {
+        x = c.cx;
+        z = c.cz;
+        spawnCity = c;
+        seekMiner = true;
+      }
     }
     player.place(x, z);
     // Face the city, so the first thing you see is somewhere to go.
@@ -514,7 +525,12 @@ function start() {
       const pool = [...TOWNSFOLK.any, ...(site ? TOWNSFOLK[site.kind] : []), ...hour, ...(save.has('board') ? [] : [...TOWNSFOLK.onFoot, ...TOWNSFOLK.onFoot])];
       // a relic at the belt gets noticed, and in any city someone with no pick is sent to the miner
       if (save.data.items.relic) pool.push(...TOWNSFOLK.relic, ...TOWNSFOLK.relic);
-      if (site && !save.has('pick')) pool.push(...TOWNSFOLK.noPick);
+      if (site && !save.has('pick')) {
+        // point the way to the miner, from where the player stands
+        const at = player.state.pos;
+        if (people.minerNear(1e9, minerP)) pool.push(...TOWNSFOLK.noPick.map((l) => directions(l, at.x, at.z, minerP.x, minerP.z)));
+        else pool.push(...TOWNSFOLK.noPickBlind);
+      }
       return { lines: [(lastLine = pick(pool, lastLine))] };
     },
     voice: (pitch) => audio.murmur(pitch),
@@ -1166,6 +1182,12 @@ function start() {
     waymarks.update(frame);
     people.setCity(cities.active);
     people.update(frame);
+    if (seekMiner && people.minerNear(1e9, minerP)) {
+      seekMiner = false;
+      player.place(minerP.x, minerP.z + 2.5);
+      player.facing = Math.PI; // toward the miner, who is to the north (-z)
+      camYaw = player.facing + Math.PI;
+    }
     bustle = people.bustle;
     // How much of a city surrounds the listener: 0 out in the desert, rising from 900 m out to the centre.
     {
