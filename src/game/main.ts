@@ -800,8 +800,12 @@ function start() {
   let cityNear = 0;
   let bustle = 0;
   let airCam = 0;
+  let deepDist = -1; // how far back the eye sits underground, eased; -1 up on the sand
+  let figNear = false; // the eye is drawn in so close underground that the figure is not shown
   let underK = 0; // 0 under the sky .. 1 well down in a deep, eased
   const camWant = new THREE.Vector3();
+  const camProbe = new THREE.Vector3();
+  const camSide = new THREE.Vector3();
   const probe = { h: 0, rock: 0, salt: 0 };
 
   const cascade = (x: number, z: number, count: number) => {
@@ -915,6 +919,12 @@ function start() {
       u.uFog.value *= 1 - underK;
       dust.under = underK > 0.5;
       wildlife.group.visible = underK < 0.99;
+      // Under the lid the open desert is not drawn at all: a deep is a closed shell, and any
+      // crack in it should show the dark, never the sky and the hills.
+      const shut = !!deepIn && st.pos.y < deepIn.spec.y + deepIn.spec.lid - 1;
+      massifs.group.visible = cities.group.visible = clipmap.group.visible = !shut;
+      // and the sky goes sooner, as soon as the stair is a little way down the well
+      sky.visible = !(deepIn && st.pos.y < deepIn.spec.y - 1.2);
     }
 
     // Wind wanders slowly in direction and strength.
@@ -1095,9 +1105,31 @@ function start() {
     let above = -Infinity;
     if (deepIn) {
       camWant.copy(camTarget).addScaledVector(tmp2, reach);
-      far = dist = Math.max(0.9, reach * Math.min(1, Math.max(0, deepIn.sight(camTarget, camWant))) - 0.3);
+      // (four lines, not one: to the eye itself, to either side of it and over it, so the eye
+      // keeps clear of a wall it runs along and of the roughness the rock is drawn with)
+      let open = deepIn.sight(camTarget, camWant);
+      const sx = tmp2.z;
+      const sz = -tmp2.x;
+      const sl = Math.hypot(sx, sz) || 1;
+      for (let q = 0; q < 3; q++) {
+        camProbe.copy(camWant);
+        if (q === 2) camProbe.y += 0.7;
+        else camProbe.addScaledVector(camSide.set(sx / sl, 0, sz / sl), q === 0 ? 0.8 : -0.8);
+        open = Math.min(open, deepIn.sight(camTarget, camProbe));
+      }
+      // (right in to the figure's head if need be: standing against a wall with the eye turned
+      // into it, any least distance kept would put the eye inside the rock)
+      const got = reach * Math.min(1, Math.max(0, open));
+      // The room there is behind the figure jumps about as it walks: every step of a stepped
+      // roof, every jog of a wall. Followed to the letter that shakes the whole view, so the
+      // eye is eased: quickly in, slowly back out, and never past the rock itself.
+      const want = Math.max(0.12, got - Math.min(0.6, got * 0.5));
+      if (deepDist < 0 || dt <= 0) deepDist = want;
+      else deepDist += (want - deepDist) * (1 - Math.exp(-dt * (want < deepDist ? 9 : 0.8)));
+      deepDist = Math.min(deepDist, Math.max(0.12, got - 0.12));
+      far = dist = deepDist;
       above = deepIn.spec.y - 0.1;
-    }
+    } else deepDist = -1;
     for (let i = 1; i <= 6; i++) {
       const d = (far * i) / 6;
       if (camTarget.y + tmp2.y * d < above) continue;
@@ -1110,6 +1142,12 @@ function start() {
       }
     }
     camera.position.copy(camTarget).addScaledVector(tmp2, dist);
+    // drawn right in against a wall, the eye is inside the figure: see past it, not its lining
+    const tooNear = !!deepIn && dist < 0.75;
+    if (tooNear !== figNear) {
+      figNear = tooNear;
+      figure.group.visible = !tooNear;
+    }
     if (camera.position.y >= above) {
       camera.position.y = Math.max(camera.position.y, topAt(camera.position.x, camera.position.z) + 0.7);
       if (inCave) camera.position.y = Math.min(camera.position.y, ceilAt(camera.position.x, camera.position.z) - 0.4);
@@ -1123,8 +1161,12 @@ function start() {
     }
     camera.lookAt(camTarget);
     const fov = 50 + Math.min(14, st.speed * 0.55);
-    if (Math.abs(camera.fov - fov) > 0.05) {
+    // Underground the eye is often a hand's width from a wall, and the half metre it does not
+    // draw in front of itself up on the sand would cut a window through one.
+    const near = deepIn ? 0.06 : 0.5;
+    if (Math.abs(camera.fov - fov) > 0.05 || camera.near !== near) {
       camera.fov += (fov - camera.fov) * (1 - Math.exp(-dt * 3));
+      camera.near = near;
       camera.updateProjectionMatrix();
     }
     camera.updateMatrixWorld();
@@ -1290,7 +1332,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, splash, waterAt, water, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
+        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, splash, waterAt, water, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
   }
 
   let frozen = false;

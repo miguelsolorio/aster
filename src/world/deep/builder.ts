@@ -246,6 +246,82 @@ export class DeepBuilder {
     g.roughNow = keepR;
     // what daylight the antechamber has, falling down the well
     this.lights.shafts.push({ u: 0, v: 0, y: 0.5, r: hv, strength: 0.4, floor: foot, fade: 16 });
+    this.stairHead();
+  }
+
+  /**
+   * The head of the stair, up in the antechamber: somebody built this. Paving laid round the
+   * mouth, a coping of dressed blocks on the three sides that are a drop, and at the side the
+   * stair is entered from a gate of two posts under a lintel, a lantern on each post.
+   * (None of it is solid: outside the hole and above the lid the ground is the terrain's.)
+   */
+  private stairHead(): void {
+    const hu = DEEP_HOLE.halfU;
+    const hv = DEEP_HOLE.halfV;
+    const r = this.r.bind(this);
+    const stone = (k: number) => this.color(0.86 * k, 0.83 * k, 0.76 * k, 1);
+
+    // paving: courses of slabs round the mouth, wider toward the way in
+    const PV = 1.9;
+    const course = (u0: number, u1: number, v0: number, v1: number, along: boolean) => {
+      const len = along ? u1 - u0 : v1 - v0;
+      const n = Math.max(1, Math.round(len / 1.35));
+      for (let i = 0; i < n; i++) {
+        const a = i / n;
+        const b = (i + 1) / n;
+        stone(r(0.74, 0.9));
+        const gap = 0.035;
+        if (along) this.box(u0 + (len * (a + b)) / 2, r(0.03, 0.06), (v0 + v1) / 2, len * (b - a) - gap, 0.05, v1 - v0 - gap);
+        else this.box((u0 + u1) / 2, r(0.03, 0.06), v0 + (len * (a + b)) / 2, u1 - u0 - gap, 0.05, len * (b - a) - gap);
+      }
+    };
+    course(-hu - 3.2, hu + PV, hv, hv + PV / 2, true);
+    course(-hu - 3.2, hu + PV, hv + PV / 2, hv + PV, true);
+    course(-hu - 3.2, hu + PV, -hv - PV / 2, -hv, true);
+    course(-hu - 3.2, hu + PV, -hv - PV, -hv - PV / 2, true);
+    course(hu, hu + PV / 2, -hv, hv, false);
+    course(hu + PV / 2, hu + PV, -hv, hv, false);
+    for (let k = 0; k < 3; k++) course(-hu - 3.2 + k * 1.07, -hu - 3.2 + (k + 1) * 1.07, -hv, hv, false);
+
+    // coping: a kerb of blocks along both long sides (from where the floor falls away) and the far end
+    const KW = 0.46;
+    const KH = 0.42;
+    const kerb = (u0: number, u1: number, v0: number, v1: number, along: boolean) => {
+      const len = along ? u1 - u0 : v1 - v0;
+      const n = Math.max(1, Math.round(len / 0.95));
+      for (let i = 0; i < n; i++) {
+        const m = (i + 0.5) / n;
+        const l = len / n - 0.03;
+        const h = KH + r(-0.04, 0.04);
+        stone(r(0.84, 1));
+        if (along) this.box(u0 + len * m, 0.05, (v0 + v1) / 2 + r(-0.015, 0.015), l, h, KW);
+        else this.box((u0 + u1) / 2 + r(-0.015, 0.015), 0.05, v0 + len * m, KW, h, l);
+      }
+    };
+    kerb(-hu / 2, hu + KW, hv, hv + KW, true);
+    kerb(-hu / 2, hu + KW, -hv - KW, -hv, true);
+    kerb(hu, hu + KW, -hv, hv, false);
+
+    // the gate: two posts on plinths, a lintel across, lanterns
+    const gu = -hu - 0.1;
+    const PH = 2.7;
+    for (const sd of [-1, 1]) {
+      const pv = sd * (hv + 0.42);
+      stone(0.92);
+      this.box(gu, 0.05, pv, 1.0, 0.3, 1.0);
+      stone(1);
+      this.box(gu, 0.35, pv, 0.72, PH - 0.35, 0.72);
+      stone(0.9);
+      this.box(gu, PH, pv, 0.92, 0.2, 0.92);
+      this.lamp(gu, PH + 0.75, pv, { reach: 11, strength: 0.9 });
+    }
+    stone(0.96);
+    this.box(gu, PH + 0.2, 0, 0.8, 0.46, 2 * hv + 2.3);
+    stone(0.86);
+    this.box(gu, PH + 0.66, 0, 0.95, 0.14, 2 * hv + 2.6);
+    // a mark cut in the middle of the lintel, still holding a little light
+    this.color(0.45, 0.45, 0.45, 4);
+    for (const q of [-1, 0, 1]) this.box(gu - 0.42, PH + 0.32 + (q === 0 ? 0.04 : 0), q * 0.3, 0.05, q === 0 ? 0.3 : 0.2, 0.08);
   }
 
   /** The floor under (or next above) a point, local. +Infinity in solid rock. */
@@ -541,6 +617,12 @@ export class DeepBuilder {
     const step = Math.min(0.3, Math.min(grid.cu, grid.cv) * 0.4);
     /** Whether the grid has a say at a local point; elsewhere a sight line passes. */
     const ours = (u: number, y: number, v: number): boolean => (u >= -HU && u <= HU && v >= -HV && v <= HV) || y < lid;
+    /**
+     * Whether a sight line is stopped at a local point. Under the lid and down the hole the grid
+     * says; between the lid and the antechamber floor there is only rock, whatever the grid
+     * holds (it cuts nothing there), so an eye can never rise out through a passage's roof.
+     */
+    const stops = (u: number, y: number, v: number): boolean => (ours(u, y, v) ? !grid.isAir(u, y, v) : y < -0.2);
 
     return {
       spec,
@@ -613,7 +695,7 @@ export class DeepBuilder {
           const u = au + du * t;
           const y = ay + dy * t;
           const v = av + dv * t;
-          if (ours(u, y, v) && !grid.isAir(u, y, v)) {
+          if (stops(u, y, v)) {
             hit = i;
             break;
           }
@@ -627,7 +709,7 @@ export class DeepBuilder {
           const u = au + du * t;
           const y = ay + dy * t;
           const v = av + dv * t;
-          if (ours(u, y, v) && !grid.isAir(u, y, v)) hi = t;
+          if (stops(u, y, v)) hi = t;
           else lo = t;
         }
         return lo;
