@@ -20,6 +20,23 @@ void main() {
 }
 `;
 
+// The hood and the head bulging out of its front. Both are placed at the hood's centre and
+// coloured by the direction from there (vL): white within a fixed angle of straight ahead,
+// cloth outside. The face is an exact circle per pixel, not the ragged line where the two
+// meshes cross, and both shade with the same normal so that crossing never shows.
+const hoodVert = /* glsl */ `
+varying vec3 vW;
+varying vec3 vN;
+varying vec3 vL;
+void main() {
+  vL = position;
+  vec4 wp = modelMatrix * vec4(position, 1.0);
+  vW = wp.xyz;
+  vN = normalize(mat3(modelMatrix) * normalize(position));
+  gl_Position = projectionMatrix * viewMatrix * wp;
+}
+`;
+
 const robeVert = /* glsl */ `
 uniform float uTime;
 uniform float uFlow;      // 0 hanging .. 1+ streaming straight back
@@ -94,12 +111,24 @@ uniform float uBody;   // 0 = dark cloth .. 1 = the white face
 uniform float uTone;   // 0 = the dress, near-black .. 1 = the cloak, a shade warmer
 varying vec3 vW;
 varying vec3 vN;
+#ifdef FACE
+varying vec3 vL;
+#endif
 ${STYLE_GLSL}
 void main() {
   vec3 toCam = cameraPosition - vW;
   float dist = length(toCam);
   vec3 V = toCam / max(dist, 1e-4);
   vec3 n = normalize(vN);
+  vec3 n0 = n;
+  float body = uBody;
+#ifdef FACE
+  // the face: every point of the hood within a fixed angle of straight ahead, with a
+  // one-pixel soft edge, so it stays a clean circle however the figure moves
+  float d = dot(normalize(vL), FACE_AXIS);
+  float fw = max(fwidth(d), 1e-4);
+  body = smoothstep(FACE_COS - fw, FACE_COS + fw, d);
+#endif
   float inside = 1.0;
   if (dot(n, V) < 0.0) {
     n = -n;
@@ -114,9 +143,11 @@ void main() {
   vec3 dark = mix(sh, li, l * 0.85) * inside;
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * smoothstep(-0.2, 0.3, ndl);
   dark += uSunCol * rim * 0.08 * (1.0 - 0.5 * uNight);
-  // face: flat white, tinted by the light and dimmed at night
-  vec3 white = vec3(0.97, 0.95, 0.9) * mix(vec3(1.0), uSunCol, 0.3) * (1.0 - 0.42 * uNight) * mix(0.84, 1.0, l);
-  vec3 col = mix(dark, white, uBody);
+  // face: flat white, tinted by the light and dimmed at night. It takes the smooth light,
+  // not the facets or the world-space band noise, which would crawl across it on the move.
+  float lf = smoothstep(-0.1, 0.35, dot(n0, uSunDir));
+  vec3 white = vec3(0.97, 0.95, 0.9) * mix(vec3(1.0), uSunCol, 0.3) * (1.0 - 0.42 * uNight) * mix(0.84, 1.0, lf);
+  vec3 col = mix(dark, white, body);
   col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));
   gl_FragColor = vec4(col, 1.0);
 }
@@ -129,6 +160,13 @@ const COLLAR = 1.42;
 const HEM = 0.4;
 const HEAD_Y = 1.55;
 const HEAD_R = 0.125;
+const HOOD_R = 0.155;
+const HOOD_Y = HEAD_Y + 0.01;
+const HOOD_Z = -0.03;
+// The face circle, seen from the hood's centre: its axis tips down a touch toward the head's
+// centre, and its edge sits ~53° off that axis, where the head comes out through the hood.
+const FACE_DROP = 0.11;
+const FACE_COS = 0.6;
 
 interface Drape {
   top: number; // collar height
@@ -282,9 +320,11 @@ export class Figure {
     const cloth2 = { uFlow: this.flow, uLocalWind: this.localWind, uSpread: this.spreadU, uStep: this.stepU, uBack: this.backU, uRoll: this.rollU, uPick: this.pickU };
     add(t, drapeGeometry(DRESS).translate(0, -HIP, 0), mat(0, 0, cloth2, robeVert, THREE.DoubleSide));
     add(t, drapeGeometry(CLOAK).translate(0, -HIP, 0), mat(0, 1, cloth2, robeVert, THREE.DoubleSide));
-    add(t, new THREE.SphereGeometry(HEAD_R, 24, 16).translate(0, HEAD_Y - HIP, 0.035), mat(1));
-    // hood: a plain round cowl set a little behind the head, so the face shows as a disc
-    add(t, new THREE.SphereGeometry(0.155, 24, 16).scale(1, 1.03, 1).translate(0, HEAD_Y - HIP + 0.01, -0.03), mat(0, 1));
+    // hood: a plain round cowl set a little behind the head, so the face shows as a disc (see hoodVert)
+    const hoodMat = mat(0, 1, {}, hoodVert);
+    hoodMat.defines = { FACE: '', FACE_AXIS: `normalize(vec3(0.0, ${-FACE_DROP}, 1.0))`, FACE_COS: FACE_COS.toFixed(4) };
+    add(t, new THREE.SphereGeometry(HOOD_R, 48, 32).scale(1, 1.03, 1), hoodMat).position.set(0, HOOD_Y - HIP, HOOD_Z);
+    add(t, new THREE.SphereGeometry(HEAD_R, 48, 32).translate(0, HEAD_Y - HOOD_Y, 0.035 - HOOD_Z), hoodMat).position.set(0, HOOD_Y - HIP, HOOD_Z);
 
     for (const sx of [-1, 1]) {
       const arm = new THREE.Group();
