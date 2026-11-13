@@ -10,6 +10,8 @@ import { MAX_CAVERNS, TERRAIN, writeCaverns, type Cave, type Cavern, type Massif
 import { rockCapVert, terrainFrag } from '../render/terrainShaders';
 import { CITY_CELL } from '../city/placement';
 import { Solids, type SolidKind } from './solids';
+import { createDeep } from './deep/index';
+import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types';
 
 const CELL = 900 * WORLD_SCALE;
 const MARGIN = 150; // keeps sites at least 300 m apart
@@ -19,8 +21,19 @@ const DROP_R = 3500;
 const SCAN_EVERY = 0.3;
 const GROVE_P = 0.7; // chance an otherwise empty cell beside a river holds a grove
 const GROVE_REACH = 260; // metres from a river that counts as beside it
-const CAVERN_P = 0.22; // chance an otherwise empty cell hides a cavern (where the ground suits one)
-const CAVERN_BUILD_R = 900; // an open cavern's roof and contents are built inside this
+const CAVERN_P = 0.84; // chance a cell hides a cavern where the ground suits one: measured, about one cell in three ends up with one
+const CAVERN_BUILD_R = 900; // an open cavern's roof is built inside this
+const DEEP_BUILD_R = 500; // and the deep under it inside this of its hole
+const DEEP_DROP_R = 900; // a deep is let go beyond this (never while the wanderer is in it)
+const DEEP_MAX = 2; // how many deeps exist at once
+const DEEP_MIN = 280; // the room a deep is given, each way (m)
+const DEEP_MAX_ROOM = 360;
+const SPOTS = 24; // places in a cell where an entrance is tried
+const CITY_CLEAR = 700; // an entrance keeps this far outside a city (m)
+const RIVER_CLEAR = 170; // an entrance keeps this far from a river (m)
+const SITE_CLEAR = 320; // and this far from the find its cell has on the surface, wherever that settles
+const LID_MARGIN = 4; // rock left between the top of a deep and the lowest ground over it (m)
+const LID_DEEPEST = -45; // a site whose deep would have to start further down than this is passed over
 const HOLLOW_R = 30; // a strike sounds hollow within this of a sealed cavern (m)
 const DIG_R = 4.5; // and counts toward breaking through within this of the spot
 const DIG_HITS = 4; // strikes on the spot before the sand gives way
@@ -96,6 +109,7 @@ void main() {
 // 4 glowing mineral. Ten more than any of these is the same thing deep in a cavern, out of the sun's reach.
 const stoneFrag = /* glsl */ `
 uniform vec4 uCavGlow;
+uniform vec3 uCavGlowCol;
 uniform float uTime;
 uniform vec3 uSunDir;
 uniform vec3 uRockLit;
@@ -139,7 +153,7 @@ void main() {
       float g2 = dot(gd, gd);
       float ga = 1.0 / (1.0 + g2 / (0.16 * uCavGlow.w * uCavGlow.w));
       ga *= 0.45 + 0.55 * max(dot(n, gd * inversesqrt(g2 + 1e-3)), 0.0);
-      col += vec3(0.3, 0.95, 0.82) * vTint * (0.85 * ga);
+      col += uCavGlowCol * vTint * (0.85 * ga);
     }
     fogA = 0.0;
   }
@@ -1406,20 +1420,36 @@ function buildShell(c: Ctx): void {
 
 // ------------------------------------------------------------------ caverns
 
-/** A cavern as the discoveries know it: the shape the terrain cuts, and what is inside. */
+/** A cavern as the discoveries know it: the entrance the terrain cuts, and the deep under it. */
 export interface CavernSite {
   key: number;
   cav: Cavern;
-  /** 0 a single chamber, 1 a bent passage, 2 a chamber with a pool. */
-  variant: number;
-  /** A great seam of glowing mineral, rather than a few crystals. */
+  /** Which of the five deeps lies under it. Neighbouring cells never share one. */
+  kind: DeepKind;
+  /** The room the deep may be cut in, in its own frame (see DeepSpec), and the lid over it. */
+  u1: number;
+  v0: number;
+  v1: number;
+  lid: number;
+  /** What the site rolled, for the deep to hold: a seam of mineral, carved slabs, a relic. */
   vein: boolean;
   carvings: boolean;
   relic: boolean;
   seed: number;
   /** Strikes landed on the spot so far. */
   hits: number;
+  /** The deep, while it is built. */
+  deep: Deep | null;
+  /** The middle of the hole in the antechamber floor: the deep's origin. */
+  hx: number;
+  hz: number;
 }
+
+/**
+ * The key of the site that is a cavern's roof. A cavern's own key is its cell's (it is what the
+ * save knows it by), and so is the key of the find on the surface that the cell may also have.
+ */
+const roofKey = (cs: CavernSite): number => cs.key + 0.5;
 
 const sstep = (a: number, b: number, x: number): number => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -1433,8 +1463,9 @@ const cavHalf = (cv: Cavern, u: number): number => {
 };
 
 /**
- * An open cavern: the sand left standing over it as a roof (the terrain cuts the slot, as it
- * does for a cave), daylight falling in under the brow, and what the dark holds.
+ * An open cavern's entrance: the sand left standing over it as a roof (the terrain cuts the
+ * slot, as it does for a cave), and daylight falling in under the brow. What the place holds
+ * is all below, in the deep.
  */
 function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: Face) => Face): void {
   const cv = cs.cav;
@@ -1528,88 +1559,6 @@ function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: F
     }
   }
 
-  // ---- what the dark holds. Everything from here is out of the sun's reach.
-  st.dark = true;
-  const side = c.rng() < 0.5 ? -1 : 1;
-  const wall = (u: number, sd: number, inset: number) => cavLine(cv, u) + sd * (cavHalf(cv, u) - inset);
-
-  // the mineral: a seam climbing one wall of the end chamber, or only a few crystals at its foot
-  {
-    const ua = cv.len - er * 1.7;
-    const ub = cv.len - 2.5;
-    const n = cs.vein ? 16 : 5;
-    for (let i = 0; i < n; i++) {
-      const t = (i + c.rng() * 0.6) / n;
-      const u = ua + (ub - ua) * t;
-      const h = c.r(0.7, 1.9) * (cs.vein ? 1 : 0.7);
-      const y = floorY + (cs.vein ? 0.3 + 4.6 * Math.sin(t * Math.PI) * c.r(0.75, 1) : 0.2);
-      const k = c.r(0.65, 1.1);
-      st.set(k, k, k, 4, 0);
-      c.prim(UNIT_CONE, u, y + h * 0.35, wall(u, side, 0.15), c.r(0.22, 0.5), h, c.r(0.22, 0.5), c.rng() * 6, side * c.r(0.5, 1.1), c.r(-0.5, 0.5));
-    }
-    // a cluster growing out of the floor beneath it
-    const um = (ua + ub) / 2;
-    for (let i = 0; i < (cs.vein ? 7 : 3); i++) {
-      const u = um + c.r(-2.2, 2.2);
-      const v = wall(u, side, c.r(0.9, 2.4));
-      const h = c.r(0.5, 1.5);
-      const k = c.r(0.6, 1.05);
-      st.set(k, k, k, 4, 0);
-      c.prim(UNIT_CONE, u, floorY + h * 0.4, v, c.r(0.16, 0.34), h, c.r(0.16, 0.34), c.rng() * 6, c.r(-0.35, 0.35), c.r(-0.35, 0.35));
-    }
-    const ly = floorY + (cs.vein ? 2.8 : 1);
-    c.at(um, wall(um, side, 1.4));
-    c.light = [c.lx, ly, c.lz, cs.vein ? 17 : 12];
-    c.veins.push(c.lx, ly, c.lz, cs.vein ? 7 : 3.5);
-    if (cs.vein) {
-      for (const t of [0.2, 0.5, 0.8]) {
-        const u = ua + (ub - ua) * t;
-        c.at(u, wall(u, side, 0.4));
-        c.veins.push(c.lx, floorY + 0.6 + 4.4 * Math.sin(t * Math.PI), c.lz, 2);
-      }
-    }
-  }
-
-  // old carvings: stones stood against the other wall, cut with rows of marks that still hold a little light
-  if (cs.carvings) {
-    const n = 3;
-    for (let i = 0; i < n; i++) {
-      const u = cv.len - er - 7 + i * 4.6 + c.r(-0.5, 0.5);
-      const v = wall(u, -side, 0.45);
-      const h = c.r(2.5, 3.4);
-      const k = c.r(0.85, 1.05);
-      st.set(k, k * 0.98, k * 0.94, 0, 0.05);
-      c.prim(UNIT_BOX, u, floorY + h / 2 - 0.3, v, c.r(1.3, 1.7), h, 0.55, c.r(-0.08, 0.08), 0, c.r(-0.04, 0.04));
-      st.set(0.42, 0.42, 0.42, 4, 0);
-      c.solid = false;
-      for (let row = 0; row < 5; row++) {
-        const y = floorY + 0.55 + row * 0.42;
-        if (y > floorY + h - 0.75) break;
-        for (let q = -1; q <= 1; q++) {
-          if (c.rng() < 0.3) continue;
-          const tall = c.rng() < 0.3;
-          c.prim(UNIT_BOX, u + q * 0.36, y, v + side * 0.3, tall ? 0.07 : c.r(0.14, 0.28), tall ? 0.3 : 0.07, 0.06);
-        }
-      }
-      c.solid = true;
-    }
-  }
-
-  // a pool, in the basin the terrain leaves for it
-  if (cv.pool > 0) c.pools.push({ y: floorY - 0.1, r: cv.pool - 0.6, u: cv.len - er, v: cv.bend, under: true });
-
-  // and now and then something left behind, on a stone of its own
-  if (cs.relic) {
-    const u = cv.pool > 0 ? cv.len - 2.6 : cv.len - er;
-    const v = cavLine(cv, u) - side * (cv.pool > 0 ? 0 : 1.5);
-    const k = c.r(0.8, 0.95);
-    st.set(k, k * 0.97, k * 0.93, 0, 0.05);
-    c.prim(UNIT_CYL, u, floorY + 0.3, v, 0.62, 0.75, 0.62, c.rng() * 6);
-    c.prim(UNIT_CYL, u, floorY + 0.74, v, 0.48, 0.14, 0.48, c.rng() * 6);
-    c.at(u, v);
-    c.relic = [c.lx, floorY + 1.12, c.lz];
-  }
-  st.dark = false;
 }
 
 // ------------------------------------------------------------------ the system
@@ -1680,6 +1629,13 @@ export class Discoveries {
   /** The caverns the terrain is shaped by now: the nearest few. */
   private active: CavernSite[] = [];
   private draining: CavernSite | null = null;
+  /** The caverns whose deep is built now: the nearest one or two that are open. */
+  private readonly deeps: CavernSite[] = [];
+  /** The one the wanderer is down in, if any. */
+  private inside: CavernSite | null = null;
+  private readonly glowOut = [0, 0, 0, 0];
+  /** How much detail a deep is built with: 0 high, 1 low, 2 mobile. One already built keeps what it had. */
+  tier: 0 | 1 | 2 = 0;
   private readonly struck = { hollow: 0, level: 0, broke: false };
 
   constructor(world: World, uniforms: Uniforms) {
@@ -1758,102 +1714,226 @@ export class Discoveries {
   }
 
   /**
-   * Whether a cell hides a cavern, and exactly how it lies. Only a cell with no other find may,
-   * and only on open sand level enough to leave a roof over the whole of it. The floor is set
-   * from the lowest ground above, so the roof is nowhere thinner than cavernCover.
+   * Whether a cell hides a cavern, and exactly how it lies. Any cell may, one with a find on
+   * the surface included (the entrance then keeps well clear of it). The entrance needs open
+   * sand level enough to leave a roof over the whole of it; its floor is set from the lowest
+   * ground above, so the roof is nowhere thinner than cavernCover. The deep under it needs only
+   * room: a rectangle inside the cell, clear of rivers and cities.
    */
   private findCavern(cx: number, cz: number, key: number): CavernSite | null {
     const w = this.world;
     const s = w.seed | 0;
-    if (hash4(cx, cz, s, 1) < SITE_P || hash4(cx, cz, s, 9) >= CAVERN_P) return null;
-    const x0 = cx * CELL + MARGIN + hash4(cx, cz, s, 2) * (CELL - 2 * MARGIN);
-    const z0 = cz * CELL + MARGIN + hash4(cx, cz, s, 3) * (CELL - 2 * MARGIN);
-    if (this.riverAt(x0, z0) < 420) return null;
+    if (hash4(cx, cz, s, 9) >= CAVERN_P) return null;
+    // A cell with a find of its own on the surface can hide a cavern too, well away from it.
+    const shared = this.cellSite(cx, cz);
+    const sx = this.cellPos.x;
+    const sz = this.cellPos.z;
+    const x0 = shared ? cx * CELL + MARGIN + hash4(cx, cz, s, 22) * (CELL - 2 * MARGIN) : sx;
+    const z0 = shared ? cz * CELL + MARGIN + hash4(cx, cz, s, 23) * (CELL - 2 * MARGIN) : sz;
     const cities = (w as Partial<{ cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>).cities;
-    if (cities) {
-      const c = cities.at(x0, z0);
-      if (Math.hypot(c.cx - x0, c.cz - z0) < c.radius + 1500 * WORLD_SCALE) return null;
-    }
+    const cityNear = (x: number, z: number): boolean => {
+      if (!cities) return false;
+      const c = cities.at(x, z);
+      return Math.hypot(c.cx - x, c.cz - z) < c.radius + CITY_CLEAR;
+    };
     const q = this.sample;
     const seed = Math.floor(hash4(cx, cz, s, 12) * 4294967296);
     const rng = mulberry32(seed);
-    const variant = Math.floor(rng() * 3) % 3;
-    const half = [4.5, 4, 5][variant] + rng() * 0.8;
-    const bend = variant === 1 ? (rng() < 0.5 ? -1 : 1) * (9 + rng() * 2) : variant === 2 ? (rng() - 0.5) * 6 : 0;
-    const bulge = [4.5, 3, 4.5][variant];
-    const chamber = [24, 30, 30][variant] + rng() * 4;
-    const pool = variant === 2 ? 5.5 + rng() : 0;
-    const vein = rng() < (variant === 2 ? 0.5 : 0.75);
+    // The rolls are made in the order they always were (there used to be three shapes of
+    // cavern, which is what `was` is), so a site keeps its spot, its bearing and what it holds.
+    const was = Math.floor(rng() * 3) % 3;
+    const rHalf = rng();
+    const wasBend = was === 1 ? (rng() < 0.5 ? -1 : 1) * (9 + rng() * 2) : was === 2 ? (rng() - 0.5) * 6 : 0;
+    const rChamber = rng();
+    if (was === 2) rng();
+    const vein = rng() < (was === 2 ? 0.5 : 0.75);
     const carvings = rng() < (vein ? 0.5 : 0.9);
     const relic = rng() < 0.35;
     const yaw0 = rng() * Math.PI * 2;
     const T = TERRAIN;
-    const uMax = 2 + T.cavernRampMax + chamber + 5;
-    const W = Math.abs(bend) + half + bulge + 5;
+    // The entrance: the ramp, then a short level antechamber a little wider at its end, with
+    // the hole in its floor near the back wall.
+    const half = 4.2 + rHalf * 0.6;
+    const bulge = 1.6;
+    const chamber = 20 + rChamber * 2;
+    // (and the ground the old shape asked for)
+    const wasW = Math.abs(wasBend) + [4.5, 4, 5][was] + rHalf * 0.8 + [4.5, 3, 4.5][was] + 5;
+    const wasMax = 2 + T.cavernRampMax + [24, 30, 30][was] + rChamber * 4 + 5;
+    const holeBack = DEEP_HOLE.halfU + 3; // from the back wall to the middle of the hole
+    // Each cell has one kind of deep, dealt so that no two cells that touch, corners included, share one.
+    const kind = ((((cx + 2 * cz + (s % 5)) % 5) + 5) % 5) as DeepKind;
     // Dunes leave few places level enough, so a handful of spots around the cell's own are
-    // tried, each with the cavern lying six ways, and the first that fits is the one.
-    for (let k = 0; k < 48; k++) {
-      const spot = Math.floor(k / 6);
-      const x = Math.fround(x0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 40 + spot) - 0.5) * 240));
-      const z = Math.fround(z0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 50 + spot) - 0.5) * 240));
-      if (k % 6 === 0) {
-        w.sample(x, z, q);
-        if (q.rock > 0.08 || q.salt > 0.25) {
-          k += 5;
-          continue;
-        }
-      }
-      const top = w.height(x, z);
-      const yaw = yaw0 + (k * Math.PI) / 3;
-      const dx = Math.fround(Math.cos(yaw));
-      const dz = Math.fround(Math.sin(yaw));
-      {
-        // the spot to dig lies some way down the ramp, and must be close to level, or the mark on it could not be seen
-        const px = x + dx * 15;
-        const pz = z + dz * 15;
-        if (Math.max(Math.abs(w.height(px + 6, pz) - w.height(px - 6, pz)), Math.abs(w.height(px, pz + 6) - w.height(px, pz - 6))) > 1.3) continue;
-      }
-      let lo = Infinity;
-      let hi = -Infinity;
-      let ok = true;
-      for (let u = -10; u <= uMax && ok; u += 4) {
-        for (let v = -W; v <= W; v += 4) {
-          w.sample(x + dx * u - dz * v, z + dz * u + dx * v, q);
-          if (q.rock > 0.12) {
-            ok = false;
-            break;
+    // tried, each with the cavern lying several ways, and the first that fits is the one. The
+    // first pass asks for as much level ground, and looks the same six ways, as the caverns
+    // before the deeps did, so that one found then is found in the same place now; the second
+    // asks only for what the entrance needs, and looks twelve ways.
+    let rooms = 0;
+    for (let pass = 0; pass < 2; pass++) {
+      const ways = pass === 0 ? 6 : 12;
+      const uMax = pass === 0 ? wasMax : 2 + T.cavernRampMax + chamber + 5;
+      const W = pass === 0 ? wasW : half + bulge + 5;
+      const spots = pass === 0 ? 8 : SPOTS;
+      for (let k = 0; k < spots * ways; k++) {
+        const spot = Math.floor(k / ways);
+        // (the first eight spots lie round the cell's own; the rest are anywhere in it)
+        const x = Math.fround(spot < 8 ? x0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 40 + spot) - 0.5) * 240) : (cx + 0.12 + 0.76 * hash4(cx, cz, s, 60 + spot)) * CELL);
+        const z = Math.fround(spot < 8 ? z0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 50 + spot) - 0.5) * 240) : (cz + 0.12 + 0.76 * hash4(cx, cz, s, 90 + spot)) * CELL);
+        if (k % ways === 0) {
+          w.sample(x, z, q);
+          if (q.rock > 0.08 || q.salt > 0.25 || this.riverAt(x, z) < RIVER_CLEAR || cityNear(x, z) || (shared && Math.hypot(x - sx, z - sz) < SITE_CLEAR)) {
+            k += ways - 1;
+            continue;
           }
-          hi = Math.max(hi, q.h);
-          if (u >= 6) lo = Math.min(lo, q.h);
         }
+        const top = w.height(x, z);
+        const yaw = yaw0 + (k * 2 * Math.PI) / ways;
+        const dx = Math.fround(Math.cos(yaw));
+        const dz = Math.fround(Math.sin(yaw));
+        {
+          // the spot to dig lies some way down the ramp, and must be close to level, or the mark on it could not be seen
+          const px = x + dx * 15;
+          const pz = z + dz * 15;
+          if (Math.max(Math.abs(w.height(px + 6, pz) - w.height(px - 6, pz)), Math.abs(w.height(px, pz + 6) - w.height(px, pz - 6))) > 1.3) continue;
+        }
+        let lo = Infinity;
+        let hi = -Infinity;
+        let ok = true;
+        for (let u = -10; u <= uMax && ok; u += 4) {
+          for (let v = -W; v <= W; v += 4) {
+            w.sample(x + dx * u - dz * v, z + dz * u + dx * v, q);
+            if (q.rock > 0.12) {
+              ok = false;
+              break;
+            }
+            hi = Math.max(hi, q.h);
+            if (u >= 6) lo = Math.min(lo, q.h);
+          }
+        }
+        if (!ok || top - lo > 6.5 || hi - top > 12) continue;
+        const floor = Math.fround(lo - (T.cavernHeight + T.cavernCover));
+        const drop = top - floor;
+        const ramp = Math.min(T.cavernRampMax, drop / T.cavernSlope);
+        const len = 2 + ramp + chamber;
+        const hole = Math.fround(len - holeBack);
+        // the deep: its room has to lie inside this cell, under ground that leaves it a lid
+        const hx = x + dx * hole;
+        const hz = z + dz * hole;
+        const room = this.fitRoom(cx, cz, hx, hz, dx, dz);
+        if (!room) continue;
+        // (measuring the ground over a room is the dear part, so only a few are measured)
+        if (++rooms > 5) return null;
+        const lid = this.roomLid(hx, hz, dx, dz, room, floor);
+        if (lid === null) continue;
+        // the roof starts where the ramp has sunk a brow's height below the ceiling
+        const want = 1 - (T.cavernHeight - T.cavernBrow) / drop;
+        let a = 0;
+        let b = 1;
+        for (let i = 0; i < 24; i++) {
+          const t = (a + b) / 2;
+          if (t * t * (3 - 2 * t) < want) a = t;
+          else b = t;
+        }
+        const open = this.opened.has(key) ? 1 : 0;
+        return {
+          key,
+          // (the spot to dig is 40% of the way down the ramp: well inside the open sinkhole, short of the roof)
+          cav: { x, z, spot: 2 + ramp * 0.4, dx, dz, top, floor, half, bend: 0, bulge, len, ramp, roof: 2 + ramp * a, hole, open, dimple: DIMPLE },
+          kind,
+          u1: room.u1,
+          v0: room.v0,
+          v1: room.v1,
+          lid,
+          vein,
+          carvings,
+          relic,
+          seed,
+          hits: 0,
+          deep: null,
+          hx,
+          hz,
+        };
       }
-      if (!ok || top - lo > 6.5 || hi - top > 12) continue;
-      const floor = lo - (T.cavernHeight + T.cavernCover);
-      const drop = top - floor;
-      const ramp = Math.min(T.cavernRampMax, drop / T.cavernSlope);
-      // the roof starts where the ramp has sunk a brow's height below the ceiling
-      const want = 1 - (T.cavernHeight - T.cavernBrow) / drop;
-      let a = 0;
-      let b = 1;
-      for (let i = 0; i < 24; i++) {
-        const t = (a + b) / 2;
-        if (t * t * (3 - 2 * t) < want) a = t;
-        else b = t;
-      }
-      const open = this.opened.has(key) ? 1 : 0;
-      return {
-        key,
-        // (the spot to dig is 40% of the way down the ramp: well inside the open sinkhole, short of the roof)
-        cav: { x, z, spot: 2 + ramp * 0.4, dx, dz, top, floor, half, bend, bulge, len: 2 + ramp + chamber, ramp, roof: 2 + ramp * a, pool, open, dimple: DIMPLE },
-        variant,
-        vein,
-        carvings,
-        relic: relic && !this.taken.has(key),
-        seed,
-        hits: 0,
-      };
     }
     return null;
+  }
+
+  private readonly room = { u1: 0, v0: 0, v1: 0 };
+
+  /**
+   * The room for a deep whose hole is at (hx, hz) and whose stair runs down along (dx, dz): u
+   * from 0 to u1 and v from v0 to v1, each 280 to 360 m, wholly inside the cell (so no two
+   * deeps, and no deep and a neighbour's entrance, can ever meet). The smallest is fitted first,
+   * as near to centred on the hole as the cell allows, then grown. Null if even that does not fit.
+   */
+  private fitRoom(cx: number, cz: number, hx: number, hz: number, dx: number, dz: number): { u1: number; v0: number; v1: number } | null {
+    const ax = cx * CELL + 6;
+    const az = cz * CELL + 6;
+    const bx = (cx + 1) * CELL - 6;
+    const bz = (cz + 1) * CELL - 6;
+    const inCell = (u: number, v: number): boolean => {
+      const px = hx + u * dx - v * dz;
+      const pz = hz + u * dz + v * dx;
+      return px > ax && px < bx && pz > az && pz < bz;
+    };
+    const fits = (u1: number, v0: number, v1: number): boolean => inCell(0, v0) && inCell(0, v1) && inCell(u1, v0) && inCell(u1, v1);
+    for (const off of [0, 20, -20, 40, -40, 60, -60, 80, -80]) {
+      let v0 = -DEEP_MIN / 2 + off;
+      let v1 = v0 + DEEP_MIN;
+      let u1 = DEEP_MIN;
+      if (!fits(u1, v0, v1)) continue;
+      while (u1 < DEEP_MAX_ROOM && fits(u1 + 20, v0, v1)) u1 += 20;
+      for (let i = 0; i < 4 && v1 - v0 < DEEP_MAX_ROOM; i++) {
+        if (i % 2 === 0 ? fits(u1, v0 - 20, v1) : fits(u1, v0, v1 + 20)) {
+          if (i % 2 === 0) v0 -= 20;
+          else v1 += 20;
+        }
+      }
+      const r = this.room;
+      r.u1 = u1;
+      r.v0 = v0;
+      r.v1 = v1;
+      return r;
+    }
+    return null;
+  }
+
+  /**
+   * The lid over a deep's room, in its own frame (the hole at (hx, hz), the antechamber floor
+   * at y): the lowest ground anywhere over the room, as it is with nothing cut into it, less a
+   * margin, and never above 3 m under the antechamber floor. Null where a river runs over the
+   * room, a city stands near it, or the ground over it falls so far that the deep would have
+   * to start a long way down.
+   */
+  private roomLid(hx: number, hz: number, dx: number, dz: number, room: { u1: number; v0: number; v1: number }, y: number): number | null {
+    const w = this.world as World & Partial<{ uncarved(x: number, z: number): number; cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>;
+    const ground = w.uncarved ? w.uncarved.bind(w) : w.height.bind(w);
+    const STEP = 10;
+    const nu = Math.ceil((room.u1 + 2 * STEP) / STEP);
+    const nv = Math.ceil((room.v1 - room.v0 + 2 * STEP) / STEP);
+    // rivers and cities first: they are cheap to ask after, on a coarse grid
+    for (let i = 0; i <= nu; i += 3) {
+      for (let j = 0; j <= nv; j += 3) {
+        const u = -STEP + (i / nu) * (room.u1 + 2 * STEP);
+        const v = room.v0 - STEP + (j / nv) * (room.v1 - room.v0 + 2 * STEP);
+        const px = hx + u * dx - v * dz;
+        const pz = hz + u * dz + v * dx;
+        if (this.riverAt(px, pz) < TERRAIN.riverFloor + 40) return null;
+        if (w.cities && (i === 0 || i >= nu - 2) && (j === 0 || j >= nv - 2)) {
+          const c = w.cities.at(px, pz);
+          if (Math.hypot(c.cx - px, c.cz - pz) < c.radius + 200) return null;
+        }
+      }
+    }
+    let lo = Infinity;
+    for (let i = 0; i <= nu; i++) {
+      for (let j = 0; j <= nv; j++) {
+        const u = -STEP + (i / nu) * (room.u1 + 2 * STEP);
+        const v = room.v0 - STEP + (j / nv) * (room.v1 - room.v0 + 2 * STEP);
+        lo = Math.min(lo, ground(hx + u * dx - v * dz, hz + u * dz + v * dx));
+        if (lo - y - LID_MARGIN < LID_DEEPEST) return null;
+      }
+    }
+    return Math.min(-3, lo - y - LID_MARGIN);
   }
 
   /** Tell both copies of the terrain which caverns shape the ground now. */
@@ -1864,8 +1944,8 @@ export class Discoveries {
   }
 
   /**
-   * Keeps the terrain's short list of caverns to the nearest few, and builds the roof and
-   * contents of an open one that has come into range. Returns whether it built one.
+   * Keeps the terrain's short list of caverns to the nearest few, and builds the roof of an
+   * open one that has come into range, and then the deep under it. Returns whether it built one.
    */
   private scanCaverns(px: number, pz: number): boolean {
     if (!(this.world as Partial<{ setCaverns: unknown }>).setCaverns) return false;
@@ -1890,11 +1970,12 @@ export class Discoveries {
       if (shaped) this.onGround?.();
     }
     for (const cs of near) {
-      if (cs.cav.open > 0 && !this.isBuilt(cs.key) && Math.hypot(cs.cav.x - px, cs.cav.z - pz) < CAVERN_BUILD_R) {
+      if (cs.cav.open > 0 && !this.isBuilt(roofKey(cs)) && Math.hypot(cs.cav.x - px, cs.cav.z - pz) < CAVERN_BUILD_R) {
         this.buildCavernSite(cs);
         return true;
       }
     }
+    if (this.scanDeeps(px, pz, near)) return true;
     for (let i = 0; i < this.lampAt.length; i++) {
       if (this.isBuilt(LAMP_KEY - i) || Math.hypot(this.lampAt[i].x - px, this.lampAt[i].z - pz) >= BUILD_R) continue;
       this.buildLamp(i);
@@ -1909,11 +1990,147 @@ export class Discoveries {
     const ctx = new Ctx(this.world, cv.x, cv.z, cv.top, mulberry32(cs.seed ^ 0x51ab), Math.atan2(-cv.dz, cv.dx));
     ctx.stone.salt = cs.key & 1023;
     buildCavern(ctx, cs, this.faceOf(ctx));
-    // it counts as reached once you are down in the end chamber
-    const u = cv.len - cv.half - cv.bulge;
-    ctx.at(u, cavLine(cv, u));
-    this.finishSite(cs.key, 'cavern', cv.x + ctx.lx, cv.z + ctx.lz, cv.top, ctx);
-    this.sites[this.sites.length - 1].reachR = 9;
+    this.finishSite(roofKey(cs), 'cavern', cv.x + cv.dx * cv.spot, cv.z + cv.dz * cv.spot, cv.top, ctx);
+    // (it counts as reached far below, at the heart of its deep: see update)
+    this.sites[this.sites.length - 1].reachR = 0;
+  }
+
+  // ---------------------------------------------------------------- the deeps
+
+  /** What a cavern's deep is built from: the same for a site every time. */
+  private specOf(cs: CavernSite): DeepSpec {
+    const cv = cs.cav;
+    return {
+      x: cs.hx,
+      z: cs.hz,
+      y: cv.floor,
+      dx: cv.dx,
+      dz: cv.dz,
+      kind: cs.kind,
+      seed: cs.seed,
+      u1: cs.u1,
+      v0: cs.v0,
+      v1: cs.v1,
+      lid: cs.lid,
+      // (a relic already carried off is still part of what the place was built round: it is
+      // taken out again below, so the place is the same with it or without)
+      relic: cs.relic,
+      vein: cs.vein,
+      carvings: cs.carvings,
+      tier: this.tier,
+    };
+  }
+
+  /** Build the deep under an open cavern (a hitch of a tenth of a second or so: once, never per frame). */
+  private buildDeep(cs: CavernSite): void {
+    if (cs.deep) return;
+    const deep = createDeep(this.specOf(cs), this.u);
+    if (this.taken.has(cs.key)) deep.takeRelic();
+    cs.deep = deep;
+    this.deeps.push(cs);
+    this.group.add(deep.group);
+  }
+
+  private dropDeep(cs: CavernSite): void {
+    const deep = cs.deep;
+    if (!deep) return;
+    cs.deep = null;
+    this.deeps.splice(this.deeps.indexOf(cs), 1);
+    if (this.inside === cs) this.inside = null;
+    this.group.remove(deep.group);
+    deep.dispose();
+  }
+
+  /**
+   * Lets go of deeps that are far off, and builds the one under the nearest open cavern in
+   * range, keeping to DEEP_MAX of them. The one the wanderer is in is never let go. Returns
+   * whether it built one.
+   */
+  private scanDeeps(px: number, pz: number, near: readonly CavernSite[]): boolean {
+    const d = (c: CavernSite) => Math.hypot(c.hx - px, c.hz - pz);
+    for (let i = this.deeps.length - 1; i >= 0; i--) {
+      const cs = this.deeps[i];
+      if (cs !== this.inside && cs !== this.draining && d(cs) > DEEP_DROP_R) this.dropDeep(cs);
+    }
+    // (near is sorted nearest first)
+    for (const cs of near) {
+      if (cs.deep || cs.cav.open <= 0 || d(cs) > DEEP_BUILD_R) continue;
+      if (this.deeps.length >= DEEP_MAX) {
+        // make room by letting the furthest go, if it is further than this one
+        let far: CavernSite | null = null;
+        for (const o of this.deeps) if (o !== this.inside && o !== this.draining && (!far || d(o) > d(far))) far = o;
+        if (!far || d(far) <= d(cs)) return false;
+        this.dropDeep(far);
+      }
+      this.buildDeep(cs);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * The floor for feet at height y over (x, z) where a deep decides it, or null where the
+   * terrain does: see Deep.floorAt. A deep has its say only once its cavern is fully open
+   * (the hole is not there before), and only from under the antechamber's ceiling down, so
+   * the sand roof over the hole is stood on like the rest of it.
+   */
+  deepFloor(x: number, z: number, y: number): number | null {
+    for (let i = 0; i < this.deeps.length; i++) {
+      const cs = this.deeps[i];
+      if (cs.cav.open < 1 || y > cs.cav.floor + TERRAIN.cavernHeight - 0.3) continue;
+      if (Math.abs(x - cs.hx) > 560 || Math.abs(z - cs.hz) > 560) continue;
+      const f = cs.deep!.floorAt(x, z, y);
+      if (f !== null) return f;
+    }
+    return null;
+  }
+
+  /** The deep the wanderer is down in now (as of the last update), or null. */
+  get deepIn(): Deep | null {
+    return this.inside ? this.inside.deep : null;
+  }
+
+  /** The built deep whose hole is nearest (x, z), with the cavern over it, or null if none is built. */
+  deepNear(x: number, z: number): { deep: Deep; cav: Cavern } | null {
+    let best: CavernSite | null = null;
+    for (const cs of this.deeps) if (!best || Math.hypot(cs.hx - x, cs.hz - z) < Math.hypot(best.hx - x, best.hz - z)) best = cs;
+    return best ? { deep: best.deep!, cav: best.cav } : null;
+  }
+
+  /**
+   * For testing: the nearest cavern to (x, z) whose deep is of `kind` (failing that, the nearest
+   * of any kind, made to be that kind) is opened, for this visit only. Returns where to stand,
+   * on the antechamber floor a few steps short of the hole, and the way to face to walk into it.
+   */
+  devDeep(x: number, z: number, kind: number): { x: number; z: number; facing: number; key: number } | null {
+    const pcx = Math.floor(x / CELL);
+    const pcz = Math.floor(z / CELL);
+    const k = ((Math.floor(kind) % 5) + 5) % 5;
+    let best: CavernSite | null = null;
+    let any: CavernSite | null = null;
+    for (let r = 0; r <= 12 && !best; r++) {
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          const cs = this.cavernAt(pcx + dx, pcz + dz);
+          if (!cs) continue;
+          const d = (c: CavernSite) => Math.hypot(c.cav.x - x, c.cav.z - z);
+          if (!any || d(cs) < d(any)) any = cs;
+          if (cs.kind === k && (!best || d(cs) < d(best))) best = cs;
+        }
+      }
+    }
+    const cs = best ?? any;
+    if (!cs) return null;
+    cs.kind = k as DeepKind;
+    cs.cav.open = 1;
+    this.opened.add(cs.key);
+    if (!this.active.includes(cs)) this.active = [cs, ...this.active].slice(0, MAX_CAVERNS);
+    this.pushCaverns();
+    this.onGround?.();
+    const cv = cs.cav;
+    const u = cv.hole - DEEP_HOLE.halfU - 2.5;
+    return { x: cv.x + cv.dx * u, z: cv.z + cv.dz * u, facing: Math.atan2(cv.dx, cv.dz), key: cs.key };
   }
 
   /**
@@ -1945,7 +2162,9 @@ export class Discoveries {
       out.broke = true;
       best.cav.open = 1e-4;
       this.draining = best;
-      if (!this.isBuilt(best.key)) this.buildCavernSite(best);
+      if (!this.isBuilt(roofKey(best))) this.buildCavernSite(best);
+      // the deep is made now, while the sand runs out, so it is there when the hole opens
+      this.buildDeep(best);
     } else out.level = best.hits;
     this.pushCaverns();
     return out;
@@ -2106,28 +2325,21 @@ export class Discoveries {
     this.sites[this.sites.length - 1].reachR = 0; // found by picking it up, not by coming near
   }
 
-  /** The key of a relic lying within reach of (x, y, z), or -1. */
+  /** The key of a relic lying within reach of (x, y, z), or -1. Relics lie in the deeps. */
   relicNear(x: number, y: number, z: number, reach: number): number {
-    for (const s of this.sites) {
-      const r = s.relic;
-      if (r && Math.hypot(r.x - x, r.z - z) < reach && Math.abs(r.y - y - 1) < 1.6) return s.key;
+    for (const cs of this.deeps) {
+      const r = cs.deep!.relic;
+      if (!r || !cs.relic || this.taken.has(cs.key)) continue;
+      if (Math.hypot(r[0] - x, r[2] - z) < reach && Math.abs(r[1] - y - 1) < 1.6) return cs.key;
     }
     return -1;
   }
 
   /** The relic has been picked up: it is gone from its stone for good. */
   takeRelic(key: number): void {
+    if (this.taken.has(key)) return;
     this.taken.add(key);
-    const cs = this.cavernCache.get(key);
-    if (cs) cs.relic = false;
-    for (const s of this.sites) {
-      if (s.key !== key || !s.relic) continue;
-      s.group.remove(s.relic.obj);
-      s.relic.obj.traverse((o) => {
-        if (o instanceof THREE.Mesh) (o.geometry as THREE.BufferGeometry).dispose();
-      });
-      s.relic = undefined;
-    }
+    this.cavernCache.get(key)?.deep?.takeRelic();
   }
 
   /** Site position for a cell, or false if the cell is empty. */
@@ -2171,22 +2383,55 @@ export class Discoveries {
         this.onGround?.();
       }
     }
-    // the light of the nearest cavern's mineral, for the ground's shader and the stones'
+    // the deeps: which one the wanderer is in, their flames and falling light, and the heart of
+    // one counting as found
+    const py = f.player.pos.y;
+    let inside: CavernSite | null = null;
+    for (let i = 0; i < this.deeps.length; i++) {
+      const cs = this.deeps[i];
+      const deep = cs.deep!;
+      deep.update(f.time, 1 - f.night, f.camera);
+      if (cs.cav.open < 1) continue;
+      if (!inside && deep.inside(px, py + 1, pz)) inside = cs;
+      if (!this.reached.has(roofKey(cs))) {
+        const c = deep.centre;
+        if (Math.hypot(c[0] - px, c[1] - py, c[2] - pz) < 14) {
+          this.reached.add(roofKey(cs));
+          this.onReach?.('cavern');
+        }
+      }
+    }
+    this.inside = inside;
+    // What lights the things that move underground, and the rock of the antechamber: down in
+    // a deep, its nearest lamp; up in the antechamber, whatever burns at the head of the stair,
+    // or failing that the faint light that comes up the hole.
     const glowU = this.u.uCavGlow?.value as THREE.Vector4 | undefined;
-    let glowD = 150 * 150;
-    if (glowU) glowU.w = 0;
+    if (glowU) {
+      glowU.w = 0;
+      const g = this.glowOut;
+      if (inside) {
+        if (inside.deep!.glowAt(px, py + 1, pz, g)) glowU.set(g[0], g[1], g[2], g[3]);
+      } else {
+        let bd = 150;
+        for (const cs of this.deeps) {
+          const d = Math.hypot(cs.hx - px, cs.hz - pz);
+          if (cs.cav.open < 1 || d >= bd) continue;
+          bd = d;
+          const y = cs.cav.floor;
+          if (cs.deep!.glowAt(cs.hx, y - 1, cs.hz, g) && Math.hypot(g[0] - cs.hx, g[1] - y, g[2] - cs.hz) < 12) glowU.set(g[0], g[1], g[2], g[3]);
+          else glowU.set(cs.hx + cs.cav.dx * 1.5, y - 2.2, cs.hz + cs.cav.dz * 1.5, 7);
+        }
+      }
+    }
+    // (a site on the surface is not come upon from underneath it)
     for (let i = 0; i < this.sites.length; i++) {
       const s = this.sites[i];
       const dx = s.x - px;
       const dz = s.z - pz;
       const d2 = dx * dx + dz * dz;
-      if (s.light && glowU && d2 < glowD) {
-        glowD = d2;
-        glowU.copy(s.light);
-      }
       // built out to DROP_R for hysteresis, but only drawn inside the build radius
       s.group.visible = d2 < (BUILD_R + 200) * (BUILD_R + 200);
-      if (this.reached.has(s.key)) continue;
+      if (inside || this.reached.has(s.key)) continue;
       if (d2 < s.reachR * s.reachR) {
         this.reached.add(s.key);
         if (this.onReach) this.onReach(s.kind);
@@ -2200,7 +2445,7 @@ export class Discoveries {
       const s = this.sites[i];
       const dx = s.x - px;
       const dz = s.z - pz;
-      if (dx * dx + dz * dz > DROP_R * DROP_R) {
+      if (dx * dx + dz * dz > DROP_R * DROP_R && !(this.inside && s.key === roofKey(this.inside))) {
         this.disposeSite(s);
         this.sites.splice(i, 1);
       }
@@ -2730,6 +2975,11 @@ export class Discoveries {
   private disposeSite(s: Site): void {
     this.group.remove(s.group);
     this.caps.delete(s.key);
+    // the deep under a cavern goes with it (it is usually long gone: see scanDeeps)
+    if (s.kind === 'cavern') {
+      const cs = this.cavernCache.get(Math.floor(s.key));
+      if (cs) this.dropDeep(cs);
+    }
     s.group.traverse((o) => {
       if (o instanceof THREE.Mesh) (o.geometry as THREE.BufferGeometry).dispose();
     });
@@ -2739,6 +2989,7 @@ export class Discoveries {
   dispose(): void {
     for (const s of this.sites) this.disposeSite(s);
     this.sites.length = 0;
+    while (this.deeps.length > 0) this.dropDeep(this.deeps[0]);
     this.stoneMat.dispose();
     this.rockMat.dispose();
     this.waterMat.dispose();

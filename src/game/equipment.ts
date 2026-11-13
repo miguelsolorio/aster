@@ -757,6 +757,9 @@ uniform vec3 uFogCol;
 uniform float uFog;
 uniform float uNight;
 uniform float uUnder;  // how dark the underside is, for cloth seen from below
+uniform float uDeepDark; // 0 under the sky .. 1 down in a deep, out of the daylight
+uniform vec4 uCavGlow;   // the lamp that matters most down there: position, reach (0 = none)
+uniform vec3 uCavGlowCol;
 varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
@@ -785,7 +788,18 @@ void main() {
   col *= 0.9 + 0.1 * n.y;
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * smoothstep(-0.2, 0.3, ndl);
   col += uSunCol * rim * 0.1 * (1.0 - 0.5 * uNight);
-  col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));
+  if (uDeepDark > 0.0) {
+    // underground: nearly black, lit only by what glows there (as the figure carrying it is)
+    vec3 lit = vec3(0.0);
+    if (uCavGlow.w > 0.0) {
+      vec3 gd = uCavGlow.xyz - vW;
+      float g2 = dot(gd, gd);
+      float ga = 1.0 / (1.0 + g2 / (0.16 * uCavGlow.w * uCavGlow.w));
+      lit = uCavGlowCol * vCol * (0.85 * ga * (0.45 + 0.55 * max(dot(n, gd * inversesqrt(g2 + 1e-3)), 0.0)));
+    }
+    col = mix(col, col * 0.2 + lit, uDeepDark);
+  }
+  col = mix(col, uFogCol, (1.0 - exp(-dist * uFog)) * (1.0 - uDeepDark));
   gl_FragColor = vec4(col, 1.0);
 }
 `;

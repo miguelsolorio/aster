@@ -152,6 +152,17 @@ function start() {
   discoveries.restore(save.data.opened, save.data.taken);
   discoveries.onOpened = (key) => save.open(key);
   discoveries.onGround = () => bake.invalidate();
+  // (testing) ?deep=<0-4> opens the nearest cavern over a deep of that kind, for this visit
+  // only, and starts you in its antechamber a few steps short of the hole, facing it. With
+  // ?x=&z= it is the nearest to that point.
+  if (import.meta.env.DEV && qs.has('deep')) {
+    const at = discoveries.devDeep(player.state.pos.x, player.state.pos.z, Number(qs.get('deep')) || 0);
+    if (at) {
+      player.place(at.x, at.z);
+      player.facing = at.facing;
+      cities.setFocus(at.x, at.z);
+    }
+  }
   const splash = new Splash(u);
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, u);
@@ -236,6 +247,7 @@ function start() {
     people.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     cities.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     splash.setDensity(auto.tier === 'mobile' ? 0.5 : auto.tier === 'low' ? 0.75 : 1);
+    discoveries.tier = auto.tier === 'mobile' ? 2 : auto.tier === 'low' ? 1 : 0;
     resize();
   }
   function resize() {
@@ -517,6 +529,9 @@ function start() {
   };
   // (and the things found out in the desert: standing stones, fallen columns, the great bones)
   player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y), discoveries.topAt(x, z, y));
+  // Under an open cavern the deep has floors of its own, one over another: where it has the
+  // say, the terrain (and every roof above) is not asked.
+  player.floor = (x, z, y) => discoveries.deepFloor(x, z, y);
   // What the feet are on when it is not the ground: 0 stone, 1 bone, 2 wood, or -1 for the ground itself.
   const propUnder = (x: number, z: number, y: number) => {
     const t = discoveries.topAt(x, z, y);
@@ -534,6 +549,17 @@ function start() {
     return t * t * (3 - 2 * t);
   };
   const waterAt = (x: number, z: number): boolean => {
+    // down in a deep, only its own water counts: the bed is its floor, the surface that much above
+    const deep = discoveries.deepIn;
+    if (deep) {
+      const y = player.state.pos.y;
+      const depth = deep.waterAt(x, z, y);
+      const bed = depth > 0 ? deep.floorAt(x, z, y) : null;
+      if (bed === null || !Number.isFinite(bed)) return false;
+      water.y = bed + depth;
+      water.depth = depth;
+      return true;
+    }
     const pool = cities.poolDepthAt(x, z);
     if (pool > 0) {
       water.y = world.height(x, z);
@@ -774,6 +800,8 @@ function start() {
   let cityNear = 0;
   let bustle = 0;
   let airCam = 0;
+  let underK = 0; // 0 under the sky .. 1 well down in a deep, eased
+  const camWant = new THREE.Vector3();
   const probe = { h: 0, rock: 0, salt: 0 };
 
   const cascade = (x: number, z: number, count: number) => {
@@ -876,6 +904,18 @@ function start() {
     day.update(dt);
     frame.day = day.day;
     frame.night = day.night;
+    // Down in a deep there is no daylight, no haze and no wind: what moves there is dark but for
+    // the lamps (uDeepDark, uCavGlow), and nothing of the open desert is stirred up round it.
+    const deepIn = discoveries.deepIn;
+    {
+      const want = deepIn ? smooth(0.5, 5, deepIn.spec.y - (st.pos.y + 1)) : 0;
+      underK = dt > 0 ? underK + (want - underK) * (1 - Math.exp(-dt * 4)) : underK;
+      if (Math.abs(want - underK) < 0.002) underK = want;
+      u.uDeepDark.value = underK;
+      u.uFog.value *= 1 - underK;
+      dust.under = underK > 0.5;
+      wildlife.group.visible = underK < 0.99;
+    }
 
     // Wind wanders slowly in direction and strength.
     const wa = 0.7 + Math.sin(frame.time * 0.011) * 0.5 + Math.sin(frame.time * 0.0037 + 2) * 0.4;
@@ -897,7 +937,7 @@ function start() {
     // Near the things found in the desert a fast move is taken in short steps, so a rib a
     // hand's width across is not stepped clean over between two frames.
     {
-      const near = dt > 0 && discoveries.nearSolids(st.pos.x, st.pos.z, 15);
+      const near = dt > 0 && (!!deepIn || discoveries.nearSolids(st.pos.x, st.pos.z, 15));
       const steps = near ? Math.min(8, Math.max(1, Math.ceil((Math.hypot(st.vel.x, st.vel.y, st.vel.z) * dt) / 0.3))) : 1;
       const h = dt / steps;
       for (let i = 0; i < steps; i++) {
@@ -913,6 +953,16 @@ function start() {
           under = discoveries.ceilAt(st.pos.x, st.pos.z, Math.min(st.pos.y, under)) - 1.9;
           if (st.pos.y > under) {
             st.pos.y = under;
+            if (st.vel.y > 0) st.vel.y = 0;
+          }
+        }
+        // Nor through the rock over a room of a deep: a leap or a carpet is held under its
+        // ceiling (and never pressed into the floor where the two are close).
+        if (deepIn && !st.grounded) {
+          const lim = deepIn.ceilAt(st.pos.x, st.pos.z, st.pos.y) - 1.9;
+          if (st.pos.y > lim) {
+            const fl = deepIn.floorAt(st.pos.x, st.pos.z, st.pos.y);
+            st.pos.y = Math.max(lim, fl !== null && Number.isFinite(fl) ? Math.min(fl, st.pos.y) : lim);
             if (st.vel.y > 0) st.vel.y = 0;
           }
         }
@@ -1004,7 +1054,7 @@ function start() {
 
 
     // Flying low drags a faint wake through the sand.
-    if (!st.grounded && player.alt < 2 && st.speed > 6) {
+    if (!st.grounded && player.alt < 2 && st.speed > 6 && !player.under) {
       slideStampDist += st.speed * dt;
       if (slideStampDist > 0.5) {
         slideStampDist = 0;
@@ -1038,19 +1088,39 @@ function start() {
     tmp2.y += 0.12 * airCam;
     tmp2.normalize();
     let dist = reach;
+    // Down in a deep the camera is drawn in until nothing of the rock stands between it and
+    // the figure. The ground overhead is nothing to it there: only above the antechamber floor
+    // (looking back up the stair) is the terrain in the way as well.
+    let far = reach;
+    let above = -Infinity;
+    if (deepIn) {
+      camWant.copy(camTarget).addScaledVector(tmp2, reach);
+      far = dist = Math.max(0.9, reach * Math.min(1, Math.max(0, deepIn.sight(camTarget, camWant))) - 0.3);
+      above = deepIn.spec.y - 0.1;
+    }
     for (let i = 1; i <= 6; i++) {
-      const d = (reach * i) / 6;
+      const d = (far * i) / 6;
+      if (camTarget.y + tmp2.y * d < above) continue;
       const x = camTarget.x + tmp2.x * d;
       const z = camTarget.z + tmp2.z * d;
       const clear = camTarget.y + tmp2.y * d - (topAt(x, z) + 0.45);
       if (clear < 0) {
-        dist = Math.min(dist, Math.max(1.2, d + clear / Math.max(0.2, tmp2.y + 0.6)));
+        dist = Math.min(dist, Math.max(Math.min(1.2, far), d + clear / Math.max(0.2, tmp2.y + 0.6)));
         break;
       }
     }
     camera.position.copy(camTarget).addScaledVector(tmp2, dist);
-    camera.position.y = Math.max(camera.position.y, topAt(camera.position.x, camera.position.z) + 0.7);
-    if (inCave) camera.position.y = Math.min(camera.position.y, ceilAt(camera.position.x, camera.position.z) - 0.4);
+    if (camera.position.y >= above) {
+      camera.position.y = Math.max(camera.position.y, topAt(camera.position.x, camera.position.z) + 0.7);
+      if (inCave) camera.position.y = Math.min(camera.position.y, ceilAt(camera.position.x, camera.position.z) - 0.4);
+    } else if (deepIn) {
+      // a little clear of the floor it hangs over and the ceiling it hangs under
+      const cy = camera.position.y;
+      const fl = deepIn.floorAt(camera.position.x, camera.position.z, cy);
+      if (fl !== null && fl + 0.35 > cy && fl < cy + 0.6) camera.position.y = fl + 0.35;
+      const cl = deepIn.ceilAt(camera.position.x, camera.position.z, cy);
+      if (cl - 0.3 < camera.position.y && cl > cy - 0.6) camera.position.y = Math.max(cy - 0.6, cl - 0.3);
+    }
     camera.lookAt(camTarget);
     const fov = 50 + Math.min(14, st.speed * 0.55);
     if (Math.abs(camera.fov - fov) > 0.05) {
@@ -1158,6 +1228,8 @@ function start() {
       cityNear = near;
       audio.setCity(near, bustle, d < site.radius * 0.92 && st.grounded);
     }
+    // How far underground the listener is, and how much water is by.
+    audio.setDeep?.(underK, deepIn ? deepIn.wetness(st.pos.x, st.pos.y + 1.5, st.pos.z) : 0);
     audio.update({
       dt,
       day: day.day,
@@ -1178,7 +1250,31 @@ function start() {
   }
 
   if (import.meta.env.DEV) {
-    Object.assign(window, { __ds: {
+    const ds = {
+        // the deep the wanderer is in, or failing that the nearest one built (null if none is)
+        get deep() {
+          return discoveries.deepIn ?? discoveries.deepNear(player.state.pos.x, player.state.pos.z)?.deep ?? null;
+        },
+        // put the wanderer down somewhere, feet at y (for getting about a deep): e.g. __ds.tp(...__ds.deep.ledge)
+        tp: (x: number, y: number, z: number) => {
+          player.state.pos.set(x, y, z);
+          player.state.vel.set(0, 0, 0);
+          player.state.grounded = false;
+          camTarget.set(x, y + 1.5, z);
+        },
+        // open the nearest cavern over a deep of a kind (0-4) and stand by its hole, as ?deep= does
+        toDeep: (kind: number) => {
+          const at = discoveries.devDeep(player.state.pos.x, player.state.pos.z, kind);
+          if (at) {
+            player.place(at.x, at.z);
+            player.facing = at.facing;
+            camYaw = at.facing + Math.PI;
+            camTarget.copy(player.state.pos);
+          }
+          return at;
+        },
+    };
+    Object.assign(window, { __ds: Object.defineProperties(ds, Object.getOwnPropertyDescriptors({
         // advance the simulation by a number of seconds at 60 Hz, then draw (for testing when the tab is throttled)
         sim: (sec: number) => {
           for (let i = 0; i < Math.round(sec * 60); i++) update(1 / 60);
@@ -1194,7 +1290,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, splash, waterAt, water, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, splash, waterAt, water, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
   }
 
   let frozen = false;

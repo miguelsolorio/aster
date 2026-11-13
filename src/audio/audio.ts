@@ -11,6 +11,8 @@
 //   city far (murmur, bell, drum) ─ cityFarBus ──┴─ mostly → reverb
 //   ambience (water, leaves, mill, fire, birds) ─ ambBus ─┬─ dry ──── preMaster
 //                                                          └─ a little → reverb
+//   deep (room tone, trickle, drips + echo) ─ deep bus ─┬─ dry ────── preMaster
+//     built lazily underground, freed on the surface    └─ some → reverb
 //   Two player-facing levels are applied at the buses, ahead of the sends: music (pads, plucks)
 //   and effects (everything else, the chime included).
 //   preMaster → high-shelf cut → pause low-pass → pause duck → limiter
@@ -213,6 +215,17 @@ interface CityBed {
   nodes: AudioNode[];
 }
 
+/** The underground bed, built lazily the first time the listener goes below and freed back on the surface. */
+interface DeepBed {
+  bus: GainNode; // carries the effects level; registered in Graph.fxBuses while the bed lives
+  room: GainNode; // low stone-room rumble
+  air: GainNode; // faint moving air band above it
+  trickle: GainNode; // lapping / trickle bed, follows wet
+  dripIn: GainNode; // one-shot drips enter here: dry + cross-fed echo
+  sources: AudioScheduledSourceNode[];
+  nodes: AudioNode[];
+}
+
 /** Large warm bell: [ratio, relative level, relative decay]. Low partials sit on D and A. */
 const BELL_PARTIALS: readonly (readonly [number, number, number])[] = [
   [0.5, 0.5, 1.0], // hum
@@ -272,6 +285,16 @@ export class AudioEngine {
   private nextAmbTick = 0;
   private nextBird = 0;
   private nextCreak = 0;
+
+  // Underground: raw targets from setDeep(), smoothed values used by the engine.
+  private deepT = 0;
+  private wetT = 0;
+  private deep = 0;
+  private wet = 0;
+  private deepBed: DeepBed | null = null;
+  private deepIdle = 0;
+  /** Time of the next drip; 0 while not armed (on the surface). */
+  private nextDrip = 0;
 
   private paramTimer = 0;
   private clock = 0;
@@ -384,6 +407,19 @@ export class AudioEngine {
     this.ambT = { water: v(a.water), leaves: v(a.leaves), mill: v(a.mill), fire: v(a.fire), birds: v(a.birds) };
   }
 
+  /**
+   * Call once per frame alongside update().
+   * amount: 0 on the surface .. 1 fully underground (a very large cavern or a carved city).
+   * wet: 0..1 how much open water is nearby down there.
+   * Fades in a quiet stone room tone and sparse drips (more of them, plus a faint lapping bed, as
+   * wet rises) and ducks what belongs to the open air: wind, leaves, birds, the mill and the far
+   * city. Nothing runs for it while amount is 0.
+   */
+  setDeep(amount: number, wet: number): void {
+    this.deepT = Number.isFinite(amount) ? clamp01(amount) : 0;
+    this.wetT = Number.isFinite(wet) ? clamp01(wet) : 0;
+  }
+
   /** Once per frame. Cheap: smoothing in JS, AudioParams touched at ~10 Hz. */
   update(f: AudioFrame): void {
     const ctx = this.ctx;
@@ -403,9 +439,17 @@ export class AudioEngine {
     }
 
     // City presence, smoothed over a couple of seconds on top of the game's own ramp.
-    this.cityNear += (this.cityNearT - this.cityNear) * (1 - Math.exp(-dt / 1.5));
+    // Underground, smoothed over about a second on top of the game's own ramp.
+    this.deep += (this.deepT - this.deep) * (1 - Math.exp(-dt / 0.9));
+    this.wet += (this.wetT - this.wet) * (1 - Math.exp(-dt / 1.5));
+    if (this.deepT === 0 && this.deep < 1e-4) this.deep = 0;
+    if (this.wetT === 0 && this.wet < 1e-4) this.wet = 0;
+
+    // The far-off city does not carry through rock; people close by (bustle) still do.
+    const cityNearT = this.cityNearT * (1 - 0.85 * this.deep);
+    this.cityNear += (cityNearT - this.cityNear) * (1 - Math.exp(-dt / 1.5));
     this.cityBustle += (this.cityBustleT - this.cityBustle) * (1 - Math.exp(-dt / 2.5));
-    if (this.cityNearT === 0 && this.cityNear < 1e-4) this.cityNear = 0;
+    if (cityNearT === 0 && this.cityNear < 1e-4) this.cityNear = 0;
     if (this.cityBustleT === 0 && this.cityBustle < 1e-4) this.cityBustle = 0;
     this.cityNight = clamp01(f.night);
     this.cityDay = f.day;
@@ -915,6 +959,7 @@ export class AudioEngine {
       }
     }
     this.teardownBed();
+    this.teardownDeep();
     this.ctx = null;
     this.g = null;
     if (ctx) void ctx.close().catch(() => undefined);
@@ -1193,8 +1238,11 @@ export class AudioEngine {
     const rush = clamp01((f.speed - 8) / 17);
 
     // Buildings shelter you: duck the wind a little as a city closes around you (1 when no city).
-    const shelter = 1 - 0.35 * this.cityNear;
-    const windLevel = (0.025 + 0.07 * gust + 0.04 * alt + 0.015 * breathe + 0.07 * rush) * shelter;
+    // Rock shuts it out altogether: underground only the air you move through yourself is left.
+    const open = 1 - this.deep;
+    const shelter = (1 - 0.35 * this.cityNear) * open;
+    const windLevel =
+      (0.025 + 0.07 * gust + 0.04 * alt + 0.015 * breathe) * shelter + 0.07 * rush * (1 - 0.5 * this.deep);
     const windFreq = 280 + 420 * gust + 260 * alt + 120 * breathe + 700 * rush;
     g.windGain.gain.setTargetAtTime(windLevel, now, 1.2);
     g.windBP.frequency.setTargetAtTime(windFreq, now, 1.5);
@@ -1216,9 +1264,207 @@ export class AudioEngine {
     // (music bus 0.75 x ~0.04..0.07 per voice) and the city murmur (0.24).
     const am = this.amb;
     g.ambWater.gain.setTargetAtTime(0.05 * am.water, now, 0.25);
-    g.ambLeaves.gain.setTargetAtTime(0.05 * am.leaves * (0.25 + 0.75 * this.ambGust), now, 0.3);
-    g.ambWhoosh.gain.setTargetAtTime(0.03 * am.mill, now, 0.3);
+    // Leaves and the mill are open-air sounds and go with the wind underground; water and fire stay.
+    g.ambLeaves.gain.setTargetAtTime(0.05 * am.leaves * (0.25 + 0.75 * this.ambGust) * open, now, 0.3);
+    g.ambWhoosh.gain.setTargetAtTime(0.03 * am.mill * open, now, 0.3);
     g.ambRumble.gain.setTargetAtTime(0.03 * am.fire, now, 0.3);
+
+    this.applyDeep(now, 0.1);
+  }
+
+  /** Underground bed levels; builds the bed on the way down and frees it back on the surface. */
+  private applyDeep(now: number, dt: number): void {
+    const deep = this.deep;
+    const active = deep > 0.002;
+    if (!this.deepBed) {
+      if (!active) return;
+      this.deepBed = this.buildDeepBed();
+      if (!this.deepBed) return;
+    }
+    const bed = this.deepBed;
+    if (!active) {
+      // Free the bed once it has faded to silence and the drip echoes have rung out.
+      this.deepIdle += dt;
+      if (this.deepIdle > 6) {
+        this.teardownDeep();
+        return;
+      }
+    } else {
+      this.deepIdle = 0;
+    }
+    // Quiet: the room sits under the wind it replaces (0.025..0.2) and well under the score.
+    bed.room.gain.setTargetAtTime(0.085 * deep, now, 0.8);
+    bed.air.gain.setTargetAtTime(0.016 * deep, now, 0.8);
+    bed.trickle.gain.setTargetAtTime(0.02 * deep * this.wet * this.wet, now, 0.8);
+  }
+
+  /**
+   * A big stone space: pink noise low-passed to a rumble, a faint mid band of moving air above it
+   * and a lapping/trickle bed, all drifting on very slow incommensurate LFOs (nothing pitched).
+   * Drips are scheduled one-shots into dripIn, which adds two cross-fed, darkening echoes.
+   */
+  private buildDeepBed(): DeepBed | null {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return null;
+    const now = ctx.currentTime;
+    const buf = g.windSrc.buffer; // the stereo pink loop already made for the wind
+    if (!buf) return null;
+    const sources: AudioScheduledSourceNode[] = [];
+    const nodes: AudioNode[] = [];
+    const mk = <T extends AudioNode>(n: T): T => {
+      nodes.push(n);
+      return n;
+    };
+    const gain = (v: number): GainNode => {
+      const n = mk(ctx.createGain());
+      n.gain.value = v;
+      return n;
+    };
+    const filter = (type: BiquadFilterType, freq: number, q: number): BiquadFilterNode => {
+      const n = mk(ctx.createBiquadFilter());
+      n.type = type;
+      n.frequency.value = freq;
+      n.Q.value = q;
+      return n;
+    };
+    const noiseSrc = (): AudioBufferSourceNode => {
+      const s = mk(ctx.createBufferSource());
+      s.buffer = buf;
+      s.loop = true;
+      s.start(now, Math.random() * (buf.duration - 0.5));
+      sources.push(s);
+      return s;
+    };
+    const lfo = (hz: number, depth: number, target: AudioParam): void => {
+      const o = mk(ctx.createOscillator());
+      o.type = 'sine';
+      o.frequency.value = hz;
+      o.connect(gain(depth)).connect(target);
+      o.start(now);
+      sources.push(o);
+    };
+
+    const bus = gain(this.fxVol);
+    bus.connect(gain(0.8)).connect(g.preMaster);
+    bus.connect(gain(0.45)).connect(g.reverbIn);
+
+    // Room tone.
+    const src = noiseSrc();
+    const room = gain(0);
+    const roomHP = filter('highpass', 40, 0.5);
+    const roomLP = filter('lowpass', 170, 0.5);
+    const swell = gain(0.72);
+    src.connect(roomHP).connect(roomLP).connect(swell).connect(room).connect(bus);
+    lfo(0.043, 0.18, swell.gain);
+    lfo(0.071, 0.1, swell.gain);
+    lfo(0.029, 45, roomLP.frequency);
+    const air = gain(0);
+    const airBP = filter('bandpass', 430, 0.6);
+    const airAmp = gain(0.55);
+    src.connect(airBP).connect(airAmp).connect(air).connect(bus);
+    lfo(0.037, 130, airBP.frequency);
+    lfo(0.059, 0.3, airAmp.gain);
+    lfo(0.113, 0.15, airAmp.gain);
+
+    // Water lying somewhere in the dark: a slow lapping band and a thin far-off trickle.
+    const trickle = gain(0);
+    const wsrc = noiseSrc();
+    const lapBP = filter('bandpass', 520, 0.9);
+    const lapAmp = gain(0.5);
+    const runBP = filter('bandpass', 1700, 1.6);
+    const runAmp = gain(0.3);
+    const far = filter('lowpass', 2600, 0.5);
+    wsrc.connect(lapBP).connect(lapAmp).connect(far);
+    wsrc.connect(runBP).connect(runAmp).connect(far);
+    far.connect(trickle).connect(bus);
+    lfo(0.21, 0.3, lapAmp.gain);
+    lfo(0.34, 0.18, lapAmp.gain);
+    lfo(0.17, 110, lapBP.frequency);
+    lfo(0.47, 420, runBP.frequency);
+    lfo(1.9, 0.14, runAmp.gain);
+    lfo(3.3, 0.1, runAmp.gain);
+
+    // Drips: dry, plus two cross-fed echoes off far walls, each pass darker and quieter.
+    const dripIn = gain(1);
+    dripIn.connect(bus);
+    const dl = mk(ctx.createDelay(1));
+    dl.delayTime.value = 0.29;
+    const dr = mk(ctx.createDelay(1));
+    dr.delayTime.value = 0.43;
+    const lpL = filter('lowpass', 2200, 0.5);
+    const lpR = filter('lowpass', 1500, 0.5);
+    const panL = mk(ctx.createStereoPanner());
+    panL.pan.value = -0.6;
+    const panR = mk(ctx.createStereoPanner());
+    panR.pan.value = 0.6;
+    dripIn.connect(dl).connect(lpL);
+    lpL.connect(gain(0.45)).connect(dr).connect(lpR);
+    lpR.connect(gain(0.4)).connect(dl);
+    lpL.connect(gain(0.5)).connect(panL).connect(bus);
+    lpR.connect(gain(0.4)).connect(panR).connect(bus);
+
+    g.fxBuses.push(bus);
+    this.deepIdle = 0;
+    return { bus, room, air, trickle, dripIn, sources, nodes };
+  }
+
+  private teardownDeep(): void {
+    const bed = this.deepBed;
+    if (!bed) return;
+    this.deepBed = null;
+    this.nextDrip = 0;
+    const buses = this.g?.fxBuses;
+    const i = buses ? buses.indexOf(bed.bus) : -1;
+    if (buses && i >= 0) buses.splice(i, 1);
+    for (const s of bed.sources) {
+      try {
+        s.stop();
+      } catch {
+        /* already stopped */
+      }
+    }
+    disconnectAll(...bed.nodes);
+  }
+
+  /**
+   * One water drop: a short sine plink chirping upward, over a small low plop when it lands in
+   * standing water. Random pitch every time so it never settles into a note.
+   */
+  private drip(t: number, level: number): void {
+    const ctx = this.ctx;
+    const bed = this.deepBed;
+    if (!ctx || !bed) return;
+    const wet = this.wet;
+    const f = rand(850, 2100);
+    const dur = rand(0.06, 0.12);
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(f * 0.8, t);
+    o.frequency.exponentialRampToValueAtTime(f * rand(1.25, 1.6), t + dur);
+    const env = ctx.createGain();
+    const peak = Math.max(0.03 * level * rand(0.45, 1), 2 * EPS);
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(peak, t + 0.004);
+    env.gain.exponentialRampToValueAtTime(EPS, t + dur);
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.7, 0.7);
+    o.connect(env).connect(pan).connect(bed.dripIn);
+    o.start(t);
+    o.stop(t + dur + 0.03);
+    const body = ctx.createOscillator();
+    body.type = 'sine';
+    const bf = rand(300, 480);
+    body.frequency.setValueAtTime(bf, t);
+    body.frequency.exponentialRampToValueAtTime(bf * 0.6, t + 0.07);
+    const benv = ctx.createGain();
+    benv.gain.setValueAtTime(0, t);
+    benv.gain.linearRampToValueAtTime(Math.max(peak * (0.25 + 0.6 * wet), 2 * EPS), t + 0.006);
+    benv.gain.exponentialRampToValueAtTime(EPS, t + 0.08);
+    body.connect(benv).connect(pan);
+    body.start(t);
+    body.stop(t + 0.1);
+    o.onended = () => disconnectAll(o, env, body, benv, pan);
   }
 
   /** Murmur bed levels and the slow wander of its formant bands. */
@@ -1395,6 +1641,21 @@ export class AudioEngine {
       this.ambienceTick(t);
       this.nextAmbTick = t + CITY_TICK;
     }
+    // Drips: single drops seconds apart in dry rock, every second or two beside open water.
+    if (this.deepBed && this.deep > 0.12) {
+      if (this.nextDrip < now - 1) this.nextDrip = now + rand(1.5, 5);
+      while (this.nextDrip < horizon) {
+        const t = Math.max(this.nextDrip, now + 0.02);
+        const wet = this.wet;
+        this.drip(t, this.deep);
+        // Now and then a second, smaller drop right behind the first.
+        if (Math.random() < 0.12 + 0.2 * wet) this.drip(t + rand(0.13, 0.3), this.deep * 0.5);
+        const gap = rand(4.5, 13) * (1 - wet) + rand(0.7, 2.6) * wet;
+        this.nextDrip = t + gap;
+      }
+    } else {
+      this.nextDrip = 0;
+    }
     if (this.nextCityTick < now - 1) this.nextCityTick = now + 0.05;
     while (this.nextCityTick < horizon) {
       const t = Math.max(this.nextCityTick, now + 0.02);
@@ -1424,13 +1685,14 @@ export class AudioEngine {
     if (am.mill > 0.04) {
       if (this.nextCreak < t - 1) this.nextCreak = t + rand(0.5, 2);
       if (this.nextCreak <= t + CITY_TICK) {
-        this.millCreak(Math.max(this.nextCreak, t), am.mill);
+        this.millCreak(Math.max(this.nextCreak, t), am.mill * (1 - this.deep));
         this.nextCreak = Math.max(this.nextCreak, t) + rand(2.6, 6.5);
       }
     } else {
       this.nextCreak = 0;
     }
-    const day = 1 - this.ambNight;
+    // No daylight and no birds below ground.
+    const day = (1 - this.ambNight) * (1 - this.deep);
     if (am.birds > 0.03 && day > 0.05) {
       if (this.nextBird < t - 1) this.nextBird = t + rand(1, 4);
       if (this.nextBird <= t + CITY_TICK) {

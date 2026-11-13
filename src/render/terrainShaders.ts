@@ -12,6 +12,7 @@
 //   float uShadowSteps  heightmap ray-march steps, 1..32 (30 = full quality)
 //   float uDetail       0..1 scale on optional fragment work (1 = full quality)
 import { MAX_TERRAIN_H, SURFACE_GLSL, TERRAIN } from '../world/surface';
+import { DEEP_HOLE } from '../world/deep/types';
 import { CITY_SHADOW_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 import { STYLE_GLSL } from './styleGlsl';
 
@@ -183,7 +184,8 @@ float cityTracks(vec2 p) {
   return m;
 }
 
-// The nearest caverns (see sfCaverns in surface.ts), for the mark a sealed one leaves on the sand.
+// The nearest caverns (see sfCaverns in surface.ts), for the mark a sealed one leaves on the
+// sand, and the hole in an open one's floor.
 uniform vec4 uCavA[4];
 uniform vec4 uCavB[4];
 uniform vec4 uCavC[4];
@@ -191,7 +193,7 @@ uniform vec4 uCavD[4];
 
 // What glows in the nearest open cavern: where it is, and how far its light carries (0 = nothing).
 uniform vec4 uCavGlow;
-const vec3 CAV_GLOW = vec3(0.3, 0.95, 0.82);
+uniform vec3 uCavGlowCol;
 
 uniform vec2 uInnerCenter; // centre of the next finer level
 uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
@@ -329,6 +331,15 @@ void main() {
   if (uInnerHalf > 0.0) {
     vec2 dd = abs(p.xz - uInnerCenter);
     if (max(dd.x, dd.y) < uInnerHalf) discard;
+  }
+
+  // ---- the hole in the floor of an open cavern: the way down to the deep. The floor is level
+  // round it, so the ground is simply not drawn inside the rectangle. (Only the floor: the sand
+  // roof over it is drawn with this shader too, and stays whole.)
+  for (int i = 0; i < 4; i++) {
+    if (uCavC[i].w <= 0.0 || uCavB[i].z < 1.0 || uCavD[i].y <= 0.0) continue;
+    vec2 hd = p.xz - uCavA[i].xy;
+    if (abs(dot(hd, uCavA[i].zw) - uCavD[i].y) < ${DEEP_HOLE.halfU.toFixed(2)} && abs(dot(hd, vec2(-uCavA[i].w, uCavA[i].z))) < ${DEEP_HOLE.halfV.toFixed(2)} && p.y < uCavB[i].y + 0.5) discard;
   }
 
   // ---- base normal: mesh near, heightmap far
@@ -675,7 +686,7 @@ void main() {
       float ga = 1.0 / (1.0 + g2 / (0.16 * uCavGlow.w * uCavGlow.w));
       ga *= 0.45 + 0.55 * max(dot(n, gd * inversesqrt(g2 + 1e-3)), 0.0);
       ga *= 0.92 + 0.08 * sin(uTime * 0.9);
-      col += CAV_GLOW * (0.85 * ga * smoothstep(0.0, 0.35, deep));
+      col += uCavGlowCol * (0.85 * ga * smoothstep(0.0, 0.35, deep));
     }
   }
 
