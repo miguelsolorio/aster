@@ -2979,6 +2979,21 @@ export class Discoveries {
   }
   solidKind: SolidKind = 0;
 
+  /** Whether the point (x, y, z) is inside any site's stones or bones, grown by a margin. */
+  solidAt(x: number, y: number, z: number, m = 0): boolean {
+    for (let i = 0; i < this.sites.length; i++) {
+      const s = this.sites[i];
+      const so = s.solids;
+      if (!so) continue;
+      const dx = x - s.ox;
+      const dz = z - s.oz;
+      const r = so.reach + m;
+      if (dx * dx + dz * dz > r * r) continue;
+      if (so.contains(dx, y - s.oy, dz, m)) return true;
+    }
+    return false;
+  }
+
   /** Underside of the lowest stone or bone that feet at height y are beneath, or Infinity under open sky. */
   ceilAt(x: number, z: number, y: number): number {
     let ceil = Infinity;

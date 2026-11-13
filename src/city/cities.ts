@@ -129,6 +129,30 @@ export class Cities {
     return h > 0 ? Math.max(top, s.groundY + h) : top;
   }
 
+  /** Whether the point (x, y, z), grown by a margin, is inside a building of the loaded city. */
+  solidAt(x: number, y: number, z: number, m = 0): boolean {
+    const c = this.active;
+    if (!c) return false;
+    const s = c.site;
+    const dx = x - s.cx;
+    const dz = z - s.cz;
+    const co = Math.cos(s.rot);
+    const si = Math.sin(s.rot);
+    const p = c.plan;
+    const lx = co * dx + si * dz;
+    const lz = -si * dx + co * dz;
+    const ly = y - s.groundY;
+    if (c.solids.contains(lx, ly, lz, m)) return true;
+    for (let k = 0; k < 5; k++) {
+      const i = Math.floor(lx + (k === 1 ? m : k === 2 ? -m : 0) + p.gridHalf);
+      const j = Math.floor(lz + (k === 3 ? m : k === 4 ? -m : 0) + p.gridHalf);
+      if (i < 0 || j < 0 || i >= p.gridSize || j >= p.gridSize) continue;
+      const h = p.grid[j * p.gridSize + i];
+      if (h > 0 && ly < h + m) return true;
+    }
+    return false;
+  }
+
   /** 1 on desktop, 0.7 low, 0.35 phones. Changing it rebuilds the extras of every loaded city. */
   setDensity(d: number) {
     if (d === this.density) return;
