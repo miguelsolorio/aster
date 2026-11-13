@@ -95,7 +95,7 @@ export const TOWNSFOLK = {
     'My grandmother kept one of those on a shelf. She never said where it came from.',
     'Don\'t sell that. Whatever they offer.',
   ],
-  /** Only in a canyon city, to someone with no pick: points at the miner. */
+  /** In any city, to someone with no pick: points at the miner. */
   noPick: [
     'The miner has lost a lamp and won\'t stop talking about it. Go and listen, if you\'ve the patience.',
     'Looking for something to do? Ask the miner. Sits by a pick all day, sorting stones.',
@@ -152,7 +152,7 @@ export const TOWNSFOLK = {
 };
 
 /**
- * The miner: there is one in every canyon city, sat beside a spare pick. A lamp has been left
+ * The miner: there is one in every city, sat beside a spare pick. A lamp has been left
  * out in the desert; whoever brings it back is given the pick.
  *
  * Where a line says where something is, {way} is a compass direction ("north-east") and {far}
@@ -197,5 +197,5 @@ export const MINER = {
     'The lamp burns better for the walk. Don\'t ask me why.',
   ],
   /** Afterwards, to someone carrying a relic. */
-  relic: ['That thing on your belt is older than this canyon. Keep it dry.'],
+  relic: ['That thing on your belt is older than this city. Keep it dry.'],
 };
