@@ -653,12 +653,15 @@ void main() {
     if (uCavC[i].w <= 0.0 || uCavB[i].z >= 1.0 || sandW < 0.01) continue;
     vec2 cd = p.xz - (uCavA[i].xy + uCavA[i].zw * uCavD[i].w);
     float cr = length(cd);
-    if (cr > 5.0) continue;
-    float edge = 3.3 + 0.7 * vnoise(vec2(atan(cd.y, cd.x) * 2.5, float(i) * 9.1));
-    float k = (1.0 - smoothstep(edge - 0.9, edge, cr)) * (1.0 - uCavB[i].z) * sandW * (1.0 - smoothstep(60.0, 140.0, dist));
+    if (cr > 5.5) continue;
+    float edge = 3.6 + 0.9 * vnoise(vec2(atan(cd.y, cd.x) * 2.5, float(i) * 9.1));
+    // it fades out into the sand over half its width, and drifts of sand lie across it, so
+    // the cracks show in patches rather than as a clean disc
+    float k = (1.0 - smoothstep(edge - 2.6, edge, cr)) * (1.0 - uCavB[i].z) * sandW * (1.0 - smoothstep(60.0, 140.0, dist));
+    float bare = smoothstep(0.46, 0.66, fbm(p.xz * 0.8 + float(i) * 5.3) + 0.12 * k) * k;
     vec2 cv = cells(p.xz / 0.75 + float(i) * 3.7);
     float crack = 1.0 - smoothstep(0.03, 0.09 + 0.6 * fwXZ, cv.x);
-    col *= 1.0 - k * (0.16 + 0.05 * cv.y + 0.5 * crack * (1.0 - smoothstep(12.0, 45.0, dist)));
+    col *= 1.0 - k * (0.07 + bare * (0.07 + 0.04 * cv.y + 0.4 * crack * (1.0 - smoothstep(12.0, 45.0, dist))));
   }
 
   // ---- deep in a cavern: past the daylight from its mouth the rock is nearly black, and
