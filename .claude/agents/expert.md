@@ -13,5 +13,6 @@ You take on the difficult piece described in the brief.
 - Stay in scope. If the right fix is larger than the brief, stop and report the options instead of expanding the work.
 - Verify with the project's own build or tests before reporting.
 - If two distinct approaches have failed, stop and report both with what each showed. Do not try a third on your own.
-- Do not commit or push.
+- Work only inside the worktree path the brief gives you. Never edit the main checkout.
+- Do not commit, push, merge, create branches or worktrees, or open PRs. The orchestrator handles git.
 - Report the conclusion, the files changed, how you verified it, and anything unverified. Keep it short.
