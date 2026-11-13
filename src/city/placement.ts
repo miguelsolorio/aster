@@ -30,10 +30,12 @@ export interface CityBlend {
   rock: number; // rock mask the city adds (the cliffs and buttes around a canyon town)
 }
 
-/** The ways out of a city, as the shaders see them (uCityC), rounded to float32. */
+/** The ways out of a city, as the shaders see them (uCityC, uCityD), rounded to float32. */
 export interface CityWays {
-  t1: number; // track bearings
+  t1: number; // track bearings, one per route partner (repeated when there are fewer than four)
   t2: number;
+  t3: number;
+  t4: number;
   aveA: number; // packed avenues, see cityAveLat in cityGlsl.ts
   aveB: number;
 }
@@ -138,7 +140,7 @@ export function cityBlendAt(
   let rock = 0;
   const t = dist - edge;
   if (t > 0) {
-    const tr = Math.min(Math.abs(wrapPi(ang - ways.t1)), Math.abs(wrapPi(ang - ways.t2)));
+    const tr = Math.min(Math.abs(wrapPi(ang - ways.t1)), Math.abs(wrapPi(ang - ways.t2)), Math.abs(wrapPi(ang - ways.t3)), Math.abs(wrapPi(ang - ways.t4)));
     const av = aveLat(ang, dist, ways.aveA, ways.aveB);
     if (site.kind === 'hill') {
       if (t < F) {
@@ -281,18 +283,71 @@ export class CityIndex {
     return [n[0], n[1]];
   }
 
+  private partnerCache = new Map<number, CitySite[]>();
+  /**
+   * The cities a site is joined to by a route: each edge-adjacent city that counts the other as
+   * one of its two neighbours, either way round. Two to four of them, nearest first.
+   */
+  partners(site: CitySite): CitySite[] {
+    let p = this.partnerCache.get(site.id);
+    if (!p) {
+      const ci = Math.floor(site.cx / CITY_CELL);
+      const cj = Math.floor(site.cz / CITY_CELL);
+      const mine = this.neighbours(site);
+      p = [];
+      for (const o of [this.cell(ci + 1, cj), this.cell(ci - 1, cj), this.cell(ci, cj + 1), this.cell(ci, cj - 1)]) {
+        const theirs = this.neighbours(o);
+        if (mine[0].id === o.id || mine[1].id === o.id || theirs[0].id === site.id || theirs[1].id === site.id) p.push(o);
+      }
+      p.sort((a, b) => Math.hypot(a.cx - site.cx, a.cz - site.cz) - Math.hypot(b.cx - site.cx, b.cz - site.cz));
+      this.partnerCache.set(site.id, p);
+    }
+    return p;
+  }
+
+  /**
+   * The bearing (atan2(dz, dx), float32) at which the route toward `other` leaves `site`: down the
+   * avenue nearest to the straight line between them, so the road out of town carries on as the
+   * track. If no avenue lies within 50 degrees of it, straight toward the other city.
+   */
+  wayToward(site: CitySite, other: CitySite): number {
+    const b = Math.atan2(other.cz - site.cz, other.cx - site.cx);
+    const A = f32(site.aveA);
+    const B = f32(site.aveB);
+    const s = Math.floor(A / 64);
+    const rem = A - s * 64;
+    const n = Math.floor(rem / 8);
+    const base = rem - n * 8;
+    const st = 0.008 * (s + 1);
+    let best = b;
+    let bd = 0.873; // 50 degrees
+    for (let k = 0; k < Math.min(n, 6); k++) {
+      const q = Math.floor(B / 2 ** (4 * k)) % 16;
+      const a = base + (TAU * k) / n + (q - 7.5) * st;
+      const d = Math.abs(wrapPi(a - b));
+      if (d < bd) {
+        bd = d;
+        best = a;
+      }
+    }
+    return f32(wrapPi(best));
+  }
+
   private waysCache = new Map<number, CityWays>();
   /**
-   * The ways out of a site: bearings toward its two neighbours (as Cities.tracks gives the
-   * shaders) and its packed avenues, rounded to float32 like the uniforms.
+   * The ways out of a site: the bearings its routes leave by (as Cities gives the shaders) and its
+   * packed avenues, rounded to float32 like the uniforms.
    */
   ways(site: CitySite): CityWays {
     let w = this.waysCache.get(site.id);
     if (!w) {
-      const n = this.neighbours(site);
+      const t = this.partners(site).map((o) => this.wayToward(site, o));
+      while (t.length < 4) t.push(t[0] ?? 0);
       w = {
-        t1: f32(Math.atan2(n[0].cz - site.cz, n[0].cx - site.cx)),
-        t2: f32(Math.atan2(n[1].cz - site.cz, n[1].cx - site.cx)),
+        t1: t[0],
+        t2: t[1],
+        t3: t[2],
+        t4: t[3],
         aveA: f32(site.aveA),
         aveB: f32(site.aveB),
       };

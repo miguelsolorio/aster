@@ -9,6 +9,7 @@ import type { FrameState } from '../game/contract';
 import { EMITTER_KINDS, SolidIndex, createExtraCtx, type EmitterKind, type Extra, type ExtraCtx } from './extras';
 import { EXTRAS } from './extrasList';
 import { WORLD_SCALE } from '../world/scale';
+import { RouteNet } from './routes';
 
 const KIND_ID: Record<CityKind, number> = { hill: 1, canyon: 2, oasis: 3, trade: 4 };
 
@@ -41,6 +42,8 @@ export class Cities {
   onReach: ((site: CitySite) => void) | null = null;
   /** The city currently loaded in full, if any. */
   active: Loaded | null = null;
+  /** The routes between cities: the worn paths, their camps, the travellers' ways. */
+  readonly routes: RouteNet;
 
   private loaded = new Map<number, Loaded>();
   private reachedIds = new Set<number>();
@@ -57,6 +60,9 @@ export class Cities {
     u.uCityA = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
     u.uCityB = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
     u.uCityC = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
+    u.uCityD = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
+    this.routes = new RouteNet(world);
+    RouteNet.uniforms(u);
     u.uCityMap = { value: this.blank };
     u.uCityRect = { value: new THREE.Vector4() };
     u.uCityGround = { value: 0 };
@@ -73,13 +79,16 @@ export class Cities {
     const a = this.u.uCityA.value as THREE.Vector4[];
     const b = this.u.uCityB.value as THREE.Vector4[];
     const c = this.u.uCityC.value as THREE.Vector4[];
+    const d = this.u.uCityD.value as THREE.Vector4[];
     for (let i = 0; i < MAX_SITES; i++) {
       const s = near[i];
       a[i].set(s.cx, s.cz, s.radius, s.groundY);
       b[i].set(s.phase1, s.phase2, s.falloff, KIND_ID[s.kind]);
-      const t = this.tracks(s);
-      c[i].set(t[0], t[1], s.aveA, s.aveB);
+      const w = this.world.cities.ways(s);
+      c[i].set(w.t1, w.t2, s.aveA, s.aveB);
+      d[i].set(w.t3, w.t4, 0, 0);
     }
+    this.routes.focus(this.u, x, z);
   }
 
   /** Depth of water to wade through at (x, z): the pool of the loaded city, shelving at its edge. */
@@ -97,16 +106,10 @@ export class Cities {
     return t * t * (3 - 2 * t) * 0.6;
   }
 
-  private trackCache = new Map<number, [number, number]>();
-  /** Bearings from a city toward its two neighbours. */
-  private tracks(s: CitySite): [number, number] {
-    let t = this.trackCache.get(s.id);
-    if (!t) {
-      const n = this.world.cities.neighbours(s);
-      t = [Math.atan2(n[0].cz - s.cz, n[0].cx - s.cx), Math.atan2(n[1].cz - s.cz, n[1].cx - s.cx)];
-      this.trackCache.set(s.id, t);
-    }
-    return t;
+  /** Bearings of the ways out of a city: one per route leaving it. */
+  private tracks(s: CitySite): number[] {
+    const w = this.world.cities.ways(s);
+    return [...new Set([w.t1, w.t2, w.t3, w.t4])];
   }
 
   /** Absolute height of the roof over (x, z) in the loaded city, or -Infinity on open ground. */

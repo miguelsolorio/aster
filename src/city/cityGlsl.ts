@@ -14,6 +14,8 @@ export const CITY_REACH_EXTRA = 600;
  * uCityA[i] = (centre x, centre z, radius, plateau height); radius 0 means unused.
  * uCityB[i] = (edge phase 1, edge phase 2, falloff metres, kind: 1 hill, 2 canyon, 3 oasis, 4 trade).
  * uCityC[i] = (track bearing 1, track bearing 2, avenues A, avenues B): see cityAveLat.
+ * uCityD[i] = (track bearing 3, track bearing 4, unused, unused). The tracks are the ways the
+ *   routes to the city's two to four partners leave by (CityIndex.ways); unused ones repeat.
  * cityPave returns the paved (built) mask 0..1, cheaply, for fragment shaders; cityRiser the
  * stone walls of hill terraces. The terrace and way-out helpers here are shared with cityBlend.
  */
@@ -21,6 +23,7 @@ export const CITY_SITES_GLSL = /* glsl */ `
 uniform vec4 uCityA[${MAX_SITES}];
 uniform vec4 uCityB[${MAX_SITES}];
 uniform vec4 uCityC[${MAX_SITES}];
+uniform vec4 uCityD[${MAX_SITES}];
 
 float cityPave(vec2 p) {
   float best = 0.0;
@@ -42,6 +45,13 @@ const float CITY_PI = 3.141592654;
 
 float cityWrap(float a) {
   return mod(a + CITY_PI, CITY_TAU) - CITY_PI;
+}
+
+// Angle from a bearing to the nearest way out of site i (a route leaving town).
+float cityTrackDev(float ang, int i) {
+  vec4 c = uCityC[i];
+  vec4 d = uCityD[i];
+  return min(min(abs(cityWrap(ang - c.x)), abs(cityWrap(ang - c.y))), min(abs(cityWrap(ang - d.x)), abs(cityWrap(ang - d.y))));
 }
 
 // Lateral distance in metres from a point (bearing ang, dist from the centre) to the nearest avenue.
@@ -76,8 +86,9 @@ float cityTerraceK(float u, float ang, vec4 b, out float N, out float dk) {
 }
 
 // How open the slope of a hill town is at a point: 1 on a ramp (a track or an avenue), 0 on terraces.
-float cityRamp(float ang, float dist, vec4 c) {
-  float tr = min(abs(cityWrap(ang - c.x)), abs(cityWrap(ang - c.y)));
+float cityRamp(float ang, float dist, int i) {
+  vec4 c = uCityC[i];
+  float tr = cityTrackDev(ang, i);
   return max(1.0 - smoothstep(0.16, 0.28, tr), 1.0 - smoothstep(16.0, 34.0, cityAveLat(ang, dist, c)));
 }
 
@@ -110,7 +121,7 @@ float cityRiser(vec2 p, float aa, out float lip, out float foot) {
     float dFoot = (1.0 - fr) * mpf; // metres to the foot of that wall
     float dPast = fr * mpf; // metres past the foot of the wall above
     // where the warp stretches a wall into a long gentle slope, it is sand rather than stone
-    float open = (1.0 - cityRamp(ang, dist, uCityC[i])) * smoothstep(0.2, 0.45, 24.0 / (N * 0.1 * mpf));
+    float open = (1.0 - cityRamp(ang, dist, i)) * smoothstep(0.2, 0.45, 24.0 / (N * 0.1 * mpf));
     // lower walls fade as the dunes come back in near the foot of the mound
     float sBelow = (kf + 1.0) / N;
     float sAbove = kf / N;
@@ -162,7 +173,7 @@ vec2 cityBlend(vec2 p, float base, uint key, out float h, out float rock) {
     h = mix(base, a.w, m);
     float t = dist - edge;
     if (t > 0.0) {
-      float tr = min(abs(cityWrap(ang - c.x)), abs(cityWrap(ang - c.y)));
+      float tr = cityTrackDev(ang, i);
       float av = cityAveLat(ang, dist, c);
       if (b.w < 1.5) {
         // hill: terraces of irregular width, ramps on the ways out

@@ -1,18 +1,23 @@
-// Travellers and caravans on the open desert around cities, and the pilgrims and keepers of the
-// temples out in the wilderness. Four draw calls: pack animals, people, ground props, fire/smoke.
+// Travellers and caravans on the open desert: parties walking the worn paths between cities and
+// resting at the camps along them, people round the fires outside each city, and the pilgrims and
+// keepers of the temples out in the wilderness. Four draw calls: pack animals, people, ground
+// props, fire/smoke.
 // Everything is instanced; all animation (walk, sit, sway, head turn) is in the vertex shaders.
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import type { CitySite } from './types';
 import type { Landmark } from '../world/discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
+import { routePos, routeSAtU, routeSlope, routeUAtS, type RouteCamp, type RouteNet, type TravelRoute } from './routes';
 
 const RANGE = 2500;
 const FADE0 = 1200;
-const CAP_A = 160;
-const CAP_P = 160;
-const CAP_PROP = 200;
-const CAP_FIRE = 240;
+const CAP_A = 220;
+const CAP_P = 220;
+const CAP_PROP = 320;
+const CAP_FIRE = 400;
+/** Route parties and camps are kept for the routes this near the player (distance to the line between the cities). */
+const ROUTE_NEAR = RANGE + 1500;
 const TAU = Math.PI * 2;
 
 type V3 = [number, number, number];
@@ -487,6 +492,50 @@ function propGeometry(): THREE.InstancedBufferGeometry {
   b.tri([-1.4, 2.0, -0.2], [1.4, 2.0, -0.2], [1.4, 1.35, 1.2], null);
   b.tri([-1.4, 2.0, -0.2], [1.4, 1.35, 1.2], [-1.4, 1.35, 1.2], null);
   b.set(0, 5, 6).box(0, 0.015, 0, 2.0, 0.03, 1.3);
+  // 7: a log to sit against, along x
+  b.set(0, 6, 7).tube(
+    [
+      { c: [-0.85, 0.17, 0], rx: 0.17, rz: 0.17 },
+      { c: [0.85, 0.15, 0], rx: 0.15, rz: 0.15 },
+    ],
+    7,
+    0.3,
+    true,
+    true,
+  );
+  // 8: a low plank bench, along x (wood in the instance colour)
+  b.set(0, 4, 8).box(0, 0.41, 0, 1.5, 0.07, 0.34);
+  b.box(-0.58, 0.19, 0, 0.1, 0.38, 0.3);
+  b.box(0.58, 0.19, 0, 0.1, 0.38, 0.3);
+  // 9: a small low table
+  b.set(0, 4, 9).box(0, 0.46, 0, 0.8, 0.05, 0.55);
+  for (const [lx, lz] of [[-0.33, -0.22], [0.33, -0.22], [-0.33, 0.22], [0.33, 0.22]]) b.box(lx, 0.22, lz, 0.06, 0.44, 0.06);
+  // 10: a cooking pot hung from a tripod over the fire
+  for (let k = 0; k < 3; k++) {
+    const a = (k / 3) * TAU + 0.3;
+    b.set(0, 6, 10).tube(
+      [
+        { c: [Math.sin(a) * 0.78, 0, Math.cos(a) * 0.78], rx: 0.03, rz: 0.03 },
+        { c: [Math.sin(a) * 0.05, 1.4, Math.cos(a) * 0.05], rx: 0.025, rz: 0.025 },
+      ],
+      4,
+      0,
+      false,
+      false,
+    );
+  }
+  b.set(0, 8, 10).box(0, 1.08, 0, 0.02, 0.6, 0.02);
+  b.tube(
+    [
+      { c: [0, 0.5, 0], rx: 0.14, rz: 0.14 },
+      { c: [0, 0.62, 0], rx: 0.21, rz: 0.21 },
+      { c: [0, 0.78, 0], rx: 0.19, rz: 0.19 },
+    ],
+    7,
+    0,
+    true,
+    false,
+  );
   return b.geometry();
 }
 
@@ -979,6 +1028,13 @@ interface Agent {
   nx: number;
   ny: number;
   nz: number;
+  // the ground last sampled under someone on the move: where, how high, and its normal
+  gx: number;
+  gz: number;
+  gy: number;
+  gnx: number;
+  gny: number;
+  gnz: number;
 }
 
 interface Route {
@@ -1012,7 +1068,44 @@ interface PropI {
   col: V3;
 }
 
-// kind: 0 walking caravan, 1 camp, 2 lone walkers, 3 pilgrims, 4 temple keepers
+/** A stretch of a party's round trip: walking from s0 to s1, resting at a camp, or away in town. */
+interface Leg {
+  t0: number;
+  t1: number;
+  s0: number;
+  s1: number;
+  dir: number;
+  /** Index into Trip.camps while resting there; -1 walking; -2 away in town (not shown). */
+  camp: number;
+}
+
+/** Where people and animals settle at a camp on a route. */
+interface CampSpots {
+  camp: RouteCamp;
+  /** Sitting places by the seats, facing the fire. The first is the resident's, if there is one. */
+  seats: { x: number; z: number; yaw: number }[];
+  resident: boolean;
+  /** Standing places round the fire. */
+  stand: { x: number; z: number; yaw: number }[];
+  /** Where the animals kneel, off to the far side. */
+  pens: { x: number; z: number; yaw: number }[];
+}
+
+/** A party's round trip along a route: A to B with rests at camps, a while in town, and back. */
+interface Trip {
+  route: TravelRoute;
+  camps: CampSpots[];
+  legs: Leg[];
+  period: number;
+  phase: number;
+  /** Arc length where the path leaves the paved edge at A and at B. */
+  gA: number;
+  gB: number;
+  /** Which party of the route this is (spreads them over the standing places). */
+  index: number;
+}
+
+// kind: 1 camp, 2 lone walkers, 3 pilgrims, 4 temple keepers, 5 a party on a route between cities
 interface Group {
   kind: number;
   /** Pilgrims walk together: where they are along the route, which way, how fast, and how long they stay put. */
@@ -1033,6 +1126,9 @@ interface Group {
   fy: number;
   fz: number;
   fseed: number;
+  /** Route parties: the trip, and how long its clock has been held (someone talking to one of them). */
+  trip?: Trip;
+  delay: number;
 }
 
 function routePoint(r: Route, s: number, out: { x: number; z: number }): void {
@@ -1086,6 +1182,12 @@ function newAgent(animal: boolean, rng: () => number): Agent {
     nx: 0,
     ny: 1,
     nz: 0,
+    gx: NaN,
+    gz: NaN,
+    gy: 0,
+    gnx: 0,
+    gny: 1,
+    gnz: 0,
   };
 }
 
@@ -1148,6 +1250,9 @@ export class Caravans {
   private nF = 0;
 
   private readonly cache = new Map<number, Group[]>();
+  /** The camps and parties of each route, by its key. */
+  private readonly routeLife = new Map<string, Group[]>();
+  private readonly routeList: TravelRoute[] = [];
   /** The pilgrims and keepers of each temple, by its site key. */
   private readonly shrines = new Map<number, Group[]>();
   private readonly marks: Landmark[] = [];
@@ -1164,7 +1269,12 @@ export class Caravans {
   private readonly P0 = { x: 0, z: 0 };
   private readonly P1 = { x: 0, z: 0 };
 
-  constructor(world: World, cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite] }, uniforms: Uniforms) {
+  constructor(
+    world: World,
+    cities: { near(x: number, z: number): CitySite[]; neighbours(site: CitySite): [CitySite, CitySite] },
+    private readonly net: RouteNet,
+    uniforms: Uniforms,
+  ) {
     this.world = world;
     this.cities = cities;
     this.group.name = 'caravans';
@@ -1345,29 +1455,7 @@ export class Caravans {
   private build(site: CitySite): Group[] {
     const groups: Group[] = [];
     const rng = mulberry32((this.world.seed ^ Math.imul(site.id | 0, 0x9e3779b1) ^ 0x51ed270b) >>> 0);
-    // Caravans set out along the tracks, toward the two cities this one is joined to: the
-    // terrain keeps those lines clear of mountains.
-    const nb = this.cities.neighbours(site);
-
-    // walking caravans
-    const nRoutes = 1 + (rng() < 0.6 ? 1 : 0);
-    const bends = [0, 0.35, -0.35, 0.7, -0.7, 1.1, -1.1];
-    for (let k = 0; k < nRoutes; k++) {
-      let base: number;
-      const other = nb[k];
-      if (other) base = Math.atan2(other.cz - site.cz, other.cx - site.cx) + (rng() - 0.5) * 0.5;
-      else base = rng() * TAU + k * 2.2;
-      const len = 1500 + rng() * 1000;
-      let route: Route | null = null;
-      for (const bd of bends) {
-        const r = this.makeRoute(rng, site.cx, site.cz, base + bd, site.radius + 60, len, 40 + rng() * 50);
-        if (this.routeClear(r)) {
-          route = r;
-          break;
-        }
-      }
-      if (route) groups.push(this.buildCaravan(rng, route, site));
-    }
+    // (the caravans themselves walk the routes between cities: see buildRoute)
 
     // resting camp
     const base = rng() * TAU;
@@ -1412,43 +1500,7 @@ export class Caravans {
   }
 
   private emptyGroup(kind: number, ax: number, az: number, reach: number): Group {
-    return { kind, s: 0, dir: 1, v: 1, wait: 0, agents: [], route: null, ax, az, reach, pres: 0, active: false, maxO: 0, props: [], fx: 0, fy: 0, fz: 0, fseed: 0 };
-  }
-
-  private buildCaravan(rng: () => number, route: Route, site: CitySite): Group {
-    void site;
-    const g = this.emptyGroup(0, route.ax + route.dx * route.len * 0.5, route.az + route.dz * route.len * 0.5, route.len * 0.5 + 100);
-    g.route = route;
-    const na = 3 + Math.floor(rng() * 5);
-    const np = 2 + Math.floor(rng() * 4);
-    const spacing = 5.6 + rng() * 0.8;
-    const tail = 9 + (na - 1) * spacing;
-    for (let i = 0; i < na; i++) {
-      const a = newAgent(true, rng);
-      a.o = 9 + i * spacing;
-      a.lat = (rng() - 0.5) * 0.5;
-      g.agents.push(a);
-    }
-    for (let i = 0; i < np; i++) {
-      const a = newAgent(false, rng);
-      if (i === 0) {
-        a.o = 0;
-        a.lat = 0.8;
-      } else if (i === np - 1) {
-        a.o = tail + 4;
-        a.lat = -0.6;
-      } else {
-        a.o = 6 + rng() * (tail - 6);
-        a.lat = (i % 2 ? 1 : -1) * (2.3 + rng() * 0.9);
-      }
-      g.agents.push(a);
-    }
-    for (const a of g.agents) g.maxO = Math.max(g.maxO, a.o);
-    for (const a of g.agents) {
-      a.hi = route.len - a.o;
-      a.lo = 25 + (g.maxO - a.o);
-    }
-    return g;
+    return { kind, s: 0, dir: 1, v: 1, wait: 0, agents: [], route: null, ax, az, reach, pres: 0, active: false, maxO: 0, props: [], fx: 0, fy: 0, fz: 0, fseed: 0, delay: 0 };
   }
 
   private buildCamp(rng: () => number, x: number, z: number): Group {
@@ -1512,6 +1564,364 @@ export class Caravans {
       prop(5, x + Math.sin(pa) * 5, z + Math.cos(pa) * 5, pa + Math.PI, 1, LOADS[Math.floor(rng() * LOADS.length)]);
     }
     return g;
+  }
+
+  // ---------------------------------------------------------------- routes between cities
+
+  /** How loud the nearest camp fires are at (px, pz), 0..1 (the fire ambience, as a city's fires make it). */
+  fireLevel(px: number, pz: number): number {
+    let v = 0;
+    for (let i = 0; i < this.live.length; i++) {
+      const g = this.live[i];
+      if (g.kind !== 1 || !g.active) continue;
+      const d = Math.hypot(g.fx - px, g.fz - pz);
+      if (d < 25) v = Math.hypot(v, 0.7 * (1 - d / 25) * g.pres);
+    }
+    return Math.min(1, v);
+  }
+
+  /** A route's camps (each a fire with seats, sometimes someone tending it) and the parties walking it. */
+  private buildRoute(r: TravelRoute): Group[] {
+    const rng = mulberry32((this.world.seed ^ Math.imul(r.a.id | 0, 0x2c1b3c6d) ^ Math.imul(r.b.id | 0, 0x297a2d39) ^ 0x3c6ef372) >>> 0);
+    const groups: Group[] = [];
+    const spots: CampSpots[] = [];
+    for (const c of this.net.camps(r)) {
+      const sp = this.buildRouteCamp(r, c);
+      spots.push(sp.spots);
+      groups.push(sp.group);
+    }
+    const gA = routeSAtU(r, r.gateA);
+    const gB = routeSAtU(r, r.gateB);
+    if (gB - gA < 200) return groups;
+    // a steady stream: roughly one party per 800 m of road, each way round in turn
+    const n = Math.min(10, Math.max(5, Math.round((gB - gA) / 800)));
+    for (let i = 0; i < n; i++) groups.push(this.buildParty(rng, r, spots, gA, gB, i, n));
+    return groups;
+  }
+
+  private buildRouteCamp(r: TravelRoute, c: RouteCamp): { group: Group; spots: CampSpots } {
+    const w = this.world;
+    const rng = mulberry32((Math.floor(c.seed * 4294967296) ^ 0x5bd1e995) >>> 0);
+    const x = c.x;
+    const z = c.z;
+    const g = this.emptyGroup(1, x, z, 0);
+    g.fx = x;
+    g.fz = z;
+    g.fy = c.y;
+    g.fseed = rng();
+    const prop = (type: number, a: number, rad: number, yaw: number, scale: number, col: V3, dy = 0) => {
+      const px = x + Math.sin(a) * rad;
+      const pz = z + Math.cos(a) * rad;
+      g.props.push({ type, x: px, y: w.height(px, pz) + dy, z: pz, yaw, scale, col });
+    };
+    // bearings round the fire as (sin a, cos a): toward the path, and away from it
+    const toPath = Math.atan2(-c.side * -r.dz, -c.side * r.dx);
+    const away = toPath + Math.PI;
+    g.props.push({ type: 4, x, y: c.y, z, yaw: rng() * TAU, scale: 1, col: [1, 1, 1] });
+    if (rng() < 0.55) g.props.push({ type: 10, x, y: c.y, z, yaw: rng() * TAU, scale: 1, col: [1, 1, 1] });
+    const wood: V3 = [0.46 + rng() * 0.08, 0.34 + rng() * 0.05, 0.23 + rng() * 0.04];
+    // two to four seats round the fire, leaving the side toward the path open
+    const nSeats = 2 + Math.floor(rng() * 3);
+    const seats: { x: number; z: number; yaw: number }[] = [];
+    const used: number[] = [];
+    for (let i = 0; i < nSeats; i++) {
+      const a = toPath + 1.0 + ((i + 0.5) / nSeats) * (TAU - 2.0) + (rng() - 0.5) * 0.25;
+      used.push(a);
+      const kind = rng();
+      if (kind < 0.45) prop(7, a, 3.0, a, 1, wood);
+      else if (kind < 0.7) prop(8, a, 3.05, a, 1, wood);
+      else prop(6, a, 2.55, a, 0.8, LOADS[Math.floor(rng() * LOADS.length)], 0.01);
+      const rr = kind < 0.7 ? 2.35 : 2.55;
+      seats.push({ x: x + Math.sin(a) * rr, z: z + Math.cos(a) * rr, yaw: a + Math.PI });
+    }
+    // standing places in the gaps between the seats
+    const stand: { x: number; z: number; yaw: number }[] = [];
+    for (let i = 0; i < 6; i++) {
+      const a = toPath + 0.55 + (i / 6) * (TAU - 1.1) + 0.3;
+      if (used.some((u) => Math.abs(Math.atan2(Math.sin(u - a), Math.cos(u - a))) < 0.45)) continue;
+      const rr = 2.7 + rng() * 0.6;
+      stand.push({ x: x + Math.sin(a) * rr, z: z + Math.cos(a) * rr, yaw: a + Math.PI });
+    }
+    if (stand.length === 0) stand.push({ x: x + Math.sin(toPath) * 3, z: z + Math.cos(toPath) * 3, yaw: toPath + Math.PI });
+    // a lean-to across the far side, the gear and water jars by it, a low table
+    if (rng() < 0.6) {
+      prop(5, away + (rng() - 0.5) * 0.4, 6.4, away + Math.PI, 1, LOADS[Math.floor(rng() * LOADS.length)]);
+      for (let k = 0; k < 2; k++) prop(rng() < 0.5 ? 1 : 2, away + (k ? 0.5 : -0.5), 7.2, rng() * TAU, 0.9, LOADS[Math.floor(rng() * LOADS.length)]);
+    } else {
+      prop(1, away + 0.3, 5.0, rng() * TAU, 1, LOADS[Math.floor(rng() * LOADS.length)]);
+    }
+    if (rng() < 0.45) {
+      const a = toPath + 0.6 * (rng() < 0.5 ? -1 : 1);
+      prop(9, a, 4.4, a + Math.PI / 2, 1, wood);
+      prop(3, a, 4.4, 0, 0.55, [0.62, 0.38, 0.26], 0.48);
+    }
+    for (let k = 0; k < 1 + Math.floor(rng() * 2); k++) prop(3, rng() * TAU, 1.9, 0, 1, [0.62, 0.38, 0.26]);
+    // where pack animals kneel: off on the far side, either side of the lean-to
+    const pens: { x: number; z: number; yaw: number }[] = [];
+    for (let i = 0; i < 6; i++) {
+      const a = away + (i % 2 ? 1 : -1) * (0.75 + 0.32 * Math.floor(i / 2));
+      const rr = 8.5 + rng() * 1.5;
+      pens.push({ x: x + Math.sin(a) * rr, z: z + Math.cos(a) * rr, yaw: a + (rng() < 0.5 ? 1 : -1) * (Math.PI / 2) + (rng() - 0.5) * 0.5 });
+    }
+    // someone keeps the fire at about half the camps, a beast hobbled nearby
+    const resident = rng() < 0.5;
+    if (resident) {
+      const a = newAgent(false, rng);
+      const st = seats[0];
+      a.x = st.x;
+      a.z = st.z;
+      a.y = w.height(st.x, st.z);
+      w.normal(st.x, st.z, this.nrm);
+      a.nx = this.nrm.x;
+      a.ny = this.nrm.y;
+      a.nz = this.nrm.z;
+      a.yaw = st.yaw;
+      a.sit = a.sitTarget = 1;
+      a.variant &= 3;
+      g.agents.push(a);
+      if (rng() < 0.5) {
+        const b = newAgent(true, rng);
+        const pn = pens[5];
+        b.x = pn.x;
+        b.z = pn.z;
+        b.y = w.height(pn.x, pn.z);
+        b.yaw = pn.yaw;
+        b.sit = b.sitTarget = 1;
+        g.agents.push(b);
+      }
+    }
+    return { group: g, spots: { camp: c, seats, resident, stand, pens } };
+  }
+
+  /** One party on a route: a caravan of pack animals, a few travellers, or pilgrims. */
+  private buildParty(rng: () => number, r: TravelRoute, camps: CampSpots[], gA: number, gB: number, index: number, count: number): Group {
+    const g = this.emptyGroup(5, r.ax, r.az, 60);
+    const roll = rng();
+    let v: number;
+    if (roll < 0.4) {
+      // a caravan: a string of pack animals with people walking beside them
+      const na = 2 + Math.floor(rng() * 4);
+      const np = 2 + Math.floor(rng() * 2);
+      const spacing = 5.4 + rng() * 0.8;
+      const tail = 7 + (na - 1) * spacing;
+      for (let i = 0; i < na; i++) {
+        const a = newAgent(true, rng);
+        a.o = 7 + i * spacing;
+        a.lat = (rng() - 0.5) * 0.4;
+        g.agents.push(a);
+      }
+      for (let i = 0; i < np; i++) {
+        const a = newAgent(false, rng);
+        if (i === 0) {
+          a.o = 0;
+          a.lat = 0.5;
+        } else if (i === np - 1) {
+          a.o = tail + 3;
+          a.lat = -0.4;
+        } else {
+          a.o = 5 + rng() * (tail - 5);
+          a.lat = (i % 2 ? 1 : -1) * (1.5 + rng() * 0.4);
+        }
+        g.agents.push(a);
+      }
+      v = 1.15 + rng() * 0.1;
+    } else if (roll < 0.78) {
+      // travellers on foot, in ones and twos
+      const n = 1 + Math.floor(rng() * 4);
+      for (let i = 0; i < n; i++) {
+        const a = newAgent(false, rng);
+        a.o = Math.floor(i / 2) * 1.6 + rng() * 0.3;
+        a.lat = n === 1 ? 0 : (i % 2 ? -0.5 : 0.5);
+        g.agents.push(a);
+      }
+      v = 1.2 + rng() * 0.15;
+    } else {
+      // pilgrims, walking slowly side by side
+      const n = 1 + Math.floor(rng() * 3);
+      for (let k = 0; k < n; k++) {
+        const a = newAgent(false, rng);
+        a.role = ROLE_PILGRIM;
+        const c = PILGRIM_ROBES[Math.floor(rng() * PILGRIM_ROBES.length)];
+        const j = 0.94 + rng() * 0.1;
+        a.coat = [c[0] * j, c[1] * j, c[2] * j];
+        a.load = KEEPER_ROBES[Math.floor(rng() * KEEPER_ROBES.length)];
+        a.variant = PILGRIM_LOADS[Math.floor(rng() * PILGRIM_LOADS.length)];
+        a.lat = (k - (n - 1) / 2) * 1.05;
+        a.o = rng() * 0.4;
+        g.agents.push(a);
+      }
+      v = 0.9 + rng() * 0.2;
+    }
+    for (const a of g.agents) g.maxO = Math.max(g.maxO, a.o);
+    g.v = v;
+    g.reach = g.maxO + 60;
+    g.fseed = rng();
+
+    // the round trip: out to B, resting at a camp or two on the way, a while in town, and back
+    const legs: Leg[] = [];
+    let t = 0;
+    const order = camps.map((_, k) => k).sort((p, q) => camps[p].camp.s - camps[q].camp.s);
+    const leg = (dir: number, from: number, to: number) => {
+      const stops = (dir > 0 ? order : [...order].reverse()).filter(() => rng() < 0.55);
+      if (stops.length === 0 && order.length > 0) stops.push(order[Math.floor(rng() * order.length)]);
+      stops.sort((p, q) => (camps[p].camp.s - camps[q].camp.s) * dir);
+      let s = from;
+      for (const k of stops) {
+        const cs = camps[k].camp.s;
+        legs.push({ t0: t, t1: (t += Math.abs(cs - s) / v), s0: s, s1: cs, dir, camp: -1 });
+        legs.push({ t0: t, t1: (t += 150 + rng() * 210), s0: cs, s1: cs, dir, camp: k });
+        s = cs;
+      }
+      legs.push({ t0: t, t1: (t += Math.abs(to - s) / v), s0: s, s1: to, dir, camp: -1 });
+      legs.push({ t0: t, t1: (t += 60 + rng() * 150), s0: to, s1: to, dir, camp: -2 });
+    };
+    leg(1, gA - 30, gB + 30 + g.maxO);
+    leg(-1, gB + 30, gA - 30 - g.maxO);
+    g.trip = { route: r, camps, legs, period: t, phase: ((index + 0.15 + 0.7 * rng()) / count) * t, gA, gB, index };
+    return g;
+  }
+
+  /** Ground height under someone walking at (x, z), sampled again only once they have moved a little. */
+  private groundAt(a: Agent, x: number, z: number, d: number): number {
+    const thr = d < 150 ? 0.35 : d < 700 ? 1.2 : 3;
+    if (!(Math.abs(x - a.gx) < thr && Math.abs(z - a.gz) < thr)) {
+      const w = this.world;
+      a.gx = x;
+      a.gz = z;
+      a.gy = w.height(x, z);
+      if (d < 600) {
+        w.normal(x, z, this.nrm);
+        a.gnx = this.nrm.x;
+        a.gny = this.nrm.y;
+        a.gnz = this.nrm.z;
+      } else {
+        a.gnx = 0;
+        a.gny = 1;
+        a.gnz = 0;
+      }
+    }
+    return a.gy - (a.gnx * (x - a.gx) + a.gnz * (z - a.gz)) / a.gny;
+  }
+
+  private stepParty(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
+    const trip = g.trip as Trip;
+    const r = trip.route;
+    let held = false;
+    for (let i = 0; i < g.agents.length; i++) if (g.agents[i] === this.held) held = true;
+    // talking to one of them holds the whole party where it is
+    if (held) g.delay += dt;
+    const tau = (((f.time - g.delay + trip.phase) % trip.period) + trip.period) % trip.period;
+    const legs = trip.legs;
+    let L = legs[legs.length - 1];
+    for (let i = 0; i < legs.length; i++) {
+      if (tau < legs[i].t1) {
+        L = legs[i];
+        break;
+      }
+    }
+    const e = tau - L.t0;
+    const rem = L.t1 - tau;
+    g.s = L.camp === -1 ? L.s0 + (L.s1 - L.s0) * (e / Math.max(1e-6, L.t1 - L.t0)) : L.s0;
+    const dir = L.dir;
+    // where the party is, for range checks and for finding someone to talk to
+    routePos(r, routeUAtS(r, g.s), 0, this.P0);
+    g.ax = this.P0.x;
+    g.az = this.P0.z;
+    const away = L.camp === -2;
+    if (away || Math.hypot(g.ax - px, g.az - pz) > RANGE + g.reach) {
+      g.active = false;
+      for (const a of g.agents) a.x = a.z = 1e9;
+      return;
+    }
+    const snap = !g.active;
+    g.active = true;
+    g.pres = 1;
+    const k = (rate: number) => 1 - Math.exp(-dt * rate);
+    const rest = L.camp >= 0 ? trip.camps[L.camp] : null;
+    const lamp = f.night > 0.35;
+    let pi = 0;
+    let ai = 0;
+    for (let i = 0; i < g.agents.length; i++) {
+      const a = g.agents[i];
+      const s = g.s - dir * a.o;
+      const vis = ss(trip.gA - 30, trip.gA + 5, s) * (1 - ss(trip.gB - 5, trip.gB + 30, s));
+      const u = routeUAtS(r, s);
+      const sl = routeSlope(r, u);
+      const nl = Math.sqrt(1 + sl * sl);
+      // the way along the path (+s) in world space, and its left normal
+      const tx = (r.dx - r.dz * sl) / nl;
+      const tz = (r.dz + r.dx * sl) / nl;
+      routePos(r, u, 0, this.P0);
+      const lat = (a.lat + 0.6) * dir;
+      let x = this.P0.x - tz * lat;
+      let z = this.P0.z + tx * lat;
+      let ty = Math.atan2(tx * dir, tz * dir);
+      let moving = L.camp === -1;
+      let sitT = 0;
+      if (rest) {
+        // off the path to a place by the fire, a long rest, and back onto the path
+        let spot: { x: number; z: number; yaw: number };
+        let sits = false;
+        if (a.animal) {
+          spot = rest.pens[(ai + trip.index * 3) % rest.pens.length];
+          sits = true;
+          ai++;
+        } else {
+          const free = rest.seats.length - (rest.resident ? 1 : 0);
+          const slot = (pi + trip.index) % Math.max(1, rest.seats.length + rest.stand.length);
+          if (pi < free) {
+            spot = rest.seats[(rest.resident ? 1 : 0) + ((pi + trip.index) % free)];
+            sits = true;
+          } else spot = rest.stand[slot % rest.stand.length];
+          pi++;
+        }
+        const dx = spot.x - x;
+        const dz = spot.z - z;
+        const far = Math.hypot(dx, dz);
+        const tm = Math.min(25, Math.max(3, far / 1.0));
+        const kIn = ss(0, tm, e);
+        const kOut = ss(0, tm, rem - 3);
+        const kk = Math.min(kIn, kOut);
+        x += dx * kk;
+        z += dz * kk;
+        if (kk > 0.999) {
+          moving = false;
+          ty = spot.yaw;
+          sitT = sits && rem > tm + 3 ? 1 : 0;
+        } else if (kk > 0.001) {
+          moving = true;
+          ty = kIn < kOut ? Math.atan2(dx, dz) : Math.atan2(-dx, -dz);
+        } else moving = false;
+      }
+      if (a === this.held) {
+        moving = false;
+        ty = Math.atan2(px - a.x, pz - a.z);
+      }
+      const err = angDiff(ty, a.yaw);
+      if (snap) a.yaw = ty;
+      else {
+        const tr = (a.animal ? 1.0 : 1.8) * dt;
+        a.yaw += Math.max(-tr, Math.min(tr, err));
+      }
+      a.dirSign = dir;
+      if (snap) {
+        a.spd = moving ? g.v : 0;
+        a.sit = sitT;
+      }
+      a.spd += ((moving ? g.v : 0) - a.spd) * k(3);
+      if (a.spd < 0.01) a.spd = 0;
+      a.ph += (a.spd * dt) / a.stride;
+      a.sitTarget = sitT;
+      a.sit += Math.max(-dt * 0.7, Math.min(dt * 0.7, a.sitTarget - a.sit));
+      a.lamp = lamp && !a.animal;
+      if (vis <= 0.001) {
+        a.x = a.z = 1e9;
+        continue;
+      }
+      const d = Math.hypot(x - px, z - pz);
+      const y = this.groundAt(a, x, z, d);
+      this.put(a, x, y, z, a.gnx, a.gny, a.gnz, g, dt, px, pz, vis);
+    }
   }
 
   // ---------------------------------------------------------------- temples
@@ -1724,6 +2134,19 @@ export class Caravans {
         }
         for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
       }
+      // the routes between cities: their camps, and the parties walking them
+      const routes = this.net.near(px, pz, this.routeList, 10);
+      for (let i = 0; i < routes.length; i++) {
+        const r = routes[i];
+        const t = Math.min(r.len, Math.max(0, (px - r.ax) * r.dx + (pz - r.az) * r.dz));
+        if (Math.hypot(px - r.ax - r.dx * t, pz - r.az - r.dz * t) > ROUTE_NEAR) continue;
+        let gs = this.routeLife.get(r.key);
+        if (!gs) {
+          gs = this.buildRoute(r);
+          this.routeLife.set(r.key, gs);
+        }
+        for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
+      }
       for (let k = 0; k < this.placed.length; k++) this.live.push(this.placed[k]);
       if (this.landmarks) {
         const ls = this.landmarks(this.marks);
@@ -1750,6 +2173,10 @@ export class Caravans {
     const walkOk = f.night < 0.6;
     for (let i = 0; i < this.live.length; i++) {
       const g = this.live[i];
+      if (g.kind === 5) {
+        this.stepParty(g, f, dt, px, pz);
+        continue;
+      }
       const inRange = Math.hypot(g.ax - px, g.az - pz) < RANGE + g.reach;
       // camps, keepers and pilgrims (who carry lanterns) stay out after dark
       const want = inRange && (g.kind === 1 || g.kind >= 3 || walkOk);
@@ -1762,8 +2189,7 @@ export class Caravans {
         g.active = true;
         this.snap(g, f);
       }
-      if (g.kind === 0) this.stepCaravan(g, f, dt, px, pz);
-      else if (g.kind === 2) this.stepWalkers(g, f, dt, px, pz);
+      if (g.kind === 2) this.stepWalkers(g, f, dt, px, pz);
       else if (g.kind === 3) this.stepPilgrims(g, f, dt, px, pz);
       else if (g.kind === 4) this.stepKeepers(g, f, dt, px, pz);
       else this.stepCamp(g, f, dt, px, pz);
@@ -1810,30 +2236,12 @@ export class Caravans {
       }
       return;
     }
-    const day = f.day;
-    const dir = day < 0.5 ? 1 : -1;
-    const frac = dir > 0 ? Math.min(1, Math.max(0, (day - 0.22) / 0.26)) : 1 - Math.min(1, Math.max(0, (day - 0.5) / 0.3));
-    for (const a of g.agents) {
-      const s = dir > 0 ? frac * r.len - a.o : frac * r.len + 25 + (g.maxO - a.o);
-      a.s = Math.min(a.hi, Math.max(a.lo, s));
-      a.dirSign = dir;
-      a.sit = 0;
-      a.sitTarget = 0;
-      a.spd = 0;
-      a.drift = 0;
-      this.faceRoute(a, r);
-    }
   }
 
   private faceRoute(a: Agent, r: Route): void {
     routePoint(r, a.s, this.P0);
     routePoint(r, a.s + 3, this.P1);
     a.yaw = Math.atan2(this.P1.x - this.P0.x, this.P1.z - this.P0.z) + (a.dirSign < 0 ? Math.PI : 0);
-  }
-
-  private stepCaravan(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
-    const dirWanted = f.day < 0.5 ? 1 : -1;
-    for (let i = 0; i < g.agents.length; i++) this.stepRouteAgent(g, g.agents[i], dirWanted, false, f, dt, px, pz);
   }
 
   private stepWalkers(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
@@ -1945,7 +2353,7 @@ export class Caravans {
     void f;
   }
 
-  private put(a: Agent, x: number, y: number, z: number, nx: number, ny: number, nz: number, g: Group, dt: number, px: number, pz: number): void {
+  private put(a: Agent, x: number, y: number, z: number, nx: number, ny: number, nz: number, g: Group, dt: number, px: number, pz: number, vis = 1): void {
     const dx = x - px;
     const dz = z - pz;
     const d = Math.hypot(dx, dz);
@@ -1955,7 +2363,7 @@ export class Caravans {
     a.z = z;
     if (d > RANGE) return;
     const pr = g.pres * g.pres * (3 - 2 * g.pres);
-    const sc = a.scale * pr * (1 - ss(FADE0, RANGE, d));
+    const sc = a.scale * pr * vis * (1 - ss(FADE0, RANGE, d));
     if (sc < 0.02) return;
     {
       // the head turns toward a player within 12 m (an animal's whole neck; a person's hood)
