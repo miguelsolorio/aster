@@ -129,8 +129,8 @@ export const MINER = {
     'You look like someone who wanders. I could use a wanderer.',
     'I left my lamp out there, and I can\'t read a seam without it.',
   ] as Line[],
-  /** Where the lamp is, by what it was left beside. */
-  lampSpring: 'It\'s at the spring under the mountain to the {way}, {far}. Where the river comes out of the rock.',
+  /** Where the lamp is, by what it was left beside. At a spring there are two: one on the pool's bank, one up in the cave mouth. */
+  lampSpring: 'I had two, and left both at the spring under the mountain to the {way}, {far}. One is by the pool. The other is up in the mouth the water falls from. Either will do.',
   lampCave: 'It\'s in the cave on the mountain to the {way}, {far}. Just inside the mouth.',
   lampSand: 'It\'s out on the sand to the {way}, {far}. It\'ll be the only light out there.',
   askEnd: 'Bring it back and I\'ll make it worth the walk.',

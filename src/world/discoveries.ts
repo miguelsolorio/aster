@@ -25,7 +25,7 @@ const HOLLOW_R = 30; // a strike sounds hollow within this of a sealed cavern (m
 const DIG_R = 4.5; // and counts toward breaking through within this of the spot
 const DIG_HITS = 4; // strikes on the spot before the sand gives way
 const DRAIN = 4.5; // seconds the sand takes to run out
-const LAMP_KEY = -7; // the site key of the miner's lost lamp (massif finds are far below this)
+const LAMP_KEY = -7; // the site keys of the miner's lost lamps count down from here (massif finds are far below)
 const DIMPLE = 0.4; // depth of the dip over a sealed cavern (m)
 
 // ------------------------------------------------------------------ hashing
@@ -1890,8 +1890,9 @@ export class Discoveries {
         return true;
       }
     }
-    if (this.lampAt && !this.isBuilt(LAMP_KEY) && Math.hypot(this.lampAt.x - px, this.lampAt.z - pz) < BUILD_R) {
-      this.buildLamp();
+    for (let i = 0; i < this.lampAt.length; i++) {
+      if (this.isBuilt(LAMP_KEY - i) || Math.hypot(this.lampAt[i].x - px, this.lampAt[i].z - pz) >= BUILD_R) continue;
+      this.buildLamp(i);
       return true;
     }
     return false;
@@ -1997,20 +1998,21 @@ export class Discoveries {
 
   // ---------------------------------------------------------------- the lost lamp
 
-  private lampAt: { x: number; z: number } | null = null;
+  private lampAt: { x: number; z: number }[] = [];
 
   /**
    * Where a lamp lost near a point would be: at the nearest spring to it, failing that just
    * inside a massif's cave, and null where there is no mountain by at all. `kind` says which.
-   * A spring's mouth is high up a headwall nobody can walk, so the lamp lies at the foot of the
-   * fall under it: on the bank of the pool, just clear of the water.
+   * A spring has two lamps, and either will do: one at the foot of the fall, on the bank of the
+   * pool just clear of the water, and one (`mouth`) up in the cave mouth the water pours from,
+   * which is high on a headwall nobody can walk and has to be flown to.
    */
-  lampSpot(x: number, z: number): { x: number; z: number; kind: 'spring' | 'cave' } | null {
+  lampSpot(x: number, z: number): { x: number; z: number; kind: 'spring' | 'cave'; mouth?: { x: number; z: number } } | null {
     const w = this.world as Partial<{ massif(gi: number, gj: number): Massif | null; cave(gi: number, gj: number): Cave | null }>;
     if (!w.massif || !w.cave) return null;
     const gi0 = Math.floor(x / CITY_CELL);
     const gj0 = Math.floor(z / CITY_CELL);
-    let best: { x: number; z: number; kind: 'spring' | 'cave' } | null = null;
+    let best: { x: number; z: number; kind: 'spring' | 'cave'; mouth?: { x: number; z: number } } | null = null;
     let bd = Infinity;
     let cave: { x: number; z: number; kind: 'spring' | 'cave' } | null = null;
     let cd = Infinity;
@@ -2043,6 +2045,8 @@ export class Discoveries {
               break search;
             }
           }
+          // and the other: a few steps in from the lip, on the floor of the notch, off the middle
+          best.mouth = { x: sp.x + sp.dx * 5 - sp.dz * 3, z: sp.z + sp.dz * 5 + sp.dx * 3 };
         }
         const cv = w.cave(gi, gj)!;
         const d = Math.hypot(cv.x - x, cv.z - z);
@@ -2055,24 +2059,28 @@ export class Discoveries {
     return best ?? cave;
   }
 
-  /** Put the lost lamp out in the world at (x, z), or take it away (null). It is built when the player comes near. */
-  setLamp(at: { x: number; z: number } | null): void {
-    if (at && this.lampAt && at.x === this.lampAt.x && at.z === this.lampAt.z) return;
-    this.lampAt = at ? { x: at.x, z: at.z } : null;
-    const i = this.sites.findIndex((s) => s.key === LAMP_KEY);
-    if (i >= 0) {
+  /** Put the lost lamps out in the world, or take them all away (an empty list). Each is built when the player comes near. */
+  setLamps(at: readonly { x: number; z: number }[]): void {
+    if (at.length === this.lampAt.length && at.every((a, i) => a.x === this.lampAt[i].x && a.z === this.lampAt[i].z)) return;
+    this.lampAt = at.map((a) => ({ x: a.x, z: a.z }));
+    for (let i = this.sites.length - 1; i >= 0; i--) {
+      if (this.sites[i].kind !== 'lamp') continue;
       this.disposeSite(this.sites[i]);
       this.sites.splice(i, 1);
     }
   }
 
-  /** Whether the lost lamp lies within reach of (x, z). */
-  lampNear(x: number, z: number, reach: number): boolean {
-    return this.lampAt !== null && this.isBuilt(LAMP_KEY) && Math.hypot(this.lampAt.x - x, this.lampAt.z - z) < reach;
+  /** Whether one of the lost lamps lies within reach of (x, y, z). */
+  lampNear(x: number, y: number, z: number, reach: number): boolean {
+    for (let i = 0; i < this.lampAt.length; i++) {
+      const a = this.lampAt[i];
+      if (this.isBuilt(LAMP_KEY - i) && Math.hypot(a.x - x, a.z - z) < reach && Math.abs(this.world.height(a.x, a.z) - y) < 2.5) return true;
+    }
+    return false;
   }
 
-  private buildLamp(): void {
-    const at = this.lampAt!;
+  private buildLamp(n: number): void {
+    const at = this.lampAt[n];
     const baseY = this.world.height(at.x, at.z);
     const c = new Ctx(this.world, at.x, at.z, baseY, mulberry32(0x1a3f), 0);
     const st = c.stone;
@@ -2086,7 +2094,7 @@ export class Discoveries {
     c.prim(UNIT_BOX, 0.03, 0.25, 0, 0.2, 0.34, 0.2, 0.4, 0, 0.12);
     c.glow(0.03, 0.25, 0, 0.9);
     c.glow(0.03, 0.25, 0, 4.5);
-    this.finishSite(LAMP_KEY, 'lamp', at.x, at.z, baseY, c);
+    this.finishSite(LAMP_KEY - n, 'lamp', at.x, at.z, baseY, c);
     this.sites[this.sites.length - 1].reachR = 0; // found by picking it up, not by coming near
   }
 

@@ -359,7 +359,7 @@ function start() {
   };
   // Where the lamp for a city lies: by a spring or in a cave where there is a mountain near,
   // and otherwise out on open sand, a seeded way off.
-  const lampSpots = new Map<number, { x: number; z: number; kind: 'spring' | 'cave' | 'sand' }>();
+  const lampSpots = new Map<number, { x: number; z: number; kind: 'spring' | 'cave' | 'sand'; mouth?: { x: number; z: number } }>();
   const lampSpot = (site: { id: number; seed: number; cx: number; cz: number; radius: number }) => {
     let s = lampSpots.get(site.id);
     if (!s) {
@@ -1076,8 +1076,8 @@ function start() {
         figure.relic = true;
         pickedUp(st.pos.x, st.pos.y + 1, st.pos.z);
       }
-      if (discoveries.lampNear(st.pos.x, st.pos.z, 1.5)) {
-        discoveries.setLamp(null);
+      if (discoveries.lampNear(st.pos.x, st.pos.y, st.pos.z, 1.5)) {
+        discoveries.setLamps([]); // one is enough: the other is left for nobody
         save.setItem('lamp', true);
         figure.lamp = true;
         pickedUp(st.pos.x, st.pos.y + 0.4, st.pos.z);
@@ -1088,12 +1088,16 @@ function start() {
     if (lampT <= 0) {
       lampT = 1;
       people.minerLamp = save.data.roles.miner === 2;
-      let at: { x: number; z: number } | null = null;
+      const at: { x: number; z: number }[] = [];
       if (save.data.roles.miner !== 2 && !save.data.items.lamp) {
         const near = world.cities.near(st.pos.x, st.pos.z).find((c) => c.kind === 'canyon');
-        if (near) at = lampSpot(near);
+        if (near) {
+          const spot = lampSpot(near);
+          at.push(spot);
+          if (spot.mouth) at.push(spot.mouth); // a spring has a second, up in its cave mouth
+        }
       }
-      discoveries.setLamp(at);
+      discoveries.setLamps(at);
     }
     // Over a sealed cavern the sand drifts slowly, where everywhere else the wind takes it.
     {
