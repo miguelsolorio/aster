@@ -1232,7 +1232,9 @@ function start() {
         }
       }
       // the steepest angle that costs hardly any room: as high as the wall and roof allow
-      if (maxFree < Infinity) for (let l = 0; l <= 3; l++) if (frees[l] >= maxFree * 0.85) bestLift = l * 0.3;
+      // (a nook too tight for any angle to leave real room is left level: looking straight down
+      // from a hand's width above the head shows nothing but floor)
+      if (maxFree < Infinity) for (let l = 0; l <= 3; l++) if (frees[l] >= Math.max(1.5, maxFree * 0.85)) bestLift = l * 0.3;
       camLift += (bestLift - camLift) * (1 - Math.exp(-dt * (bestLift > camLift ? 5 : 1.5)));
     } else camLift = 0;
     const lp = Math.min(camPitch + camLift, Math.max(camPitch, 1.05));
