@@ -1,6 +1,9 @@
 import './ui.css';
 
 export type Quality = 'mobile' | 'low' | 'high';
+/** How long the title card stays up before it fades into the game by itself. */
+const TITLE_HOLD_MS = 3200;
+
 export type UIState = 'title' | 'playing' | 'menu' | 'photo';
 
 export interface UIHooks {
@@ -117,7 +120,6 @@ export class UI {
   private readonly resumeBtn: HTMLButtonElement;
   private readonly captureBtn: HTMLButtonElement;
   private readonly hideBtn: HTMLButtonElement;
-  private readonly beginEl: HTMLElement;
   private readonly panelControls: HTMLElement;
   private readonly photoHint: HTMLElement;
   private readonly pauseBtn: HTMLButtonElement;
@@ -162,8 +164,6 @@ export class UI {
     const title = el('div', 'aster-layer aster-title is-on');
     title.appendChild(el('h1', 'aster-title__name', 'Aster'));
     title.appendChild(el('p', 'aster-title__line', 'Take the long way'));
-    this.beginEl = el('p', 'aster-title__begin', 'Click to begin');
-    title.appendChild(this.beginEl);
     this.title = title;
 
     // Menu
@@ -291,6 +291,8 @@ export class UI {
     this.hideBtn.addEventListener('click', () => this.setFigureHidden(!this.figureHidden));
     done.addEventListener('click', () => this.exitPhoto());
     title.addEventListener('click', () => this.begin());
+    // The title card holds a moment, then fades on its own into the world.
+    window.setTimeout(() => this.begin(), TITLE_HOLD_MS);
     pause.addEventListener('click', () => this.openMenu());
     const onOrient = (): void => {
       if (this.portraitMq && !this.portraitMq.matches) this.rotateDone = false;
@@ -341,7 +343,6 @@ export class UI {
     if (on === this.touch) return;
     this.touch = on;
     this.host.classList.toggle('is-touch', on);
-    this.beginEl.textContent = on ? 'Tap to begin' : 'Click to begin';
     this.syncControls();
     this.fillPhotoHint();
     this.syncPause();
