@@ -8,7 +8,8 @@
 // shortest paths (Dijkstra trees, computed lazily per target node and cached per city) toward a
 // slot at a spot, or a waypoint node in another quarter; they keep to the right of each street
 // with a per-person lateral offset, avoid each other and the player, and every step is checked
-// against the 1 m roof grid and the pool so nobody ever stands inside a building or the water.
+// against the 1 m roof grid and the pool so nobody ever stands inside a building or the water,
+// and (near the player) against the props and stones the wanderer bumps into, which they walk round.
 //
 // Rendering: two draw calls. One InstancedBufferGeometry of a robed figure in four silhouettes
 // (posed and animated in the vertex shader from per-instance attributes) and one instanced quad
@@ -21,6 +22,7 @@ import { CITY_SHADOW_GLSL } from './cityGlsl';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import type { CityKind, CityPlan, CitySite, Spot, SpotKind } from './types';
 import { CHOSEN, heapGeometry, lampGeometry, pickGeometry, solidMaterial } from '../game/equipment';
+import { CREATURE_STEP, type SolidQuery } from '../world/avoid';
 
 const MAXP = 320;
 const DYN = 12; // floats per instance in the dynamic buffer: iA (4), iB (4), iD (4)
@@ -28,6 +30,9 @@ const REACH = 300; // people exist within this distance of the player
 const RECYCLE = 318; // beyond this they are recycled
 const HIDE_DIST = 120; // beyond this, appearing or vanishing is never noticed
 const BODY = 0.28; // radius kept clear of walls and water
+const PROP_R = HIDE_DIST; // props (fountains, trees, a site's stones) are walked round within this of the player
+const DODGE = [0.45, 0.9, 1.3]; // turns tried to get round a prop met square on, smallest first
+const DODGE_T = 0.6; // and kept to for this long (s), so the way round is walked, not dithered over
 const CELL = 2.5; // neighbour hash cell
 const HASH = 2048;
 const CRUMBS = 8;
@@ -1306,6 +1311,22 @@ export class People {
   private readonly crumbZ = new Float32Array(MAXP * CRUMBS);
   private readonly crumbN = new Uint8Array(MAXP);
   private readonly rejoinN = new Int32Array(MAXP);
+  private readonly avT = new Float32Array(MAXP); // time left heading round a prop
+  private readonly avYaw = new Float32Array(MAXP); // the heading that gets round it
+  private readonly dodge = new Int8Array(MAXP); // the side props are passed on: +1, -1, or 0 not yet chosen
+
+  /**
+   * What stands in a walker's way beyond the plan's own buildings and pool: the city's props, a
+   * site's stones (world space, as the wanderer's roof: the top over (x, z) for feet at y, or
+   * -Infinity). Set by the game.
+   */
+  solid: SolidQuery | null = null;
+  /** The same in the loaded city's local metres, feet at y above its ground. */
+  private readonly localSolid: SolidQuery = (lx, lz, y) => {
+    const c = this.city as CityData;
+    const s = c.site;
+    return (this.solid as SolidQuery)(s.cx + c.co * lx - c.si * lz, s.cz + c.si * lx + c.co * lz, y + s.groundY) - s.groundY;
+  };
 
   constructor(uniforms: Uniforms) {
     this.u = uniforms;
@@ -1947,20 +1968,72 @@ export class People {
     }
   }
 
-  private safeMove(i: number, c: CityData, mx: number, mz: number, dt: number) {
+  /** 0 if a step of (mx, mz) from (x, z) is clear, 1 if a wall or the pool is in the way, 2 if a prop is. */
+  private stepBlock(c: CityData, strict: boolean, props: boolean, x: number, z: number, mx: number, mz: number): number {
+    const nx = x + mx;
+    const nz = z + mz;
+    if (strict ? !c.clear(nx, nz) : c.solidAt(nx, nz)) return 1;
+    if (!props) return 0;
+    const len = Math.sqrt(mx * mx + mz * mz);
+    if (len < 1e-6) return 0;
+    // the feet, the front of the body, and halfway along a long stride
+    if (this.propAt(c, nx, nz) || this.propAt(c, nx + (mx / len) * BODY, nz + (mz / len) * BODY)) return 2;
+    if (len > BODY && this.propAt(c, x + mx * 0.5, z + mz * 0.5)) return 2;
+    return 0;
+  }
+
+  /** A prop stands at (x, z), too tall to step over. (Buildings, the pool and the edge of the plan are the plan's own to answer for.) */
+  private propAt(c: CityData, x: number, z: number): boolean {
+    return !c.solidAt(x, z) && this.localSolid(x, z, 0) > CREATURE_STEP;
+  }
+
+  /** Moves someone by (mx, mz), never into a wall, the pool or a prop. `turn`: walking somewhere, so a prop met square on is turned round. */
+  private safeMove(i: number, c: CityData, mx: number, mz: number, dt: number, turn = false) {
     const x = this.x[i];
     const z = this.z[i];
     const nx = x + mx;
     const nz = z + mz;
     // Normally the whole body must stay clear; someone already brushing a wall only needs their feet clear.
     const strict = c.clear(x, z);
+    // Props only near the player, where it shows; and someone already standing in one walks out of it.
+    let props = false;
+    if (this.solid) {
+      const px = x - this.plx;
+      const pz = z - this.plz;
+      props = px * px + pz * pz < PROP_R * PROP_R && !this.propAt(c, x, z);
+    }
     let ax = x;
     let az = z;
-    if (strict ? c.clear(nx, nz) : !c.solidAt(nx, nz)) {
+    const full = this.stepBlock(c, strict, props, x, z, mx, mz);
+    if (full === 0) {
       ax = nx;
       az = nz;
-    } else if (strict ? c.clear(nx, z) : !c.solidAt(nx, z)) ax = nx;
-    else if (strict ? c.clear(x, nz) : !c.solidAt(x, nz)) az = nz;
+    } else if (this.stepBlock(c, strict, props, x, z, mx, 0) === 0) ax = nx;
+    else if (this.stepBlock(c, strict, props, x, z, 0, mz) === 0) az = nz;
+    // Square on to a prop, x or z alone get next to nowhere: turn aside instead, as little as
+    // clears it, to the side this walker always takes, and keep to it a moment.
+    const want = Math.sqrt(mx * mx + mz * mz);
+    if (turn && full === 2 && want > 1e-4 && Math.hypot(ax - x, az - z) < want * 0.35) {
+      if (this.dodge[i] === 0) this.dodge[i] = this.seed[i] < 0.5 ? 1 : -1;
+      const ux = mx / want;
+      const uz = mz / want;
+      turnLoop: for (let k = 0; k < DODGE.length; k++) {
+        const ca = Math.cos(DODGE[k]);
+        const sa = Math.sin(DODGE[k]);
+        for (let t = 0; t < 2; t++) {
+          const sd = t === 0 ? this.dodge[i] : -this.dodge[i];
+          const rx = ux * ca + uz * sa * sd;
+          const rz = uz * ca - ux * sa * sd;
+          if (this.stepBlock(c, strict, props, x, z, rx * want, rz * want) !== 0) continue;
+          ax = x + rx * want;
+          az = z + rz * want;
+          this.dodge[i] = sd;
+          this.avT[i] = DODGE_T;
+          this.avYaw[i] = Math.atan2(rx, rz);
+          break turnLoop;
+        }
+      }
+    }
     const moved = Math.hypot(ax - x, az - z) / Math.max(dt, 1e-4);
     this.x[i] = ax;
     this.z[i] = az;
@@ -1977,6 +2050,11 @@ export class People {
     const kid = this.child[i] === 1;
     let hd = d > 1e-3 ? Math.atan2(dx, dz) : this.fac[i];
     if (kid && d > 1.5) hd += 0.3 * Math.sin(this.time * 2.3 + this.seed[i] * 40);
+    // on the way round a prop: keep to the heading that clears it a moment longer
+    if (this.avT[i] > 0) {
+      this.avT[i] -= dt;
+      hd = this.avYaw[i];
+    }
     const f = this.fac[i];
     const fx = Math.sin(f);
     const fz = Math.cos(f);
@@ -2038,7 +2116,7 @@ export class People {
     const st = want * slow * Math.max(0.15, Math.cos(diff));
     this.hs[i] += (st - this.hs[i]) * (1 - Math.exp(-dt * 3));
     const nf = this.fac[i];
-    this.safeMove(i, c, (Math.sin(nf) * this.hs[i] + this.pushX[i]) * dt, (Math.cos(nf) * this.hs[i] + this.pushZ[i]) * dt, dt);
+    this.safeMove(i, c, (Math.sin(nf) * this.hs[i] + this.pushX[i]) * dt, (Math.cos(nf) * this.hs[i] + this.pushZ[i]) * dt, dt, true);
     return d;
   }
 
@@ -2139,6 +2217,8 @@ export class People {
     this.pushZ[i] = 0;
     this.walkPh[i] = this.rand();
     this.crumbN[i] = 0;
+    this.avT[i] = 0;
+    this.dodge[i] = 0;
     this.x[i] = c.dX[best];
     this.z[i] = c.dZ[best];
     this.fac[i] = c.dF[best];
@@ -2444,7 +2524,8 @@ export class People {
       case P_SLOT: {
         const dd = this.hypotTo(i, this.tx[i], this.tz[i]);
         const d = this.moveToward(i, c, this.tx[i], this.tz[i], Math.min(pref, 0.25 + dd * 0.9), dt, this.door[i] < 0 ? dd > 1.2 : true);
-        if (d < 0.25) {
+        // (a slot a prop has come to stand over is as near as they can get: they settle short of it)
+        if (d < 0.25 || (d < 1.5 && this.stuckT[i] > 1)) {
           if (this.door[i] >= 0) this.gone(i, 1);
           else this.startDwell(i, c, false);
         } else this.progress(i, c, d, dt);

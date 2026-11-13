@@ -6,6 +6,7 @@ import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contrac
 import type { CitySite } from './types';
 import type { Landmark } from '../world/discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
+import { blockedAt, clearAt, CREATURE_STEP, type SolidQuery } from '../world/avoid';
 
 const RANGE = 2500;
 const FADE0 = 1200;
@@ -14,6 +15,9 @@ const CAP_P = 160;
 const CAP_PROP = 200;
 const CAP_FIRE = 240;
 const TAU = Math.PI * 2;
+const AVOID_R = 400; // within this of the player, walkers step round whatever stands on their way
+// How far aside of their line they look for a way past, nearest first (m).
+const SIDESTEP = [0.7, 1.4, 2.1, 2.8, 3.6, 4.5, 5.5];
 
 type V3 = [number, number, number];
 
@@ -966,6 +970,12 @@ interface Agent {
   yaw: number;
   look: number;
   dirSign: number;
+  /** Stepped this far aside of the line (m, along the route's side) to pass something standing on it. */
+  avoid: number;
+  /** How fast that is changing (m/s), which the heading leans into. */
+  avV: number;
+  /** The side chosen for the way past (+1, -1, 0 none yet). */
+  dside: number;
   scale: number;
   stride: number;
   seed: number;
@@ -1074,6 +1084,9 @@ function newAgent(animal: boolean, rng: () => number): Agent {
     yaw: 0,
     look: 0,
     dirSign: 1,
+    avoid: 0,
+    avV: 0,
+    dside: 0,
     scale: animal ? 0.9 + rng() * 0.2 : 0.94 + rng() * 0.12,
     stride: animal ? 3.0 : 1.5,
     seed: rng(),
@@ -1153,6 +1166,8 @@ export class Caravans {
   private readonly marks: Landmark[] = [];
   /** The places built now in the open desert (temples among them). Set by the game. */
   landmarks: ((out: Landmark[]) => Landmark[]) | null = null;
+  /** What stands in a walker's way: the top over (x, z) for feet at y, or -Infinity (as the wanderer's roof). Set by the game. */
+  solid: SolidQuery | null = null;
   private readonly live: Group[] = [];
   private readonly placed: Group[] = []; // camps put down by the game, not by a city
   private held: Agent | null = null; // someone the player is talking to
@@ -1631,11 +1646,62 @@ export class Caravans {
     return groups;
   }
 
+  /** Whether a lane `o` m to the side of a route (along (lx, lz)) is clear here at (x0, z0) and `look` m on at (ex, ez). */
+  private laneClear(q: SolidQuery, x0: number, z0: number, ex: number, ez: number, lx: number, lz: number, o: number, y: number, fx: number, fz: number, body: number, look: number): boolean {
+    if (q(x0 + lx * o, z0 + lz * o, y) > y + CREATURE_STEP) return false;
+    return clearAt(q, ex + lx * o, ez + lz * o, y, fx, fz, body, look);
+  }
+
+  /**
+   * For someone on a route at (x0, z0), heading along the unit (fx, fz), `lat` m to its side
+   * (along (lx, lz)): eases a.avoid, the step aside of that line, to pass whatever stands on the
+   * way, looking `look` m ahead, nearest lane first and to the side already taken. Off near the
+   * player it lets the step aside go. Returns true when the place it now puts them is blocked all
+   * the same (nothing clears within reach of the line), so the caller holds them where they were.
+   */
+  private sidestep(a: Agent, x0: number, z0: number, fx: number, fz: number, lx: number, lz: number, lat: number, px: number, pz: number, body: number, look: number, rate: number, dt: number): boolean {
+    const q = this.solid;
+    let target = 0;
+    let y = 0;
+    const near = q !== null && (x0 - px) * (x0 - px) + (z0 - pz) * (z0 - pz) < AVOID_R * AVOID_R;
+    if (q && near) {
+      y = this.world.height(x0 + lx * lat, z0 + lz * lat);
+      const ex = x0 + fx * look;
+      const ez = z0 + fz * look;
+      if (this.laneClear(q, x0, z0, ex, ez, lx, lz, lat, y, fx, fz, body, look)) a.dside = 0;
+      else if (a.avoid !== 0 && this.laneClear(q, x0, z0, ex, ez, lx, lz, lat + a.avoid, y, fx, fz, body, look)) target = a.avoid;
+      else {
+        target = a.avoid;
+        const side = a.dside !== 0 ? a.dside : a.lat >= 0 ? 1 : -1;
+        search: for (let n = 0; n < SIDESTEP.length; n++) {
+          for (let t = 0; t < 2; t++) {
+            const sd = t === 0 ? side : -side;
+            if (!this.laneClear(q, x0, z0, ex, ez, lx, lz, lat + sd * SIDESTEP[n], y, fx, fz, body, look)) continue;
+            target = sd * SIDESTEP[n];
+            a.dside = sd;
+            break search;
+          }
+        }
+      }
+    } else a.dside = 0;
+    const was = a.avoid;
+    const mv = rate * dt;
+    a.avoid += Math.max(-mv, Math.min(mv, target - a.avoid));
+    a.avV += ((a.avoid - was) / Math.max(dt, 1e-4) - a.avV) * (1 - Math.exp(-dt * 6));
+    if (!q || !near) return false;
+    // just come into view (where they were is somewhere else), or standing in something
+    // already: let them walk on out of it
+    if (Math.abs(a.x - x0) + Math.abs(a.z - z0) > 12 + Math.abs(lat) || blockedAt(q, a.x, a.z, a.y)) return false;
+    const o = lat + a.avoid;
+    return blockedAt(q, x0 + lx * o, z0 + lz * o, y);
+  }
+
   private stepPilgrims(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
     const r = g.route as Route;
     const k = (rate: number) => 1 - Math.exp(-dt * rate);
     let held = false;
     for (let i = 0; i < g.agents.length; i++) if (g.agents[i] === this.held) held = true;
+    const sPrev = g.s;
     if (g.wait > 0) {
       g.wait -= dt;
       if (g.wait <= 0) g.dir = -g.dir;
@@ -1663,7 +1729,8 @@ export class Caravans {
       const tl = Math.hypot(tx, tz) || 1;
       tx /= tl;
       tz /= tl;
-      const ty = a === this.held ? Math.atan2(px - a.x, pz - a.z) : Math.atan2(tx, tz) + (g.dir < 0 ? Math.PI : 0);
+      const lean = g.dir * Math.atan2(a.avV, Math.max(a.spd, 0.4));
+      const ty = a === this.held ? Math.atan2(px - a.x, pz - a.z) : Math.atan2(tx, tz) + (g.dir < 0 ? Math.PI : 0) + lean;
       const err = angDiff(ty, a.yaw);
       const tr = 1.8 * dt;
       a.yaw += Math.max(-tr, Math.min(tr, err));
@@ -1684,8 +1751,19 @@ export class Caravans {
       }
       a.drift += (tgt - a.drift) * k(1.8);
       const lat = a.lat + a.drift;
-      const x = this.P0.x + tz * lat;
-      const z = this.P0.z - tx * lat;
+      let x: number;
+      let z: number;
+      if (this.sidestep(a, this.P0.x, this.P0.z, tx * g.dir, tz * g.dir, tz, -tx, lat, px, pz, 0.3, 2.5, 1.1, dt)) {
+        // no way past within reach of the path: stop where they stood, rest a moment and turn back
+        x = a.x;
+        z = a.z;
+        a.spd = 0;
+        g.s = sPrev;
+        if (moving) g.wait = 2 + a.seed * 2;
+      } else {
+        x = this.P0.x + tz * (lat + a.avoid);
+        z = this.P0.z - tx * (lat + a.avoid);
+      }
       const w = this.world;
       w.normal(x, z, this.nrm);
       this.put(a, x, w.height(x, z), z, this.nrm.x, this.nrm.y, this.nrm.z, g, dt, px, pz);
@@ -1864,13 +1942,16 @@ export class Caravans {
     // Spoken to: stop on the road and turn to the player.
     const held = a === this.held;
     if (held) mv = 0;
-    const ty = held ? Math.atan2(px - a.x, pz - a.z) : Math.atan2(tx, tz) + (a.dirSign < 0 ? Math.PI : 0);
+    // (leaning into a step aside, when there is one)
+    const lean = a.dirSign * Math.atan2(a.avV, Math.max(a.spd, 0.4));
+    const ty = held ? Math.atan2(px - a.x, pz - a.z) : Math.atan2(tx, tz) + (a.dirSign < 0 ? Math.PI : 0) + lean;
     const err = angDiff(ty, a.yaw);
     const tr = (a.animal ? 1.0 : 1.8) * dt;
     a.yaw += Math.max(-tr, Math.min(tr, err));
-    const go = mv !== 0 && Math.abs(err) < 0.5 && a.sit < 0.3;
+    const go = mv !== 0 && Math.abs(err) < 0.5 + Math.abs(lean) && a.sit < 0.3;
     a.spd += ((go ? a.vmax : 0) - a.spd) * k(1.5);
     if (a.spd < 0.01) a.spd = 0;
+    const sPrev = a.s;
     a.s += a.dirSign * a.spd * dt;
     if (bounce) a.s = Math.min(r.len, Math.max(0, a.s));
     else a.s = Math.min(a.hi, Math.max(a.lo, a.s));
@@ -1890,8 +1971,19 @@ export class Caravans {
     }
     a.drift += (tgt - a.drift) * k(1.8);
     const lat = a.lat + a.drift + (a.animal ? 0 : Math.sin(f.time * 0.2 + a.seed * 40) * 0.3);
-    const x = this.P0.x + tz * lat;
-    const z = this.P0.z - tx * lat;
+    let x: number;
+    let z: number;
+    if (this.sidestep(a, this.P0.x, this.P0.z, tx * a.dirSign, tz * a.dirSign, tz, -tx, lat, px, pz, a.animal ? 0.7 : 0.3, a.animal ? 4 : 2.5, a.animal ? 0.8 : 1.1, dt)) {
+      // no way past within reach of the track: hold where they stood (someone walking alone turns back)
+      x = a.x;
+      z = a.z;
+      a.s = sPrev;
+      a.spd = 0;
+      if (bounce) a.dirSign = -a.dirSign;
+    } else {
+      x = this.P0.x + tz * (lat + a.avoid);
+      z = this.P0.z - tx * (lat + a.avoid);
+    }
     const w = this.world;
     const y = w.height(x, z);
     w.normal(x, z, this.nrm);

@@ -11,11 +11,13 @@ import { Splash } from '../world/splash';
 import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
 import { Fauna } from '../world/fauna';
+import { Props } from '../world/props';
 import { Cities } from '../city/cities';
 import { Caravans, ROLE_KEEPER, ROLE_PILGRIM } from '../city/caravans';
 import { Waymarks } from '../city/waymarks';
 import { People } from '../city/people';
 import { Figure } from './figure';
+import { CollisionOverlay } from './collisionDebug';
 import { AudioEngine } from '../audio/audio';
 import { UI } from '../ui/ui';
 import { TouchControls, type TouchMode } from './touch';
@@ -191,7 +193,11 @@ function start() {
   const waymarks = new Waymarks(world, world.cities, u);
   const people = new People(u);
   const massifs = new Massifs(world, u);
-  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, fauna.group, dust.group, splash.group, massifs.group);
+  // Rocks and cacti out in the open, kept off the finds and their caverns, and off where you start.
+  const props = new Props(world, u);
+  props.blocked = (x, z, r) => discoveries.claimed(x, z, r);
+  props.keepClear(player.state.pos.x, player.state.pos.z, 25);
+  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, props.group, wildlife.group, fauna.group, dust.group, splash.group, massifs.group);
 
   const figure = new Figure(u);
   figure.board = player.board;
@@ -234,7 +240,10 @@ function start() {
         }
       }
     }
-    if (best) caravans.addCamp(best.x, best.z, WORLD_SEED ^ Math.round(best.x * 31 + best.z * 17));
+    if (best) {
+      caravans.addCamp(best.x, best.z, WORLD_SEED ^ Math.round(best.x * 31 + best.z * 17));
+      props.keepClear(best.x, best.z, 22);
+    }
   }
 
   const sky = new THREE.Mesh(
@@ -270,6 +279,7 @@ function start() {
     cities.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     splash.setDensity(auto.tier === 'mobile' ? 0.5 : auto.tier === 'low' ? 0.75 : 1);
     discoveries.tier = auto.tier === 'mobile' ? 2 : auto.tier === 'low' ? 1 : 0;
+    props.setTier(auto.tier);
     resize();
   }
   function resize() {
@@ -571,14 +581,22 @@ function start() {
     return ceil < Infinity && y > ceil - 0.3 ? world.uncarved(x, z) : -Infinity;
   };
   // (and the things found out in the desert: standing stones, fallen columns, the great bones)
-  player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y), discoveries.topAt(x, z, y));
+  // (and the rocks and cacti between them)
+  player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y), discoveries.topAt(x, z, y), props.topAt(x, z, y));
+  // What stands in the way of everything else that walks the ground: the same solids, less the
+  // cave roofs (only ever overhead down at the feet).
+  const obstacle = (x: number, z: number, y: number) => Math.max(cities.roofAt(x, z, y), discoveries.topAt(x, z, y), props.topAt(x, z, y));
+  const collisionDebug = new CollisionOverlay(scene, obstacle, (x, z) => world.height(x, z));
+  people.solid = fauna.solid = wildlife.solid = caravans.solid = obstacle;
   // Under an open cavern the deep has floors of its own, one over another: where it has the
   // say, the terrain (and every roof above) is not asked.
   player.floor = (x, z, y) => discoveries.deepFloor(x, z, y);
   // What the feet are on when it is not the ground: 0 stone, 1 bone, 2 wood, or -1 for the ground itself.
   const propUnder = (x: number, z: number, y: number) => {
-    const t = discoveries.topAt(x, z, y);
-    return Math.abs(t - y) < 0.3 && t > world.height(x, z) + 0.4 ? discoveries.solidKind : -1;
+    const td = discoveries.topAt(x, z, y);
+    const tp = props.topAt(x, z, y);
+    const t = Math.max(td, tp);
+    return Math.abs(t - y) < 0.3 && t > world.height(x, z) + 0.4 ? (tp > td ? props.kind : discoveries.solidKind) : -1;
   };
   player.hard = (x, z, y) => propUnder(x, z, y) >= 0;
   // The roof over a cavern is the sand it always was, though the floor under it is rock.
@@ -804,6 +822,7 @@ function start() {
     }
     if (e.code === 'KeyE' && !e.repeat) interact();
     if (e.code === 'KeyQ' && !e.repeat) toggleBoard();
+    if (e.code === 'KeyC' && !e.repeat && !e.ctrlKey && !e.metaKey) collisionDebug.toggle(); // debug: collision overlay
     keys.add(e.code);
   });
   window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -976,7 +995,7 @@ function start() {
       // Under the lid the open desert is not drawn at all: a deep is a closed shell, and any
       // crack in it should show the dark, never the sky and the hills.
       const shut = !!deepIn && st.pos.y < deepIn.spec.y + deepIn.spec.lid - 1;
-      massifs.group.visible = cities.group.visible = clipmap.group.visible = !shut;
+      massifs.group.visible = cities.group.visible = clipmap.group.visible = props.group.visible = !shut;
       // and the sky goes sooner, as soon as the stair is a little way down the well
       sky.visible = !(deepIn && st.pos.y < deepIn.spec.y - 1.2);
     }
@@ -1001,7 +1020,7 @@ function start() {
     // Near the things found in the desert a fast move is taken in short steps, so a rib a
     // hand's width across is not stepped clean over between two frames.
     {
-      const near = dt > 0 && (!!deepIn || discoveries.nearSolids(st.pos.x, st.pos.z, 15));
+      const near = dt > 0 && (!!deepIn || discoveries.nearSolids(st.pos.x, st.pos.z, 15) || props.nearSolids(st.pos.x, st.pos.z, 15));
       const steps = near ? Math.min(8, Math.max(1, Math.ceil((Math.hypot(st.vel.x, st.vel.y, st.vel.z) * dt) / 0.3))) : 1;
       const h = dt / steps;
       for (let i = 0; i < steps; i++) {
@@ -1009,12 +1028,13 @@ function start() {
         // You cannot rise through a stone you are under: slow to meet its underside, and stay below it.
         let under = Infinity;
         if (near && !st.grounded) {
-          under = discoveries.ceilAt(st.pos.x, st.pos.z, st.pos.y) - 1.9;
+          under = Math.min(discoveries.ceilAt(st.pos.x, st.pos.z, st.pos.y), props.ceilAt(st.pos.x, st.pos.z, st.pos.y)) - 1.9;
           if (st.vel.y > 0 && st.pos.y + st.vel.y * h > under) st.vel.y = Math.max(0, (under - st.pos.y) / h);
         }
         player.update(h, input, camYaw, events);
         if (near && !st.grounded) {
-          under = discoveries.ceilAt(st.pos.x, st.pos.z, Math.min(st.pos.y, under)) - 1.9;
+          const uy = Math.min(st.pos.y, under);
+          under = Math.min(discoveries.ceilAt(st.pos.x, st.pos.z, uy), props.ceilAt(st.pos.x, st.pos.z, uy)) - 1.9;
           if (st.pos.y > under) {
             st.pos.y = under;
             if (st.vel.y > 0) st.vel.y = 0;
@@ -1248,12 +1268,14 @@ function start() {
     }
 
     cities.update(dt, st.pos);
+    collisionDebug.update(dt, st.pos.x, st.pos.y, st.pos.z);
     bake.update(st.pos);
     clipmap.update(camera.position);
     trail.update(dt, st.pos.x, st.pos.z);
     dust.update(frame);
     splash.update(frame);
     discoveries.update(frame);
+    props.update(frame);
     // Small things lying about are picked up by walking onto them.
     if (playing && st.grounded) {
       const rk = discoveries.relicNear(st.pos.x, st.pos.y, st.pos.z, 1.5);
@@ -1401,7 +1423,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
+        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, props, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
   }
 
   let frozen = false;

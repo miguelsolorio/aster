@@ -3014,6 +3014,30 @@ export class Discoveries {
     return false;
   }
 
+  /**
+   * Whether a disc of radius r at (x, z) comes near where a find stands on the surface or a
+   * cavern runs under the sand, built yet or not. Decided from the cells alone, so it gives the
+   * same answer whenever it is asked (for things scattered about that must keep off them).
+   */
+  claimed(x: number, z: number, r: number): boolean {
+    const pcx = Math.floor(x / CELL);
+    const pcz = Math.floor(z / CELL);
+    for (let dz = -1; dz <= 1; dz++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const cx = pcx + dx;
+        const cz = pcz + dz;
+        // an oasis settles up to 135 m from its cell's point, and a find spreads round it
+        if (this.cellSite(cx, cz) && Math.hypot(this.cellPos.x - x, this.cellPos.z - z) < r + 220) return true;
+        const cs = this.cavernAt(cx, cz);
+        if (!cs) continue;
+        const cv = cs.cav;
+        const t = Math.max(0, Math.min(cv.len, (x - cv.x) * cv.dx + (z - cv.z) * cv.dz));
+        if (Math.hypot(cv.x + cv.dx * t - x, cv.z + cv.dz * t - z) < r + cv.half + Math.abs(cv.bend) + cv.bulge + 25) return true;
+      }
+    }
+    return false;
+  }
+
   /** Surface height of an oasis pool over (x, z), or -Infinity where there is none. */
   poolAt(x: number, z: number): number {
     for (let i = 0; i < this.sites.length; i++) {
