@@ -150,8 +150,9 @@
 .aster-ui .aster-panel {
   display: flex;
   flex-direction: column;
-  width: min(100%, 380px);
-  max-height: 100%;
+  /* One size on every tab: only the pane scrolls, never the frame */
+  width: min(100%, 400px);
+  height: min(100%, 680px);
   overflow: hidden;
   padding: 26px 24px 22px;
   background: var(--aster-panel);
@@ -325,14 +326,68 @@
 }
 
 .aster-ui .aster-panel__controls {
-  margin: 0;
-  padding: 0;
-  list-style: none;
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font-size: 0.84rem;
+  gap: 14px;
+  font-size: 0.86rem;
+}
+
+.aster-ui .aster-ctl__title {
+  margin: 0 0 4px;
+  font-family: var(--aster-sans);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--aster-accent);
+}
+
+.aster-ui .aster-ctl__list {
+  margin: 0;
+  border-top: 1px solid var(--aster-line-soft);
+}
+
+.aster-ui .aster-ctl__row {
+  display: grid;
+  grid-template-columns: 5.6rem 1fr;
+  gap: 4px 10px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--aster-line-soft);
+}
+
+.aster-ui .aster-ctl__action {
+  color: var(--aster-ink);
+}
+
+.aster-ui .aster-ctl__what {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
   color: var(--aster-ink-muted);
+}
+
+.aster-ui .aster-ctl__keys {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.aster-ui .aster-kbd {
+  display: inline-block;
+  min-width: 1.7em;
+  padding: 1px 6px 2px;
+  border: 1px solid var(--aster-line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: rgba(239, 230, 216, 0.08);
+  color: var(--aster-ink);
+  font-family: var(--aster-sans);
+  font-size: 0.78rem;
+  line-height: 1.3;
+  text-align: center;
 }
 
 /* Tabs */
@@ -676,10 +731,8 @@
       calc(12px + env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px));
   }
 
-  .aster-ui .aster-panel {
-    overflow-y: auto;
+  .aster-ui .aster-panes {
     -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
     touch-action: pan-y;
   }
 
@@ -774,8 +827,12 @@
   }
 
   .aster-ui .aster-panel__controls {
-    font-size: 0.76rem;
-    gap: 4px;
+    font-size: 0.8rem;
+    gap: 10px;
+  }
+
+  .aster-ui .aster-ctl__row {
+    padding: 4px 0;
   }
 }
 
