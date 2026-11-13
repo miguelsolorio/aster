@@ -1024,6 +1024,8 @@ export function buildWarren(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   }
   let relic: Pt | null = null;
   if (spec.relic) relic = [C.u - 0.6, Yh + 0.83, C.v];
+  // the waking stone, freestanding beyond the hearth's rim, facing the ledge side
+  b.stone(C.u + 12.5, Yf, C.v, 0);
 
   // ---- the commons' floor: places to sit, washing hung between poles, stores by the pillars
   for (let i = 0; i < Math.ceil(5 * few); i++) {

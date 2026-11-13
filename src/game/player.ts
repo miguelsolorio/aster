@@ -73,6 +73,8 @@ export class Player {
   lifting = false;
   /** Seconds of climb left; refilled on landing. */
   reserve = LIFT_TIME;
+  /** Multiplier on the climb reserve: grows with each waking stone woken. */
+  lift = 1;
   /** Flight path angle in radians: positive climbing, negative diving. */
   climb = 0;
   /** Height above the ground, metres. */
@@ -197,7 +199,7 @@ export class Player {
       this.climb = 0;
       this.gliding = false;
       this.lifting = false;
-      this.reserve = LIFT_TIME * (this.carpet ? 2 : 1);
+      this.reserve = LIFT_TIME * this.lift * (this.carpet ? 2 : 1);
       this.holdT = 0;
       this.armed = true;
       this.flew = false;

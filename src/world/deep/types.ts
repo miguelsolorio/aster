@@ -106,6 +106,12 @@ export interface Deep {
 
   /** Where the relic sits, or null if the site has none. */
   readonly relic: [number, number, number] | null;
+  /** A chest-height point in front of the waking stone, or null if there is none. */
+  readonly stone: [number, number, number] | null;
+  /** Whether the stone has been woken. */
+  readonly woken: boolean;
+  /** Wake the stone: now, or (true) all at once, for a restored save. */
+  wake(instant: boolean): void;
   /** The centrepiece: reaching it is reaching the site. */
   readonly centre: [number, number, number];
   /** Where the dark passage opens onto the ledge above the main space. */

@@ -631,7 +631,8 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
         b.cyl(uF + 10 + i * 7, Yd, vBr + s * 7.2, 0.9, doorH + 3, { solid: true, sides });
       }
     }
-    if (spec.carvings) stele(uF + 22.3, Yd, vBr, -1);
+    if (spec.carvings) stele(uF + 22.3, Yd, vBr + 6.2, -1);
+    b.stone(uF + 21.6, Yd, vBr, 0); // the waking stone, against the end wall, facing the door
   }
 
   // ---- a seam of glowing mineral at the waterline, on the side the quay does not reach

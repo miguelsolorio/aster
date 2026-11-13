@@ -958,6 +958,8 @@ export function buildStreet(spec: DeepSpec, uniforms?: Uniforms): BuiltStreet {
   b.cyl(ru, yD + 0.4, rv, 0.62, 0.75);
   b.cyl(ru, yD + 1.15, rv, 0.48, 0.14);
   const relic: Pt | null = spec.relic ? [ru, yD + 1.6, rv] : null;
+  // the waking stone, against the end wall of the hall, facing the door
+  b.stone(ru, yD, P + dS * (5.4 + hallD - 1.6), (-dS * Math.PI) / 2);
   jars(uD - 10, yD, P + dS * 8, Math.ceil(3 * few), 1);
   jars(uD + 11, yD, P + dS * (hallD - 2), Math.ceil(3 * few), 1);
 

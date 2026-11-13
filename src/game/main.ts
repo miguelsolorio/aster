@@ -149,8 +149,11 @@ function start() {
   const dust = new Dust(world, u);
   const discoveries = new Discoveries(world, u);
   // Caverns opened on an earlier visit are open still, and their relics stay taken.
-  discoveries.restore(save.data.opened, save.data.taken);
+  discoveries.restore(save.data.opened, save.data.taken, save.data.woken);
   discoveries.onOpened = (key) => save.open(key);
+  // Each waking stone lengthens the climb, with less to gain from every one after the first.
+  const setLift = () => (player.lift = 1 + 1.5 * (1 - Math.pow(0.9, discoveries.wokenCount)));
+  setLift();
   discoveries.onGround = () => bake.invalidate();
   // (testing) ?deep=<0-4> opens the nearest cavern over a deep of that kind, for this visit
   // only, and starts you in its antechamber a few steps short of the hole, facing it. With
@@ -644,11 +647,22 @@ function start() {
   /** Whether a swing may start now: a pick, feet on the ground, and no conversation to have. */
   const canDig = () => save.has('pick') && player.state.grounded && !talk.available;
   const interact = () => {
-    if (talk.available) talk.interact();
+    const p = player.state.pos;
+    if (!talk.talking && discoveries.stoneNear(p.x, p.y, p.z)) discoveries.wakeStone(p.x, p.y, p.z);
+    else if (talk.available) talk.interact();
     else if (canDig() && swingT < 0) {
       swingT = 0;
       swingHit = false;
     }
+  };
+  // A stone has been woken: kept, the climb grows, and the stone says so.
+  discoveries.onWoken = (key) => {
+    save.wake(key);
+    setLift();
+    audio.chime();
+    buzz(40);
+    const p = player.state.pos;
+    talk.tell({ x: p.x, y: p.y + 1.8, z: p.z }, 'The stone wakes. You climb longer now.');
   };
   /** The point of the pick lands, a short reach ahead of the feet. */
   const strike = () => {
@@ -1175,7 +1189,8 @@ function start() {
     // Speech is drawn over the scene, so it is placed once the camera has settled.
     talk.setKey(touch.used ? '' : 'E');
     talk.update(camera, st.pos.x, st.pos.z, playing);
-    touch.setTalk(talk.available, canDig() && st.onRock < 0.5);
+    const stoneAt = playing && !talk.talking ? discoveries.stoneAt(st.pos.x, st.pos.y, st.pos.z) : null;
+    touch.setTalk(talk.available || stoneAt !== null, canDig() && st.onRock < 0.5);
     // Standing where a strike would count, with a pick: the key shows over the cracked sand.
     {
       const cv = playing && canDig() && !discoveries.drainingCavern ? discoveries.sealedNear(st.pos.x + Math.sin(player.facing) * 0.75, st.pos.z + Math.cos(player.facing) * 0.75, discoveries.digReach) : null;
@@ -1184,7 +1199,12 @@ function start() {
         digAt.z = cv.z + cv.dz * cv.spot;
         digAt.y = world.height(digAt.x, digAt.z) + 0.9;
       }
-      talk.mark(camera, cv ? digAt : null);
+      if (stoneAt) {
+        digAt.x = stoneAt[0];
+        digAt.y = stoneAt[1] + 0.4;
+        digAt.z = stoneAt[2];
+      }
+      talk.mark(camera, stoneAt || cv ? digAt : null);
     }
 
     cities.update(dt, st.pos);
@@ -1297,6 +1317,8 @@ function start() {
         get deep() {
           return discoveries.deepIn ?? discoveries.deepNear(player.state.pos.x, player.state.pos.z)?.deep ?? null;
         },
+        // wake the stone of the nearest built deep, wherever you stand
+        wake: () => discoveries.wakeStone(player.state.pos.x, player.state.pos.y, player.state.pos.z, Infinity),
         // put the wanderer down somewhere, feet at y (for getting about a deep): e.g. __ds.tp(...__ds.deep.ledge)
         tp: (x: number, y: number, z: number) => {
           player.state.pos.set(x, y, z);

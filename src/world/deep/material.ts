@@ -42,7 +42,8 @@ void main() {
 `;
 
 // kinds, as the surface's stone has them: 0 rock, 1 pale (salt palette), 2 sand palette (wood,
-// cloth), 3 flame, 4 glowing mineral; and 5, the patch of sky a shaft falls from.
+// cloth), 3 flame, 4 glowing mineral; 5, the patch of sky a shaft falls from; and 6, the marks
+// on the waking stone, dark until it is touched.
 const deepFrag = /* glsl */ `
 uniform vec3 uRockLit;
 uniform vec3 uRockShade;
@@ -54,6 +55,8 @@ uniform vec3 uTop;
 uniform vec3 uSunCol;
 uniform float uDeepTime;
 uniform float uDeepSky;
+uniform float uDeepWake;
+uniform vec3 uDeepStone;
 varying vec3 vL;
 varying vec3 vV;
 varying vec4 vLight;
@@ -101,14 +104,32 @@ void main() {
   float near = 1.0 - smoothstep(5.0, 24.0, length(vV));
   col += alb * tint * (facet * 0.2 * near * near);
 
+  // the waking stone: light spreads out from it and stays
+  float wake = uDeepWake;
+  float front = max(0.0, wake - 2.0) * 22.0;
+  float dS = length(vL - uDeepStone);
+  float inside = wake < 0.0 ? 0.0 : 1.0 - smoothstep(front - 1.0, front + 1.0, dS);
+  if (inside > 0.0) {
+    col += alb * tint * facet * 0.16 * inside;
+    float band = (1.0 - smoothstep(0.0, 6.0, abs(dS - front))) * step(0.001, front) * step(dS, front + 3.0);
+    col += vec3(0.3, 0.95, 0.82) * tint * 0.25 * band;
+  }
+
   // daylight from a shaft: the rock as the sun would show it at this hour
   float sky = styleBands(clamp(vLight.a * vLight.a * 2.0 * uDeepSky, 0.0, 1.0), vL.xz);
   col = mix(col, max(col, li * tint * facet), sky);
 
-  if (vKind > 4.5) {
+  if (vKind > 5.5) {
+    // each mark takes the light in its turn over the first two and a half seconds
+    float at = dh21(floor(vL.xz * 3.0) + floor(vL.y * 3.0) * 7.0) * 2.0;
+    float lit = wake < 0.0 ? 0.0 : smoothstep(at, at + 0.5, wake);
+    vec3 live = vec3(0.3, 0.95, 0.82) * vTint * (0.8 + 0.2 * sin(uDeepTime * 0.9 + vL.y * 2.0));
+    col = mix(vTint * 0.05, live, lit);
+  } else if (vKind > 4.5) {
     col = mix(uTop, uSunCol, 0.55) * (0.03 + 1.07 * uDeepSky);
   } else if (vKind > 3.5) {
-    col = vec3(0.3, 0.95, 0.82) * vTint * (0.8 + 0.2 * sin(uDeepTime * 0.9 + vL.y * 2.0));
+    float k4 = wake < 0.0 ? 0.25 : mix(0.25, 1.0, inside);
+    col = vec3(0.3, 0.95, 0.82) * vTint * (0.8 + 0.2 * sin(uDeepTime * 0.9 + vL.y * 2.0)) * k4;
   } else if (vKind > 2.5) {
     float ph = dot(floor(vL * 0.7), vec3(1.3, 2.1, 3.7));
     float fl = 0.92 + 0.12 * sin(uDeepTime * 9.0 + ph) * sin(uDeepTime * 5.3 + ph * 1.7);
@@ -253,13 +274,19 @@ export interface DeepMaterials {
   time: THREE.IUniform<number>;
   /** 0..1: how much daylight the shafts carry. */
   sky: THREE.IUniform<number>;
+  /** Seconds since the stone woke, -1 asleep. */
+  wake: THREE.IUniform<number>;
+  /** The stone, in the mesh's local frame. */
+  stone: THREE.IUniform<THREE.Vector3>;
   dispose(): void;
 }
 
 export function deepMaterials(shared?: Uniforms): DeepMaterials {
   const time = { value: 0 };
   const sky = { value: 1 };
-  const own: Uniforms = { uDeepTime: time, uDeepSky: sky };
+  const wake = { value: -1 };
+  const stone = { value: new THREE.Vector3(0, -1e4, 0) };
+  const own: Uniforms = { uDeepTime: time, uDeepSky: sky, uDeepWake: wake, uDeepStone: stone };
   const u = withDefaults(shared, own);
   // seen only from inside, so either face will do; this spares every builder the winding
   const rock = new THREE.ShaderMaterial({ uniforms: u, vertexShader: deepVert, fragmentShader: deepFrag, side: THREE.DoubleSide });
@@ -274,6 +301,8 @@ export function deepMaterials(shared?: Uniforms): DeepMaterials {
     water,
     time,
     sky,
+    wake,
+    stone,
     dispose() {
       rock.dispose();
       glow.dispose();

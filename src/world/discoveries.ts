@@ -1615,6 +1615,8 @@ export class Discoveries {
 
   /** The sand over a cavern has finished draining away: it is open for good. */
   onOpened: ((key: number) => void) | null = null;
+  /** A waking stone has been touched. */
+  onWoken: ((key: number) => void) | null = null;
   /** The ground has changed shape, so anything baked from it is out of date. */
   onGround: (() => void) | null = null;
   private readonly u: Uniforms;
@@ -1626,6 +1628,7 @@ export class Discoveries {
   private readonly cavernCache = new Map<number, CavernSite | null>();
   private readonly opened = new Set<number>();
   private readonly taken = new Set<number>();
+  private readonly woken = new Set<number>();
   /** The caverns the terrain is shaped by now: the nearest few. */
   private active: CavernSite[] = [];
   private draining: CavernSite | null = null;
@@ -1697,9 +1700,45 @@ export class Discoveries {
   // ---------------------------------------------------------------- caverns
 
   /** What the save remembers: the caverns already opened, and the relics already carried off. */
-  restore(opened: readonly number[], taken: readonly number[]): void {
+  restore(opened: readonly number[], taken: readonly number[], woken: readonly number[] = []): void {
     for (const k of opened) this.opened.add(k);
     for (const k of taken) this.taken.add(k);
+    for (const k of woken) this.woken.add(k);
+  }
+
+  /** How many waking stones have been woken. */
+  get wokenCount(): number {
+    return this.woken.size;
+  }
+
+  /** The built deep whose sleeping stone is within reach of the point, or null. */
+  private stoneSite(x: number, y: number, z: number, reach = 3.2): CavernSite | null {
+    for (const cs of this.deeps) {
+      const st = cs.deep!.stone;
+      if (!st || cs.deep!.woken) continue;
+      if (Math.hypot(st[0] - x, st[1] - (y + 1), st[2] - z) < reach) return cs;
+    }
+    return null;
+  }
+
+  /** Whether the point is within reach of a stone that is still asleep. */
+  stoneNear(x: number, y: number, z: number): boolean {
+    return this.stoneSite(x, y, z) !== null;
+  }
+
+  /** The point of the sleeping stone nearest the wanderer within reach, for the key cue; or null. */
+  stoneAt(x: number, y: number, z: number): [number, number, number] | null {
+    return this.stoneSite(x, y, z)?.deep!.stone ?? null;
+  }
+
+  /** Wake the stone the wanderer stands at: its light spreads, and stays. False if none was in reach. */
+  wakeStone(x = 0, y = 0, z = 0, reach = 3.2): boolean {
+    const cs = this.stoneSite(x, y, z, reach);
+    if (!cs) return false;
+    cs.deep!.wake(false);
+    this.woken.add(cs.key);
+    this.onWoken?.(cs.key);
+    return true;
   }
 
   /** The cavern hidden under a cell, if it has one. Worked out once per cell. */
@@ -2026,6 +2065,7 @@ export class Discoveries {
     if (cs.deep) return;
     const deep = createDeep(this.specOf(cs), this.u);
     if (this.taken.has(cs.key)) deep.takeRelic();
+    if (this.woken.has(cs.key)) deep.wake(true);
     cs.deep = deep;
     this.deeps.push(cs);
     this.group.add(deep.group);

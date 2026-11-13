@@ -154,6 +154,8 @@ export class DeepBuilder {
   private readonly wallStep: number;
   private readonly props = new VB();
   private readonly blockers: Blocker[] = [];
+  /** The waking stone's reach point, local, once one is stood. */
+  private stoneAt: Pt | null = null;
   private readonly glows: number[] = []; // u y v size r g b phase
   private readonly beams: number[] = []; // u y v fade
   private paintNow: number[] = this.paints[0];
@@ -417,6 +419,37 @@ export class DeepBuilder {
     if (o.solid && Math.max(su, sv) >= 0.5) this.blockers.push({ u, v, r: 0, hu: su / 2, hv: sv / 2, rot: rotY, y0: y, y1: y + sy });
   }
 
+  /**
+   * The waking stone: a tall carved slab on a two-step plinth, its marks dark until woken.
+   * Its base stands at (u, y, v) and it faces the way rotY turns -u toward (as the carved slabs do).
+   */
+  stone(u: number, y: number, v: number, rotY: number): void {
+    const c = Math.cos(rotY);
+    const s = Math.sin(rotY);
+    // a point d along the thickness (toward the back) and a across the face, in the deep's frame
+    const at = (d: number, a: number): [number, number] => [u + d * c + a * s, v - d * s + a * c];
+    this.color(0.8, 0.77, 0.7, 1);
+    this.box(u, y, v, 1.4, 0.2, 2.7, rotY, { solid: true });
+    this.box(u, y + 0.2, v, 1.0, 0.2, 2.2, rotY, { solid: true });
+    this.color(0.9, 0.87, 0.8, 1);
+    this.box(u, y + 0.4, v, 0.6, 3.6, 1.7, rotY, { solid: true });
+    this.color(0.55, 0.55, 0.55, 6);
+    const rows = [3, 4, 4];
+    let r = 0;
+    for (let row = 0; row < rows.length; row++) {
+      const n = rows[row];
+      for (let q = 0; q < n; q++) {
+        const tall = (row + q) % 3 === 1;
+        const [mu, mv] = at(-0.32, (q - (n - 1) / 2) * 0.34);
+        const my = y + 1.2 + row * 0.8 + (tall ? 0 : 0.15);
+        this.box(mu, my, mv, 0.06, tall ? 0.4 : 0.09, tall ? 0.09 : 0.2 + 0.04 * ((q + r) % 3), rotY);
+        r++;
+      }
+    }
+    const [su, sv] = at(-1.6, 0);
+    this.stoneAt = [su, y + 1.6, sv];
+  }
+
   /** An upright cylinder (or a frustum, with o.top). */
   cyl(u: number, y: number, v: number, radius: number, height: number, o: PropOpts = {}): void {
     const geo = cylinder(o.sides ?? 8, o.seg ?? Math.max(1, Math.ceil(height / 4)), o.top ?? 1);
@@ -562,6 +595,12 @@ export class DeepBuilder {
       group.add(gm);
     }
 
+    // the waking stone: asleep (-1), or woken at a time on the same clock as the flames
+    const stoneAt = this.stoneAt;
+    if (stoneAt) mats.stone.value.set(stoneAt[0], stoneAt[1], stoneAt[2]);
+    let wokenAt = -1;
+    let instant = false;
+
     // the relic is its own small thing, so it can be lifted off its stone
     let relicObj: THREE.Group | null = null;
     let relicLamp: Lamp | null = null;
@@ -630,6 +669,14 @@ export class DeepBuilder {
       grid,
       stats,
       relic: marks.relic ? world(marks.relic) : null,
+      stone: stoneAt ? world(stoneAt) : null,
+      get woken() {
+        return instant || wokenAt >= 0;
+      },
+      wake(inst) {
+        if (inst) instant = true;
+        else if (wokenAt < 0) wokenAt = mats.time.value;
+      },
       centre: world(marks.centre),
       ledge: world(marks.ledge),
 
@@ -784,6 +831,7 @@ export class DeepBuilder {
 
       update(time, day) {
         mats.time.value = time;
+        mats.wake.value = instant ? 1e4 : wokenAt >= 0 ? time - wokenAt : -1;
         const d = Math.min(1, Math.max(0, day));
         mats.sky.value = 0.05 + 0.95 * d * d * (3 - 2 * d);
       },

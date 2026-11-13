@@ -1172,8 +1172,10 @@ export function buildLabyrinth(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     }
     // the altar in the apse
     b.color(0.97, 0.95, 0.9, 1);
-    b.box(uC1 + 2.5, Y3 + 0.4, vc, 1, 0.95, 2.2, 0, { solid: true });
-    b.lamp(uC1 + 2.5, Y3 + 1.85, vc, { reach: 15, strength: 0.9 });
+    b.box(uC1 + 0.9, Y3 + 0.4, vc, 1, 0.95, 2.2, 0, { solid: true });
+    b.lamp(uC1 + 0.9, Y3 + 1.85, vc, { reach: 15, strength: 0.9 });
+    // the waking stone, against the back of the apse, facing down the nave
+    b.stone(uC1 + 4.5 * cv - 1.2, Y3 + 0.4, vc, 0);
     if (tier < 2) {
       // half columns down the nave
       const top = hC * 0.42;
