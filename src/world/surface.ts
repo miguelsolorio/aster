@@ -6,6 +6,7 @@
 //
 // Every constant below is emitted into the GLSL source, so tune them here.
 import type * as THREE from 'three';
+import { Vector4 } from 'three';
 import type { SurfaceSample, World } from '../game/contract';
 import { CITY_SHAPE_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 import { CITY_CELL, CityIndex, cellHash, cityBlendAt, type CityBlend } from '../city/placement';
@@ -114,7 +115,57 @@ export const TERRAIN = {
   springBack: 0.2,
   springHalf: 8, // half-width of the notch (m)
   springHeight: 9, // floor to ceiling under the rock that caps the notch (m)
+  // Caverns: sealed chambers under open sand, found and opened with the pick. Unlike everything
+  // above they are not part of the seeded function alone: the few nearest are handed to both
+  // copies of it (see Cavern and CAVERN_GLSL), and one only cuts the ground once it is open.
+  cavernHeight: 7, // floor to ceiling (m)
+  cavernBrow: 3.2, // headroom where the ramp passes under the start of the roof (m)
+  cavernCover: 1.6, // least thickness of ground left over the ceiling (m)
+  cavernSlope: 0.3, // mean fall of the ramp (rise over run)
+  cavernRampMax: 44, // longest ramp (m)
+  cavernReach: 92, // furthest a cavern reshapes the ground from the spot it is dug at (m)
 } as const;
+
+/** How many caverns the terrain considers at once (the nearest ones to the player). */
+export const MAX_CAVERNS = 4;
+
+/**
+ * A cavern, in the terms both copies of the terrain cut it by. u runs from the spot it is dug
+ * at down the ramp and on to the back wall; v is across. Everything the shape needs is here, so
+ * the GLSL and the TypeScript cannot drift apart over a site.
+ */
+export interface Cavern {
+  /** The top of the ramp: where u is measured from. */
+  x: number;
+  z: number;
+  /**
+   * u of the spot it is dug at: part way down the ramp, in the middle of what becomes the open
+   * sinkhole, so the sand gives way under whoever breaks through.
+   */
+  spot: number;
+  /** Unit direction the ramp runs down and the chamber lies. */
+  dx: number;
+  dz: number;
+  /** Height of the ground at the spot, and of the chamber floor. */
+  top: number;
+  floor: number;
+  /** Half-width of the passage (m). */
+  half: number;
+  /** How far the far end is shifted sideways (m): 0 for a straight run, either sign for a dogleg. */
+  bend: number;
+  /** Extra half-width of the chamber at the far end (m). */
+  bulge: number;
+  /** u of the back wall, the length of the ramp, and u where the roof begins. */
+  len: number;
+  ramp: number;
+  roof: number;
+  /** Radius of the basin in the end chamber's floor (m), or 0. */
+  pool: number;
+  /** 0 sealed .. 1 open: the sand drains as this rises. */
+  open: number;
+  /** Depth of the dimple that marks the spot (m). */
+  dimple: number;
+}
 
 /** Tallest ground the terrain can produce (m); shadows stop marching above it. */
 export const MAX_TERRAIN_H = 1000;
@@ -578,6 +629,56 @@ vec4 surfaceBase(vec2 p) {
 ${CITY_SITES_GLSL}
 ${CITY_SHAPE_GLSL}
 
+// The nearest caverns (see Cavern in surface.ts; len 0 means unused):
+// uCavA = (x, z, dir x, dir z), uCavB = (top, floor, open 0..1, roof u),
+// uCavC = (half, bend, bulge, len), uCavD = (ramp, pool radius, dimple, spot u).
+uniform vec4 uCavA[${MAX_CAVERNS}];
+uniform vec4 uCavB[${MAX_CAVERNS}];
+uniform vec4 uCavC[${MAX_CAVERNS}];
+uniform vec4 uCavD[${MAX_CAVERNS}];
+
+// Caverns: a faint dimple over each, and, once one is open, a slot cut down through the sand:
+// a ramp from the spot it was dug at, soft-sided in the open and rock-walled under its roof,
+// then a level chamber. Sets sfCave under the roof (above 1 where no daylight reaches).
+// Mirrors carveCaverns in the TypeScript. A few multiplies per site for a point out of reach.
+vec2 sfCaverns(vec2 p, float h) {
+  float rock = 0.0;
+  for (int i = 0; i < ${MAX_CAVERNS}; i++) {
+    vec4 cc = uCavC[i];
+    if (cc.w <= 0.0) continue;
+    vec4 ca = uCavA[i];
+    vec2 d = p - ca.xy;
+    float d2 = dot(d, d);
+    if (d2 > ${F(T.cavernReach * T.cavernReach)}) continue;
+    vec4 cb = uCavB[i];
+    vec4 cd = uCavD[i];
+    vec2 ds = d - ca.zw * cd.w;
+    float dm = 1.0 - smoothstep(0.0, 50.0, dot(ds, ds));
+    h -= cd.z * dm * dm;
+    if (cb.z <= 0.0) continue;
+    float u = dot(d, ca.zw);
+    float v = dot(d, vec2(-ca.w, ca.z));
+    float rk = smoothstep(cb.w - 4.0, cb.w, u);
+    float cl = cc.y * smoothstep(cd.x + 3.0, cd.x + 17.0, u);
+    float er = cc.x + cc.z;
+    float hw = cc.x + cc.z * smoothstep(cc.w - 2.0 * er - 4.0, cc.w - er, u);
+    float sd = hw + mix(5.0, 1.5, rk);
+    float lat = abs(v - cl);
+    float o = cb.z * cb.z * (3.0 - 2.0 * cb.z);
+    // Rock, and out of the sun, from under the roof to a stride past the walls: so a wall is
+    // dark to its full height however coarsely the mesh steps up it. (The rest is under the roof's sand.)
+    float under = rk * o * (1.0 - smoothstep(sd + 0.2, sd + 1.6, lat)) * (1.0 - smoothstep(cc.w + 2.2, cc.w + 3.6, u));
+    rock = max(rock, under);
+    sfCave = max(sfCave, under * (1.0 + smoothstep(cb.w + 1.0, cb.w + 14.0, u)));
+    float m = (1.0 - smoothstep(hw, sd, lat)) * smoothstep(-1.0, 3.0, u) * (1.0 - smoothstep(cc.w, cc.w + 2.0, u));
+    if (m <= 0.0) continue;
+    float tgt = cb.y + (cb.x - cb.y) * (1.0 - smoothstep(2.0, 2.0 + cd.x, u));
+    if (cd.y > 0.0) tgt -= 0.75 * (1.0 - smoothstep(cd.y - 2.5, cd.y, length(vec2(u - (cc.w - er), v - cl))));
+    h = mix(h, min(h, mix(h, tgt, m)), o);
+  }
+  return vec2(h, rock);
+}
+
 // The desert with cities: the ground is levelled into a plateau under each city and
 // shaped around it (terraces, cliffs, dunes), and the built area counts as hard
 // ground (rock = 1, no salt).
@@ -592,6 +693,9 @@ vec4 surface(vec2 p) {
   s.z *= 1.0 - cb.x;
   s.w *= 1.0 - cb.x;
   sfRiverS *= 1.0 - cb.x;
+  vec2 cv = sfCaverns(p, s.x);
+  s.x = cv.x;
+  s.y = max(s.y, cv.y);
   return s;
 }
 
@@ -619,6 +723,41 @@ export interface DesertWorld extends World {
   river(x: number, z: number): number;
   /** The massif at the corner (gi, gj) of the city grid, at world (gi, gj) * CITY_CELL, if any. */
   massif(gi: number, gj: number): Massif | null;
+  /**
+   * The caverns the ground is shaped by from now on: at most MAX_CAVERNS, the same ones (and
+   * the same numbers) the shaders are given by writeCaverns.
+   */
+  setCaverns(list: readonly Cavern[]): void;
+  /** The height of the ceiling of an open cavern over (x, z), or Infinity where there is none. */
+  cavernCeil(x: number, z: number): number;
+}
+
+/** The shared uniforms the terrain reads its caverns from. Create them before any terrain material. */
+export function cavernUniforms(u: Record<string, { value: unknown }>): void {
+  for (const n of ['uCavA', 'uCavB', 'uCavC', 'uCavD']) {
+    if (!u[n]) u[n] = { value: Array.from({ length: MAX_CAVERNS }, () => new Vector4()) };
+  }
+  // what glows in the nearest open cavern: position, and how far its light carries (0 = nothing)
+  if (!u.uCavGlow) u.uCavGlow = { value: new Vector4() };
+}
+
+/** Hand the shaders the same caverns the world was given by setCaverns. */
+export function writeCaverns(u: Record<string, { value: unknown }>, list: readonly Cavern[]): void {
+  const a = u.uCavA.value as Vector4[];
+  const b = u.uCavB.value as Vector4[];
+  const c = u.uCavC.value as Vector4[];
+  const d = u.uCavD.value as Vector4[];
+  for (let i = 0; i < MAX_CAVERNS; i++) {
+    const cv = list[i];
+    if (!cv) {
+      c[i].w = 0;
+      continue;
+    }
+    a[i].set(cv.x, cv.z, cv.dx, cv.dz);
+    b[i].set(cv.top, cv.floor, cv.open, cv.roof);
+    c[i].set(cv.half, cv.bend, cv.bulge, cv.len);
+    d[i].set(cv.ramp, cv.pool, cv.dimple, cv.spot);
+  }
 }
 
 export function createWorld(seed: number): DesertWorld {
@@ -945,8 +1084,8 @@ export function createWorld(seed: number): DesertWorld {
   const blend: CityBlend = { flatten: 0, paved: 0, ground: 0, h: 0, rock: 0 };
   const kCity = key(K_CITY);
   const cityNoise = (x: number, y: number): number => noise(x, y, kCity);
-  // Mirrors surface() in the GLSL: level and shape the ground around the city of this cell.
-  function surface(x: number, z: number, out: SurfaceSample): SurfaceSample {
+  // Mirrors surface() in the GLSL, up to the caverns: level and shape the ground around the city of this cell.
+  let surface = function (x: number, z: number, out: SurfaceSample): SurfaceSample {
     base(x, z, out);
     const site = cities.at(x, z);
     const cb = cityBlendAt(site, cities.ways(site), x, z, out.h, cityNoise, blend);
@@ -955,7 +1094,66 @@ export function createWorld(seed: number): DesertWorld {
     out.salt *= 1 - cb.flatten;
     out.green = (out.green ?? 0) * (1 - cb.flatten);
     return out;
+  };
+
+  // Caverns (mirrors sfCaverns in the GLSL). The numbers are kept as the float32 the shaders get.
+  const CV = 16; // floats per cavern
+  const cav = new Float32Array(MAX_CAVERNS * CV);
+  let cavN = 0;
+  /** Where a point lies in cavern i: u along, v off its (bent) centre line, the half-width there. */
+  const cf = { u: 0, v: 0, hw: 0, rk: 0 };
+  function cavFrame(o: number, ddx: number, ddz: number): void {
+    const u = ddx * cav[o + 2] + ddz * cav[o + 3];
+    const ramp = cav[o + 10];
+    const len = cav[o + 9];
+    const er = cav[o + 6] + cav[o + 8];
+    cf.u = u;
+    cf.v = ddx * -cav[o + 3] + ddz * cav[o + 2] - cav[o + 7] * smoothstep(ramp + 3, ramp + 17, u);
+    cf.hw = cav[o + 6] + cav[o + 8] * smoothstep(len - 2 * er - 4, len - er, u);
+    cf.rk = smoothstep(cav[o + 11] - 4, cav[o + 11], u);
   }
+  function carveCaverns(px: number, pz: number, out: SurfaceSample): void {
+    for (let i = 0; i < cavN; i++) {
+      const o = i * CV;
+      const ddx = f(px - cav[o]);
+      const ddz = f(pz - cav[o + 1]);
+      const d2 = ddx * ddx + ddz * ddz;
+      if (d2 > T.cavernReach * T.cavernReach) continue;
+      const sx = ddx - cav[o + 2] * cav[o + 15];
+      const sz = ddz - cav[o + 3] * cav[o + 15];
+      const dm = 1 - smoothstep(0, 50, sx * sx + sz * sz);
+      out.h -= cav[o + 14] * dm * dm;
+      const open = cav[o + 13];
+      if (open <= 0 || !caveOn) continue;
+      cavFrame(o, ddx, ddz);
+      const u = cf.u;
+      const len = cav[o + 9];
+      const sd = cf.hw + 5 + (1.5 - 5) * cf.rk;
+      const lat = Math.abs(cf.v);
+      const k = open * open * (3 - 2 * open);
+      out.rock = Math.max(out.rock, cf.rk * k * (1 - smoothstep(sd + 0.2, sd + 1.6, lat)) * (1 - smoothstep(len + 2.2, len + 3.6, u)));
+      const m = (1 - smoothstep(cf.hw, sd, lat)) * smoothstep(-1, 3, u) * (1 - smoothstep(len, len + 2, u));
+      if (m <= 0) continue;
+      const top = cav[o + 4];
+      const floor = cav[o + 5];
+      let tgt = floor + (top - floor) * (1 - smoothstep(2, 2 + cav[o + 10], u));
+      const pool = cav[o + 12];
+      if (pool > 0) {
+        // (v is measured from the bent centre line, which has finished bending by the end chamber)
+        tgt -= 0.75 * (1 - smoothstep(pool - 2.5, pool, Math.hypot(u - (len - cav[o + 6] - cav[o + 8]), cf.v)));
+      }
+      const h = out.h;
+      out.h = h + (Math.min(h, h + (tgt - h) * m) - h) * k;
+    }
+  }
+
+  // Mirrors surface() in the GLSL, caverns and all.
+  const cities0 = surface;
+  surface = (x: number, z: number, out: SurfaceSample): SurfaceSample => {
+    cities0(x, z, out);
+    if (cavN > 0) carveCaverns(f(x), f(z), out);
+    return out;
+  };
 
   const tmp: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   const height = (x: number, z: number): number => surface(x, z, tmp).h;
@@ -999,8 +1197,30 @@ export function createWorld(seed: number): DesertWorld {
     massif(gi: number, gj: number): Massif | null {
       return massifAt(gi, gj, mScratch) ? { x: mScratch.x, z: mScratch.z, r: mScratch.r, h: mScratch.h } : null;
     },
+    setCaverns(list: readonly Cavern[]): void {
+      cavN = Math.min(MAX_CAVERNS, list.length);
+      for (let i = 0; i < cavN; i++) {
+        const c = list[i];
+        cav.set([c.x, c.z, c.dx, c.dz, c.top, c.floor, c.half, c.bend, c.bulge, c.len, c.ramp, c.roof, c.pool, c.open, c.dimple, c.spot], i * CV);
+      }
+    },
+    cavernCeil(x: number, z: number): number {
+      const px = f(x);
+      const pz = f(z);
+      for (let i = 0; i < cavN; i++) {
+        const o = i * CV;
+        if (cav[o + 13] <= 0) continue;
+        const ddx = px - cav[o];
+        const ddz = pz - cav[o + 1];
+        if (ddx * ddx + ddz * ddz > T.cavernReach * T.cavernReach) continue;
+        cavFrame(o, ddx, ddz);
+        if (cf.u < cav[o + 11] || cf.u > cav[o + 9] + 1.5 || Math.abs(cf.v) > cf.hw + 0.8) continue;
+        return cav[o + 5] + T.cavernHeight;
+      }
+      return Infinity;
+    },
     height,
-    sample: surface,
+    sample: (x: number, z: number, out: SurfaceSample): SurfaceSample => surface(x, z, out),
     normal(x: number, z: number, out: THREE.Vector3): THREE.Vector3 {
       const dx = height(x + 0.5, z) - height(x - 0.5, z);
       const dz = height(x, z + 0.5) - height(x, z - 0.5);

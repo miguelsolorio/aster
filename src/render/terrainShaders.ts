@@ -105,7 +105,7 @@ uniform float uLower;      // metres to sink this level (0 for the finest)
 varying vec3 vW;
 varying vec3 vN;
 varying vec4 vMask; // rock, salt, signed distance to the river (m), river presence 0..1
-varying float vCave; // 1 under a cave roof
+varying float vCave; // 1 under a cave roof, rising to 2 deep in a cavern where no daylight reaches
 
 void main() {
   vec2 xz = uLevelCenter + position.xz * uCell;
@@ -182,6 +182,16 @@ float cityTracks(vec2 p) {
   }
   return m;
 }
+
+// The nearest caverns (see sfCaverns in surface.ts), for the mark a sealed one leaves on the sand.
+uniform vec4 uCavA[4];
+uniform vec4 uCavB[4];
+uniform vec4 uCavC[4];
+uniform vec4 uCavD[4];
+
+// What glows in the nearest open cavern: where it is, and how far its light carries (0 = nothing).
+uniform vec4 uCavGlow;
+const vec3 CAV_GLOW = vec3(0.3, 0.95, 0.82);
 
 uniform vec2 uInnerCenter; // centre of the next finer level
 uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
@@ -637,8 +647,40 @@ void main() {
     col = mix(col, uLine, max(lg.x, lg.y) * uGrid);
   }
 
-  // ---- fog
-  col = mix(col, uFogCol, 1.0 - exp(-dist * uFog * hazeAt(p.y)));
+  // ---- over a sealed cavern the crust has sunk and split: a round patch of darker sand,
+  // crazed like dried mud, that says there is something under here to break into
+  for (int i = 0; i < 4; i++) {
+    if (uCavC[i].w <= 0.0 || uCavB[i].z >= 1.0 || sandW < 0.01) continue;
+    vec2 cd = p.xz - (uCavA[i].xy + uCavA[i].zw * uCavD[i].w);
+    float cr = length(cd);
+    if (cr > 5.5) continue;
+    float edge = 3.6 + 0.9 * vnoise(vec2(atan(cd.y, cd.x) * 2.5, float(i) * 9.1));
+    // it fades out into the sand over half its width, and drifts of sand lie across it, so
+    // the cracks show in patches rather than as a clean disc
+    float k = (1.0 - smoothstep(edge - 2.6, edge, cr)) * (1.0 - uCavB[i].z) * sandW * (1.0 - smoothstep(60.0, 140.0, dist));
+    float bare = smoothstep(0.46, 0.66, fbm(p.xz * 0.8 + float(i) * 5.3) + 0.12 * k) * k;
+    vec2 cv = cells(p.xz / 0.75 + float(i) * 3.7);
+    float crack = 1.0 - smoothstep(0.03, 0.09 + 0.6 * fwXZ, cv.x);
+    col *= 1.0 - k * (0.07 + bare * (0.07 + 0.04 * cv.y + 0.4 * crack * (1.0 - smoothstep(12.0, 45.0, dist))));
+  }
+
+  // ---- deep in a cavern: past the daylight from its mouth the rock is nearly black, and
+  // whatever glows down there is all that lights it
+  float deep = clamp(vCave - 1.0, 0.0, 1.0);
+  if (deep > 0.001) {
+    col *= 1.0 - 0.86 * deep;
+    if (uCavGlow.w > 0.0) {
+      vec3 gd = uCavGlow.xyz - p;
+      float g2 = dot(gd, gd);
+      float ga = 1.0 / (1.0 + g2 / (0.16 * uCavGlow.w * uCavGlow.w));
+      ga *= 0.45 + 0.55 * max(dot(n, gd * inversesqrt(g2 + 1e-3)), 0.0);
+      ga *= 0.92 + 0.08 * sin(uTime * 0.9);
+      col += CAV_GLOW * (0.85 * ga * smoothstep(0.0, 0.35, deep));
+    }
+  }
+
+  // ---- fog (the haze of the open desert does not hang underground)
+  col = mix(col, uFogCol, (1.0 - exp(-dist * uFog * hazeAt(p.y))) * (1.0 - deep));
 
   gl_FragColor = vec4(col, 1.0);
 }

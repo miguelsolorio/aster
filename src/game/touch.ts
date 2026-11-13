@@ -35,6 +35,9 @@ const FLY_SVG =
 const TALK_SVG =
   '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
   '<path d="M7 8.5h14a1.5 1.5 0 0 1 1.5 1.5v7a1.5 1.5 0 0 1-1.5 1.5h-7l-4 3.5v-3.5H7A1.5 1.5 0 0 1 5.5 17v-7A1.5 1.5 0 0 1 7 8.5z"/></svg>';
+const PICK_SVG =
+  '<svg class="aster-touch__pick" viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
+  '<path d="M6 12.5c3.5-4.6 12.5-4.6 16 0"/><path d="M14 9v13"/></svg>';
 const BOARD_SVG =
   '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
   '<path d="M5 19.5c0-1.2 4-2 9-2s9 .8 9 2-4 2-9 2-9-.8-9-2z"/><path d="M11 17V9.5M17 17V9.5"/></svg>';
@@ -114,7 +117,7 @@ export class TouchControls {
     talk.className = 'aster-touch__talk';
     talk.setAttribute('aria-label', 'Talk');
     talk.tabIndex = -1;
-    talk.innerHTML = TALK_SVG;
+    talk.innerHTML = TALK_SVG + PICK_SVG;
     this.talk = talk;
 
     // Board: appears once there is a board to step on or off.
@@ -159,9 +162,14 @@ export class TouchControls {
     if (!air) this.endDrop();
   }
 
-  /** Show the talk button while there is someone to talk to. */
-  setTalk(on: boolean): void {
-    this.layer.classList.toggle('aster-touch--talk', on);
+  /**
+   * Show the talk button while there is someone to talk to. With nobody in reach it becomes
+   * the pick's button instead, wherever there is ground to strike (`dig`).
+   */
+  setTalk(on: boolean, dig = false): void {
+    this.layer.classList.toggle('aster-touch--talk', on || dig);
+    this.layer.classList.toggle('aster-touch--dig', dig && !on);
+    this.talk.setAttribute('aria-label', dig && !on ? 'Swing the pick' : 'Talk');
   }
 
   /** Show the board button once there is a board; it reads as pressed while riding. */

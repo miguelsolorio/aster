@@ -104,6 +104,9 @@ export class Player {
   /** Optional: whether feet at (x, z, y) stand on something hard that is not the ground: a stone, a bone. */
   hard: ((x: number, z: number, y: number) => boolean) | null = null;
 
+  /** Optional: whether feet at (x, z, y) stand on sand whatever the ground far below them is: the roof left over a cavern. */
+  soft: ((x: number, z: number, y: number) => boolean) | null = null;
+
   constructor(private world: World) {}
 
   /** Optional: how far the ground is sunk below the terrain at (x, z), e.g. the bed of a pool. */
@@ -147,7 +150,7 @@ export class Player {
     this.slope = slope;
     if (slope > 1e-4) this.downhill.set(-gx / slope, -gz / slope);
     // A stone or a bone underfoot is walked on like rock, whatever the ground beneath it is.
-    st.onRock = st.grounded && this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.s.rock;
+    st.onRock = st.grounded && this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.soft?.(pos.x, pos.z, pos.y) ? 0 : this.s.rock;
     const rock = st.onRock > 0.5;
 
     // Wish direction in world space, relative to the camera.
@@ -478,7 +481,7 @@ export class Player {
           vel.x *= keep;
           vel.z *= keep;
         }
-        st.onRock = this.hard?.(pos.x, pos.z, pos.y) ? 1 : w.sample(pos.x, pos.z, this.s).rock;
+        st.onRock = this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.soft?.(pos.x, pos.z, pos.y) ? 0 : w.sample(pos.x, pos.z, this.s).rock;
         const onRock = st.onRock > 0.5;
         if (onRock || !this.board) {
           const sp = Math.hypot(vel.x, vel.z);

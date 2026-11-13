@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { PlayerState, Uniforms } from './contract';
 import { strideLength } from './player';
 import { STYLE_GLSL } from '../render/styleGlsl';
-import { CHOSEN, boardGeometry, carpetGeometry, pickGeometry, rollGeometry, rugMaterial, solidMaterial } from './equipment';
+import { CHOSEN, boardGeometry, carpetGeometry, lampGeometry, pickGeometry, relicGeometry, rollGeometry, rugMaterial, solidMaterial } from './equipment';
 
 // The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
 // legs, a plain white face and a round hood.
@@ -235,6 +235,13 @@ export class Figure {
   swing = -1;
   private pickMesh: THREE.Mesh;
   private pickU = { value: 0 };
+  /** Carries a lamp at the right hip, or a relic at the left. */
+  lamp = false;
+  relic = false;
+  /** Set to 1 when something has just been picked up: it swells and settles into place. */
+  flourish = 0;
+  private lampMesh: THREE.Mesh;
+  private relicMesh: THREE.Mesh;
 
   constructor(u: Uniforms) {
     this.group.rotation.order = 'YXZ';
@@ -301,6 +308,10 @@ export class Figure {
     this.roll = add(t, empty, solid);
     // the pick, tucked across the back
     this.pickMesh = add(t, empty, solid);
+    // small things hung at the hips, outside the cloak
+    this.lampMesh = add(t, lampGeometry(), solid);
+    this.relicMesh = add(t, relicGeometry(), solid);
+    this.lampMesh.visible = this.relicMesh.visible = false;
     this.boardBack.visible = this.boardFoot.visible = this.rug.visible = this.roll.visible = this.pickMesh.visible = false;
     this.setBoard(CHOSEN.board);
     this.setCarpet(CHOSEN.carpet);
@@ -471,6 +482,21 @@ export class Figure {
     } else if (this.pick) {
       this.pickMesh.position.set(-0.135, 0.1, this.boardBack.visible ? -0.335 : -0.255);
       this.pickMesh.rotation.set(0, Math.PI, 0.6);
+    }
+    // What hangs at the hips swings a little with the walk, and swells for a moment when new.
+    this.flourish = Math.max(0, this.flourish - dt * 1.4);
+    const pop = 1 + 1.6 * this.flourish * this.flourish * (0.6 + 0.4 * Math.cos(this.flourish * 14));
+    this.lampMesh.visible = this.lamp;
+    this.relicMesh.visible = this.relic;
+    if (this.lamp) {
+      this.lampMesh.position.set(0.25, 0.24 + 0.3 * this.flourish, 0.04);
+      this.lampMesh.rotation.set(Math.sin(a) * 0.25 * this.amp - this.pitch * 0.6, 0.5, Math.sin(t * 1.7) * 0.05);
+      this.lampMesh.scale.setScalar(1.25 * pop);
+    }
+    if (this.relic) {
+      this.relicMesh.position.set(-0.24, 0.13 + 0.3 * this.flourish, 0.07);
+      this.relicMesh.rotation.set(0, t * 0.6, Math.sin(a + 1) * 0.2 * this.amp);
+      this.relicMesh.scale.setScalar(pop);
     }
     if (riding) {
       const tiltT = st.grounded ? -Math.atan(m.slopeAlong) : -0.45 * Math.atan2(st.vel.y, Math.max(st.speed, 4));

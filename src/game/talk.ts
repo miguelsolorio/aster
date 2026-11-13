@@ -7,7 +7,7 @@ import './talk.css';
 
 /** Someone who can be spoken to, as the systems that own them describe them. */
 export interface Speaker {
-  kind: 'traveller' | 'townsfolk';
+  kind: 'traveller' | 'townsfolk' | 'miner';
   /** Whatever the owning system needs to find this person again. */
   ref: unknown;
   /** Head position in the world. */
@@ -43,6 +43,7 @@ export class Talk {
 
   private readonly layer: HTMLDivElement;
   private readonly cue: HTMLDivElement;
+  private readonly dig: HTMLDivElement;
   private readonly say: HTMLDivElement;
   private readonly text: HTMLSpanElement;
   private readonly more: HTMLSpanElement;
@@ -67,7 +68,10 @@ export class Talk {
     this.more.className = 'aster-talk__more';
     this.more.setAttribute('aria-hidden', 'true');
     this.say.append(this.text, this.more);
-    layer.append(this.cue, this.say);
+    // the same key cap, over a place in the sand worth striking
+    this.dig = document.createElement('div');
+    this.dig.className = 'aster-talk__cue';
+    layer.append(this.cue, this.dig, this.say);
     host.prepend(layer);
     this.layer = layer;
   }
@@ -77,6 +81,15 @@ export class Talk {
     if (this.cue.textContent === label) return;
     this.cue.textContent = label;
     this.cue.classList.toggle('aster-talk__cue--key', label !== '');
+    this.dig.textContent = label;
+    this.dig.classList.toggle('aster-talk__cue--key', label !== '');
+  }
+
+  /** Show the key cap over a spot on the ground (somewhere to dig), or hide it. Call once a frame, after update. */
+  mark(camera: THREE.PerspectiveCamera, at: { x: number; y: number; z: number } | null): void {
+    const on = at !== null && !this.talking && !this.hasNear;
+    this.dig.classList.toggle('is-on', on);
+    if (on && at) this.place(this.dig, camera, at, 0, false);
   }
 
   get talking(): boolean {
@@ -150,7 +163,7 @@ export class Talk {
   }
 
   /** Put an element over a head. A bubble sits above the point and stays on screen. */
-  private place(el: HTMLElement, camera: THREE.PerspectiveCamera, s: Speaker, lift: number, bubble: boolean): void {
+  private place(el: HTMLElement, camera: THREE.PerspectiveCamera, s: { x: number; y: number; z: number }, lift: number, bubble: boolean): void {
     const v = this.v.set(s.x, s.y + lift, s.z).project(camera);
     if (v.z > 1 || v.z < -1) {
       el.style.opacity = '0';

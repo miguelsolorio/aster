@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { FrameState, Uniforms } from './contract';
 import { DayCycle } from './daycycle';
 import { Player, type PlayerInput } from './player';
-import { TERRAIN, createWorld } from '../world/surface';
+import { TERRAIN, cavernUniforms, createWorld } from '../world/surface';
 import { HeightBake } from '../world/heightBake';
 import { Clipmap } from '../world/clipmap';
 import { TrailField } from '../world/trailField';
@@ -27,7 +27,7 @@ import { WORLD_SCALE } from '../world/scale';
 import { Massifs } from '../world/massifs';
 import { Save } from './save';
 import { Talk, type Speaker } from './talk';
-import { TOWNSFOLK, TRAVELLER, type Line } from './lines';
+import { MINER, TOWNSFOLK, TRAVELLER, type Line } from './lines';
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
@@ -142,11 +142,16 @@ function start() {
   const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 14000);
   const cities = new Cities(world, u); // first: it creates the uniforms that tell the terrain where to flatten
   cities.setFocus(player.state.pos.x, player.state.pos.z);
+  cavernUniforms(u); // likewise for the caverns, which the discoveries fill in
   const bake = new HeightBake(renderer, u);
   const trail = new TrailField(renderer, u);
   const clipmap = new Clipmap(u);
   const dust = new Dust(world, u);
   const discoveries = new Discoveries(world, u);
+  // Caverns opened on an earlier visit are open still, and their relics stay taken.
+  discoveries.restore(save.data.opened, save.data.taken);
+  discoveries.onOpened = (key) => save.open(key);
+  discoveries.onGround = () => bake.invalidate();
   const splash = new Splash(u);
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, u);
@@ -158,7 +163,9 @@ function start() {
   const figure = new Figure(u);
   figure.board = player.board;
   figure.carpet = player.carpet;
-  figure.pick = save.has('pick'); // carried, but there is nothing to dig yet
+  figure.pick = save.has('pick');
+  figure.lamp = save.data.items.lamp;
+  figure.relic = save.data.items.relic;
   scene.add(figure.group);
 
   // ---- a fire and its travellers, a short walk from where you begin, toward the city you face.
@@ -315,7 +322,7 @@ function start() {
   );
   applyTier();
   const syncKnown = () => {
-    ui.setKnown({ talk: save.data.talked, board: save.has('board'), carpet: player.carpet });
+    ui.setKnown({ talk: save.data.talked, board: save.has('board'), carpet: player.carpet, dig: save.has('pick') });
     touch.setBoard(save.has('board'), player.board);
   };
 
@@ -337,6 +344,84 @@ function start() {
     out.y = trav.y + (1.72 - 0.62 * trav.sit) * trav.h;
     out.pitch = 120 + trav.seed * 110;
   };
+  // ---- the miner of a canyon city: wants a lamp fetched, and gives the pick for it
+  const minerP = { x: 0, z: 0, h: 1, sit: 1 };
+  const setMiner = (out: Speaker) => {
+    out.kind = 'miner';
+    out.ref = null;
+    out.x = minerP.x;
+    out.z = minerP.z;
+    out.y = (cities.active?.site.groundY ?? player.state.pos.y) + 1.55;
+    out.pitch = 96;
+  };
+  // Directions as someone would give them: the sun rises in the east (+x) and stands to the south (+z) at noon.
+  const WAYS = ['east', 'north-east', 'north', 'north-west', 'west', 'south-west', 'south', 'south-east'];
+  const directions = (line: string, fx: number, fz: number, tx: number, tz: number) => {
+    const way = WAYS[((Math.round(Math.atan2(-(tz - fz), tx - fx) / (Math.PI / 4)) % 8) + 8) % 8];
+    const d = Math.hypot(tx - fx, tz - fz);
+    const far = d < 500 ? 'a short walk' : d < 1300 ? 'a fair walk' : d < 2800 ? 'a long walk' : d < 5000 ? 'a long walk, or a short ride' : 'a good ride';
+    return line.replace('{way}', way).replace('{far}', far);
+  };
+  // Where the lamp for a city lies: by a spring or in a cave where there is a mountain near,
+  // and otherwise out on open sand, a seeded way off.
+  const lampSpots = new Map<number, { x: number; z: number; kind: 'spring' | 'cave' | 'sand'; mouth?: { x: number; z: number } }>();
+  const lampSpot = (site: { id: number; seed: number; cx: number; cz: number; radius: number }) => {
+    let s = lampSpots.get(site.id);
+    if (!s) {
+      const a = ((site.seed >>> 5) % 628) / 100;
+      s = discoveries.lampSpot(site.cx, site.cz) ?? { x: site.cx + Math.cos(a) * (site.radius + 700), z: site.cz + Math.sin(a) * (site.radius + 700), kind: 'sand' };
+      lampSpots.set(site.id, s);
+    }
+    return s;
+  };
+  const minerScript = () => {
+    const site = cities.active!.site;
+    const lamp = lampSpot(site);
+    const where = directions(lamp.kind === 'spring' ? MINER.lampSpring : lamp.kind === 'cave' ? MINER.lampCave : MINER.lampSand, minerP.x, minerP.z, lamp.x, lamp.z);
+    const cav = discoveries.nearestCavern(minerP.x, minerP.z);
+    if (save.data.roles.miner === 2) {
+      const pool = [...MINER.after, ...(save.data.items.relic ? [...MINER.relic, ...MINER.relic] : [])];
+      // until a first cavern has been opened, the miner goes on pointing at one
+      if (cav && save.data.opened.length === 0) pool.push(directions(MINER.remind, minerP.x, minerP.z, cav.x, cav.z), directions(MINER.remind, minerP.x, minerP.z, cav.x, cav.z));
+      return { lines: [(lastLine = pick(pool, lastLine))] };
+    }
+    if (save.data.items.lamp) {
+      // The lamp is here, asked for or not: the pick changes hands.
+      const last = cav ? directions(text(MINER.cavern), minerP.x, minerP.z, cav.x, cav.z) : text(MINER.noCavern);
+      return {
+        lines: [...MINER.gift.map(text), last],
+        done() {
+          save.setItem('lamp', false);
+          save.setRole('miner', 2);
+          save.give('pick');
+          figure.lamp = false;
+          figure.pick = true;
+          people.minerLamp = true;
+          audio.chime();
+          buzz(20);
+          syncKnown();
+        },
+      };
+    }
+    if (save.data.roles.miner === 1) return { lines: [MINER.pending, where] };
+    return {
+      lines: [...MINER.ask.map(text), where, MINER.askEnd],
+      done() {
+        save.setRole('miner', 1);
+      },
+    };
+  };
+  // Something small has been picked up: no sound, only the thing itself appearing at the hip.
+  const pickedUp = (x: number, y: number, z: number) => {
+    figure.flourish = 1;
+    tmp.set(x, y, z);
+    tmp2.set(0, 1.5, 0);
+    dust.puff(tmp, tmp2, 0.2);
+    buzz(12);
+  };
+  let lampT = 0;
+  const digAt = { x: 0, y: 0, z: 0 };
+
   const setFolk = (out: Speaker) => {
     out.kind = 'townsfolk';
     out.ref = folk.id;
@@ -350,6 +435,10 @@ function start() {
     find(out) {
       const p = player.state.pos;
       if (!player.state.grounded) return false;
+      if (people.minerNear(3, minerP)) {
+        setMiner(out);
+        return true;
+      }
       if (caravans.nearestPerson(p.x, p.z, 3.4, trav) && Math.abs(trav.y - p.y) < 2) {
         setTraveller(out);
         return true;
@@ -361,6 +450,12 @@ function start() {
       return false;
     },
     hold(s) {
+      if (s.kind === 'miner') {
+        if (!people.minerNear(30, minerP)) return false;
+        people.holdMiner();
+        setMiner(s);
+        return true;
+      }
       if (s.kind === 'traveller') {
         caravans.hold(s.ref);
         caravans.personAt(s.ref, trav);
@@ -377,6 +472,7 @@ function start() {
         save.setTalked();
         syncKnown();
       }
+      if (s.kind === 'miner') return minerScript();
       if (s.kind === 'traveller') {
         if (!save.has('board')) {
           return {
@@ -401,6 +497,9 @@ function start() {
       const d = day.day;
       const hour = d < 0.2 || d > 0.82 ? TOWNSFOLK.night : d < 0.32 ? TOWNSFOLK.dawn : d > 0.7 ? TOWNSFOLK.dusk : d > 0.42 && d < 0.58 ? TOWNSFOLK.noon : [];
       const pool = [...TOWNSFOLK.any, ...(site ? TOWNSFOLK[site.kind] : []), ...hour, ...(save.has('board') ? [] : [...TOWNSFOLK.onFoot, ...TOWNSFOLK.onFoot])];
+      // a relic at the belt gets noticed, and in a canyon city someone with no pick is sent to the miner
+      if (save.data.items.relic) pool.push(...TOWNSFOLK.relic, ...TOWNSFOLK.relic);
+      if (site?.kind === 'canyon' && !save.has('pick')) pool.push(...TOWNSFOLK.noPick);
       return { lines: [(lastLine = pick(pool, lastLine))] };
     },
     voice: (pitch) => audio.murmur(pitch),
@@ -410,8 +509,8 @@ function start() {
   discoveries.onReach = () => audio.chime();
   cities.onReach = () => audio.chime();
   // Roofs you can land on: buildings, and the rock over a cave once you are above its ceiling.
-  // (rock ceilings: the caves in the massifs, and the caps over the springs)
-  const ceilAt = (x: number, z: number) => Math.min(world.caveCeil(x, z), discoveries.capCeil(x, z));
+  // (ceilings: the caves in the massifs, the caps over the springs, and the sand left over an open cavern)
+  const ceilAt = (x: number, z: number) => Math.min(world.caveCeil(x, z), discoveries.capCeil(x, z), world.cavernCeil(x, z));
   const caveRoofAt = (x: number, z: number, y: number) => {
     const ceil = ceilAt(x, z);
     return ceil < Infinity && y > ceil - 0.3 ? world.uncarved(x, z) : -Infinity;
@@ -424,6 +523,8 @@ function start() {
     return Math.abs(t - y) < 0.3 && t > world.height(x, z) + 0.4 ? discoveries.solidKind : -1;
   };
   player.hard = (x, z, y) => propUnder(x, z, y) >= 0;
+  // The roof over a cavern is the sand it always was, though the floor under it is rock.
+  player.soft = (x, z, y) => y > world.cavernCeil(x, z) - 0.3;
   // Water, wherever it lies: a river painted on its bed, a city's pool, an oasis in the dunes.
   // Fills `water` with the height of the surface and how deep it stands over the ground.
   const water = { y: 0, depth: 0 };
@@ -503,12 +604,81 @@ function start() {
       if (ui.state === 'playing') ui.openMenu();
     },
     onTalk() {
-      if (ui.state === 'playing') talk.interact();
+      if (ui.state === 'playing') interact();
     },
     onBoard() {
       if (ui.state === 'playing') toggleBoard();
     },
   });
+  // ---- the pick: with nobody in reach, the key that talks swings it instead
+  const SWING = 0.62; // seconds, start to finish
+  const SWING_HIT = 0.45; // the fraction of it at which the point lands
+  let swingT = -1; // seconds into a swing, or -1 at rest
+  let swingHit = false;
+  /** Whether a swing may start now: a pick, feet on the ground, and no conversation to have. */
+  const canDig = () => save.has('pick') && player.state.grounded && !talk.available;
+  const interact = () => {
+    if (talk.available) talk.interact();
+    else if (canDig() && swingT < 0) {
+      swingT = 0;
+      swingHit = false;
+    }
+  };
+  /** The point of the pick lands, a short reach ahead of the feet. */
+  const strike = () => {
+    const st = player.state;
+    const x = st.pos.x + Math.sin(player.facing) * 0.75;
+    const z = st.pos.z + Math.cos(player.facing) * 0.75;
+    buzz(14);
+    if (waterAt(x, z) && water.y > world.height(x, z) - 0.01) {
+      splash.burst(x, water.y, z, 0, 0, 0.3);
+      splash.ring(x, water.y, z, 1.2, 1.1);
+      audio.splash(0.3);
+      return;
+    }
+    const hard = st.onRock > 0.5 || (world.sample(x, z, probe).rock > 0.5 && !player.soft?.(x, z, st.pos.y));
+    if (hard) {
+      audio.strike('rock', 0);
+      return;
+    }
+    // A scuff: one deep bite where the point went in, and the sand it threw back toward the feet.
+    const fx = Math.sin(player.facing);
+    const fz = Math.cos(player.facing);
+    const along = Math.PI / 2 - player.facing; // the trail field measures headings from +x
+    // (a mark reads by how steep its sides are, so the bite is narrow and deep, not broad)
+    trail.stamp(x, z, 0.15, 1, along, 2.2);
+    trail.stamp(x + fx * 0.12, z + fz * 0.12, 0.11, 1, along, 1.2);
+    for (let i = 0; i < 4; i++) {
+      // the sand it threw: a loose fan back toward the feet and out to the sides
+      const a = (Math.random() - 0.5) * 2.4;
+      const r = 0.45 + Math.random() * 0.5;
+      trail.stamp(x - (fx * Math.cos(a) - fz * Math.sin(a)) * r, z - (fz * Math.cos(a) + fx * Math.sin(a)) * r, 0.07 + Math.random() * 0.05, 0.4);
+    }
+    tmp.set(x, world.height(x, z) + 0.05, z);
+    tmp2.set(-fx * 0.8, 2.2, -fz * 0.8);
+    dust.puff(tmp, tmp2, 0.3);
+    // The ground answers: dull over solid sand, hollow near a buried chamber, and on the spot
+    // itself the crust cracks a little further with each blow until it gives.
+    const hit = discoveries.strike(x, z);
+    audio.strike('sand', hit.hollow);
+    if (hit.level > 0 || hit.broke) {
+      const n = hit.broke ? 14 : 3 + hit.level * 3;
+      for (let i = 0; i < n; i++) {
+        // cracks running out from the blow, longer each time
+        const a = Math.random() * Math.PI * 2;
+        const len = 0.4 + Math.random() * (0.4 + 0.45 * (hit.broke ? 4 : hit.level));
+        trail.stamp(x + Math.cos(a) * len * 0.6, z + Math.sin(a) * len * 0.6, 0.05, 0.8, a, len / 0.05 / 2);
+      }
+      dust.puff(tmp, tmp2.set(0, 2, 0), 0.4 + 0.15 * hit.level);
+      buzz(20 + 12 * hit.level);
+      if (hit.broke) {
+        audio.crack(3);
+        audio.drain(discoveries.drainTime);
+        buzz(120);
+      } else audio.crack(hit.level);
+    }
+  };
+
   // Step on or off the board. Off, it rides on your back and you walk.
   const toggleBoard = () => {
     if (!save.has('board')) return;
@@ -552,7 +722,7 @@ function start() {
       if (!e.repeat) jumpQueued = true;
       e.preventDefault();
     }
-    if (e.code === 'KeyE' && !e.repeat) talk.interact();
+    if (e.code === 'KeyE' && !e.repeat) interact();
     if (e.code === 'KeyQ' && !e.repeat) toggleBoard();
     keys.add(e.code);
   });
@@ -808,6 +978,23 @@ function start() {
       trail.stamp(s.x, s.z, 0.22, 0.3 * Math.min(1, s.life));
     }
 
+    // A swing of the pick: up over the shoulder, down hard, and a moment held where it landed.
+    if (swingT >= 0) {
+      swingT += dt;
+      const k = swingT / SWING;
+      if (!swingHit && k >= SWING_HIT) {
+        swingHit = true;
+        strike();
+      }
+      // the figure's pose runs 0.5 (low in front) .. 1 = 0 (raised) .. 0.5 (struck)
+      const rise = Math.min(1, k / 0.3);
+      const fall = Math.min(1, Math.max(0, (k - 0.3) / (SWING_HIT - 0.3)));
+      figure.swing = k < 0.3 ? 0.5 + 0.5 * rise * rise * (3 - 2 * rise) : 0.5 * fall * fall;
+      if (k >= 1 || !st.grounded) {
+        swingT = -1;
+        figure.swing = -1;
+      }
+    }
     {
       const sp = Math.max(st.speed, 0.01);
       const slopeAlong = st.grounded ? -(st.vel.x * player.downhill.x + st.vel.z * player.downhill.y) / sp * player.slope : 0;
@@ -876,7 +1063,17 @@ function start() {
     // Speech is drawn over the scene, so it is placed once the camera has settled.
     talk.setKey(touch.used ? '' : 'E');
     talk.update(camera, st.pos.x, st.pos.z, playing);
-    touch.setTalk(talk.available);
+    touch.setTalk(talk.available, canDig() && st.onRock < 0.5);
+    // Standing where a strike would count, with a pick: the key shows over the cracked sand.
+    {
+      const cv = playing && canDig() && !discoveries.drainingCavern ? discoveries.sealedNear(st.pos.x + Math.sin(player.facing) * 0.75, st.pos.z + Math.cos(player.facing) * 0.75, discoveries.digReach) : null;
+      if (cv) {
+        digAt.x = cv.x + cv.dx * cv.spot;
+        digAt.z = cv.z + cv.dz * cv.spot;
+        digAt.y = world.height(digAt.x, digAt.z) + 0.9;
+      }
+      talk.mark(camera, cv ? digAt : null);
+    }
 
     cities.update(dt, st.pos);
     bake.update(st.pos);
@@ -885,6 +1082,65 @@ function start() {
     dust.update(frame);
     splash.update(frame);
     discoveries.update(frame);
+    // Small things lying about are picked up by walking onto them.
+    if (playing && st.grounded) {
+      const rk = discoveries.relicNear(st.pos.x, st.pos.y, st.pos.z, 1.5);
+      if (rk >= 0) {
+        discoveries.takeRelic(rk);
+        save.take(rk);
+        save.setItem('relic', true);
+        figure.relic = true;
+        pickedUp(st.pos.x, st.pos.y + 1, st.pos.z);
+      }
+      if (discoveries.lampNear(st.pos.x, st.pos.y, st.pos.z, 1.5)) {
+        discoveries.setLamps([]); // one is enough: the other is left for nobody
+        save.setItem('lamp', true);
+        figure.lamp = true;
+        pickedUp(st.pos.x, st.pos.y + 0.4, st.pos.z);
+      }
+    }
+    // The miner's lamp lies out in the desert until it is carried back: by the nearest canyon city's spring.
+    lampT -= dt;
+    if (lampT <= 0) {
+      lampT = 1;
+      people.minerLamp = save.data.roles.miner === 2;
+      const at: { x: number; z: number }[] = [];
+      if (save.data.roles.miner !== 2 && !save.data.items.lamp) {
+        const near = world.cities.near(st.pos.x, st.pos.z).find((c) => c.kind === 'canyon');
+        if (near) {
+          const spot = lampSpot(near);
+          at.push(spot);
+          if (spot.mouth) at.push(spot.mouth); // a spring has a second, up in its cave mouth
+        }
+      }
+      discoveries.setLamps(at);
+    }
+    // Over a sealed cavern the sand drifts slowly, where everywhere else the wind takes it.
+    {
+      const cv = discoveries.sealedNear(st.pos.x, st.pos.z, 110);
+      if (cv && dt > 0) {
+        const sx = cv.x + cv.dx * cv.spot;
+        const sz = cv.z + cv.dz * cv.spot;
+        dust.wisp(sx, world.height(sx, sz), sz, 3.5, dt);
+      }
+    }
+    // Sand draining into a cavern: it slides in from the rim, and dust hangs over the hole.
+    {
+      const cv = discoveries.drainingCavern;
+      if (cv && dt > 0) {
+        for (let i = 0; i < 2; i++) {
+          const along = 2 + Math.random() * cv.roof;
+          const side = (Math.random() - 0.5) * 2 * (cv.half + 4);
+          const x = cv.x + cv.dx * along - cv.dz * side;
+          const z = cv.z + cv.dz * along + cv.dx * side;
+          if (Math.random() < 0.5) cascade(x, z, 1);
+          tmp.set(x, world.height(x, z) + 0.1, z);
+          tmp2.set(-cv.dz * side * -0.1, 1.2, cv.dx * side * -0.1);
+          dust.puff(tmp, tmp2, 0.25 + 0.3 * Math.random());
+        }
+        if (Math.random() < dt * 5) buzz(12);
+      }
+    }
     massifs.update(frame, clipmap.levelCount);
     wildlife.update(frame);
     const ambience = cities.frame(frame);
@@ -938,7 +1194,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, save, talk, figure, trail, renderer, discoveries, splash, waterAt, water, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
+        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, splash, waterAt, water, wildlife, touch, ui, auto, cities, caravans, waymarks, audio, people, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) } });
   }
 
   let frozen = false;

@@ -38,6 +38,7 @@ export interface Known {
   talk: boolean;
   board: boolean;
   carpet: boolean;
+  dig: boolean;
 }
 
 function keyControls(k: Known): string[] {
@@ -45,6 +46,7 @@ function keyControls(k: Known): string[] {
   if (k.talk) out.push('E talk');
   if (k.board) out.push('Q step on or off the board', 'On the board: WASD glide, Shift boost');
   if (k.carpet) out.push('The carpet unrolls when you fly, and flies faster');
+  if (k.dig) out.push('E swing the pick, when nobody is near');
   out.push('Esc menu');
   return out;
 }
@@ -55,6 +57,7 @@ function touchControls(k: Known): string[] {
   if (k.talk) out.push('Speech button: talk, when someone is near');
   if (k.board) out.push('Board button: step on or off the board', 'On the board: the stick glides (edge to boost)');
   if (k.carpet) out.push('The carpet unrolls when you fly, and flies faster');
+  if (k.dig) out.push('Pick button: swing the pick, when nobody is near');
   return out;
 }
 const QUALITIES: Quality[] = ['mobile', 'low', 'high'];
@@ -124,7 +127,7 @@ export class UI {
   private readonly rotateEl: HTMLElement;
   private readonly portraitMq: MediaQueryList | null;
   private touch = false;
-  private known: Known = { talk: false, board: false, carpet: false };
+  private known: Known = { talk: false, board: false, carpet: false, dig: false };
   private touchIdleTimer = 0;
   private rotateTimer = 0;
   private rotateDone = false;

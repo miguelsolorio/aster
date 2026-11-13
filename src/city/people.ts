@@ -20,6 +20,7 @@ import type { FrameState, Uniforms } from '../game/contract';
 import { CITY_SHADOW_GLSL } from './cityGlsl';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import type { CityKind, CityPlan, CitySite, Spot, SpotKind } from './types';
+import { CHOSEN, heapGeometry, lampGeometry, pickGeometry, solidMaterial } from '../game/equipment';
 
 const MAXP = 320;
 const DYN = 12; // floats per instance in the dynamic buffer: iA (4), iB (4), iD (4)
@@ -1202,6 +1203,22 @@ export class People {
   private readonly fallback: Uniforms;
   private readonly windL = new THREE.Vector2();
 
+  // The miner: one in every canyon city, always sat at the same spot (chosen from the plan's
+  // own by the city's seed), with a spare pick stood beside them. Not one of the pool: they do
+  // not come and go. Drawn as one more instance of the same figure.
+  private readonly minerGeo: THREE.InstancedBufferGeometry;
+  private readonly minerBlob: THREE.InstancedBufferGeometry;
+  private readonly minerDyn: THREE.InstancedInterleavedBuffer;
+  private readonly minerA = new Float32Array(DYN);
+  private readonly minerFig: THREE.Mesh;
+  private readonly minerShadow: THREE.Mesh;
+  private readonly minerPick: THREE.Mesh;
+  private readonly minerLampMesh: THREE.Mesh;
+  private readonly minerHeap: THREE.Mesh;
+  private readonly miner = { on: false, x: 0, z: 0, fac: 0, home: 0, heldT: 0, talk: 0, yaw: 0, pitch: 0 };
+  /** The lamp has been brought back: it stands beside the miner. */
+  minerLamp = false;
+
   private city: CityData | null = null;
   private cityId = -1;
   private cache = new Map<number, CityData>();
@@ -1356,6 +1373,137 @@ export class People {
     blob.renderOrder = 1;
     this.group.add(fig, blob);
     this.group.visible = false;
+
+    // the miner: the same figure and shadow, one instance, with buffers of its own
+    this.minerDyn = new THREE.InstancedInterleavedBuffer(this.minerA, DYN, 1);
+    this.minerDyn.setUsage(THREE.DynamicDrawUsage);
+    const mA = new THREE.InterleavedBufferAttribute(this.minerDyn, 4, 0);
+    const mB = new THREE.InterleavedBufferAttribute(this.minerDyn, 4, 4);
+    const mD = new THREE.InterleavedBufferAttribute(this.minerDyn, 4, 8);
+    this.minerGeo = figureGeometry();
+    this.minerGeo.setAttribute('iA', mA);
+    this.minerGeo.setAttribute('iB', mB);
+    this.minerGeo.setAttribute('iD', mD);
+    // rock dust over an ochre hem, banded, under the tall flat cap: nobody else in a canyon wears that
+    this.minerGeo.setAttribute('iC', new THREE.InstancedBufferAttribute(new Float32Array([0.44, 0.4, 0.38, 0.37]), 4));
+    this.minerGeo.setAttribute('iE', new THREE.InstancedBufferAttribute(new Float32Array([0.82, 0.58, 0.2, 3.5]), 4));
+    this.minerGeo.instanceCount = 1;
+    this.minerFig = new THREE.Mesh(this.minerGeo, this.figMat);
+    this.minerFig.frustumCulled = false;
+    this.minerBlob = new THREE.InstancedBufferGeometry();
+    this.minerBlob.setAttribute('position', this.blobGeo.getAttribute('position'));
+    this.minerBlob.setIndex(this.blobGeo.getIndex());
+    this.minerBlob.setAttribute('iA', mA);
+    this.minerBlob.setAttribute('iB', mB);
+    this.minerBlob.setAttribute('iD', mD);
+    this.minerBlob.instanceCount = 1;
+    this.minerShadow = new THREE.Mesh(this.minerBlob, this.blobMat);
+    this.minerShadow.frustumCulled = false;
+    this.minerShadow.renderOrder = 1;
+    const solid = solidMaterial(uniforms);
+    this.minerPick = new THREE.Mesh(pickGeometry(CHOSEN.pick), solid);
+    this.minerLampMesh = new THREE.Mesh(lampGeometry(), solid);
+    this.minerLampMesh.scale.setScalar(1.5);
+    this.minerHeap = new THREE.Mesh(heapGeometry(), solid);
+    this.minerFig.visible = this.minerShadow.visible = this.minerPick.visible = this.minerLampMesh.visible = this.minerHeap.visible = false;
+    this.group.add(this.minerFig, this.minerShadow, this.minerPick, this.minerLampMesh, this.minerHeap);
+  }
+
+  /** The miner, if one is within maxD metres of the player: where they are, in world space. */
+  minerNear(maxD: number, out: { x: number; z: number; h: number; sit: number }): boolean {
+    const c = this.city;
+    const m = this.miner;
+    if (!c || !m.on || this.distPlayer(m.x, m.z) > maxD) return false;
+    out.x = c.site.cx + c.co * m.x - c.si * m.z;
+    out.z = c.site.cz + c.si * m.x + c.co * m.z;
+    out.h = 1;
+    out.sit = 1;
+    return true;
+  }
+
+  /** Call every frame while talking to the miner: they turn to the player and talk. */
+  holdMiner() {
+    this.miner.heldT = 0.3;
+  }
+
+  /** Sit the miner down in a canyon city, at one of the plan's own spots, and keep everyone else off it. */
+  private placeMiner(c: CityData) {
+    const m = this.miner;
+    m.on = false;
+    if (c.site.kind === 'canyon') {
+      const ok: number[] = [];
+      for (const k of [K_SHADE, K_BENCH, K_GATHER]) {
+        for (const sp of c.byKind[k]) if (c.sEdge[sp] >= 0 && c.sSlotN[sp] > 0) ok.push(sp);
+        if (ok.length > 0) break; // shade first, then a bench, then anywhere people gather
+      }
+      if (ok.length > 0) {
+        const sp = ok[(c.site.seed >>> 3) % ok.length];
+        const slot = c.sSlot0[sp];
+        c.slotOwner[slot] = MAXP; // nobody in the pool has this number, so it is never given up
+        m.on = true;
+        m.x = c.slotX[slot];
+        m.z = c.slotZ[slot];
+        m.fac = m.home = c.slotF[slot];
+        m.talk = m.yaw = m.pitch = m.heldT = 0;
+        // the spare pick, stood on its handle within reach of the right hand
+        const rx = Math.cos(m.home);
+        const rz = -Math.sin(m.home);
+        this.minerPick.position.set(m.x + rx * 0.62, 0.02, m.z + rz * 0.62);
+        this.minerPick.rotation.set(0.12, m.home + 0.6, 0.2);
+        this.minerLampMesh.position.set(m.x - rx * 0.6, 0.29, m.z - rz * 0.6);
+        this.minerLampMesh.rotation.set(0, m.home + 0.3, 0);
+        // and the heap being sorted, by the left knee
+        const fx = Math.sin(m.home);
+        const fz = Math.cos(m.home);
+        this.minerHeap.position.set(m.x - rx * 0.75 + fx * 0.75, 0, m.z - rz * 0.75 + fz * 0.75);
+        this.minerHeap.rotation.set(0, m.home, 0);
+      }
+    }
+    this.minerFig.visible = this.minerShadow.visible = this.minerPick.visible = this.minerHeap.visible = m.on;
+    this.minerLampMesh.visible = false;
+  }
+
+  /** The miner's small loop: sat, looking about, bending now and then over a stone in the lap. */
+  private updateMiner(dt: number) {
+    const m = this.miner;
+    if (!m.on) return;
+    const t = this.time;
+    const dist = this.distPlayer(m.x, m.z);
+    const toP = Math.atan2(this.plx - m.x, this.plz - m.z);
+    const k3 = 1 - Math.exp(-dt * 3);
+    m.heldT -= dt;
+    const held = m.heldT > 0;
+    let yaw = 0.5 * Math.sin(t * 0.31) + 0.18 * Math.sin(t * 0.83 + 1);
+    // every nine seconds or so, a long look down and two small nods at whatever is being sorted
+    const beat = (t % 9) / 9;
+    const down = beat > 0.62 ? Math.sin(((beat - 0.62) / 0.38) * Math.PI) : 0;
+    let pitch = -0.42 * down - 0.06 * down * Math.sin(t * 9);
+    if (down > 0.05) yaw *= 1 - down;
+    if (held || (this.pGround && dist < 5)) {
+      const raw = wrapPi(toP - m.fac);
+      if (Math.abs(raw) < 2.2) yaw = clamp(raw, -1.1, 1.1);
+      pitch = 0.12;
+    }
+    // spoken to, the whole body comes round; left alone it settles back the way the seat faces
+    m.fac += wrapPi((held ? toP : m.home) - m.fac) * (1 - Math.exp(-dt * (held ? 2.5 : 0.8)));
+    m.talk += ((held ? 1 : 0) - m.talk) * (1 - Math.exp(-dt * 2));
+    m.yaw += (yaw - m.yaw) * k3;
+    m.pitch += (pitch - m.pitch) * k3;
+    this.minerLampMesh.visible = this.minerLamp;
+    const a = this.minerA;
+    a[0] = m.x;
+    a[1] = m.z;
+    a[2] = m.fac;
+    a[3] = 1.04;
+    a[4] = 0;
+    a[5] = 0;
+    a[6] = 1;
+    a[7] = m.talk;
+    a[8] = 1;
+    a[9] = 0;
+    a[10] = m.yaw;
+    a[11] = m.pitch;
+    this.minerDyn.needsUpdate = true;
   }
 
   /** How busy the surroundings are right now, 0..1. */
@@ -1417,6 +1565,7 @@ export class People {
     this.cityId = id;
     if (!city) {
       this.city = null;
+      this.miner.on = false;
       this.group.visible = false;
       return;
     }
@@ -1436,6 +1585,7 @@ export class People {
     c.slotOwner.fill(-1);
     c.sSpeaker.fill(-1);
     this.city = c;
+    this.placeMiner(c);
     this.group.position.set(city.site.cx, city.site.groundY, city.site.cz);
     this.group.rotation.set(0, -city.site.rot, 0);
     this.group.updateMatrixWorld();
@@ -2199,6 +2349,7 @@ export class People {
     }
     while (this.hi > 0 && !this.alive[this.hi - 1]) this.hi--;
     this.activeN = active;
+    this.updateMiner(dt);
 
     // keep the crowd near the target for the hour
     const deficit = this.target - active;

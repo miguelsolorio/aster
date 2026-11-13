@@ -52,6 +52,18 @@ export const TOWNSFOLK = {
     'My mother said never to trust a quiet wind.',
     'If you\'re looking for someone, ask at the square.',
   ],
+  /** Only to someone carrying a relic from under the sand. */
+  relic: [
+    'What\'s that at your belt? It\'s older than the walls here.',
+    'You\'ve been under the sand. I can tell by what you carry.',
+    'My grandmother kept one of those on a shelf. She never said where it came from.',
+    'Don\'t sell that. Whatever they offer.',
+  ],
+  /** Only in a canyon city, to someone with no pick: points at the miner. */
+  noPick: [
+    'The miner has lost a lamp and won\'t stop talking about it. Go and listen, if you\'ve the patience.',
+    'Looking for something to do? Ask the miner. Sits by a pick all day, sorting stones.',
+  ],
   /** Only to someone still on foot: points at the people who can help. */
   onFoot: [
     'You came on foot? The travellers outside the walls ride the sand. Ask one of them.',
@@ -101,4 +113,53 @@ export const TOWNSFOLK = {
     'Look up. You won\'t see that many stars from anywhere else.',
     'The fires out on the sand are travellers. They\'re friendly enough.',
   ],
+};
+
+/**
+ * The miner: there is one in every canyon city, sat beside a spare pick. A lamp has been left
+ * out in the desert; whoever brings it back is given the pick.
+ *
+ * Where a line says where something is, {way} is a compass direction ("north-east") and {far}
+ * a rough distance ("a long walk"), both worked out from where it really lies.
+ */
+export const MINER = {
+  /** The first time, to someone without the lamp. One of the three `lamp` lines follows, then `askEnd`. */
+  ask: [
+    'Mind the heap. It\'s sorted.',
+    'You look like someone who wanders. I could use a wanderer.',
+    'I left my lamp out there, and I can\'t read a seam without it.',
+  ] as Line[],
+  /** Where the lamp is, by what it was left beside. At a spring there are two: one on the pool's bank, one up in the cave mouth. */
+  lampSpring: 'I had two, and left both at the spring under the mountain to the {way}, {far}. One is by the pool. The other is up in the mouth the water falls from. Either will do.',
+  lampCave: 'It\'s in the cave on the mountain to the {way}, {far}. Just inside the mouth.',
+  lampSand: 'It\'s out on the sand to the {way}, {far}. It\'ll be the only light out there.',
+  askEnd: 'Bring it back and I\'ll make it worth the walk.',
+  /** Asked already, and still no lamp. The `lamp` line follows again. */
+  pending: 'No lamp? It won\'t have walked off.',
+  /** With the lamp in hand, whether or not it was asked for. The last line is `cavern` or `noCavern`. */
+  gift: [
+    'That\'s the one. Still dented where I dropped it.',
+    'Fair is fair. Take the spare pick. It\'s better balanced than it looks.',
+    'The sand is hollow in places. Strike it and listen. A thud is nothing. A ring means there\'s a room under you, and it rings longer the closer you stand.',
+  ] as Line[],
+  /** The last thing said with the gift: how to swing it, and the nearest place worth swinging it. */
+  cavern: {
+    keys: 'There\'s one to the {way}, {far}. Find the dip where the sand drifts slow, and press E until it gives. E swings it whenever there\'s nobody to talk to.',
+    touch: 'There\'s one to the {way}, {far}. Find the dip where the sand drifts slow, and tap the pick button until it gives. The button swings it whenever there\'s nobody to talk to.',
+  } as Line,
+  noCavern: {
+    keys: 'Press E to swing it, whenever there\'s nobody to talk to. Try the open sand, well away from any town.',
+    touch: 'Tap the pick button to swing it, whenever there\'s nobody to talk to. Try the open sand, well away from any town.',
+  } as Line,
+  /** Afterwards, while there is still a sealed cavern to point at. */
+  remind: 'Not found it? To the {way}, {far}. A dip where the sand drifts slow.',
+  /** Afterwards, one of these. */
+  after: [
+    'Sand is only rock that gave up. Hit it enough and it tells you what\'s under it.',
+    'If it rings, keep at it.',
+    'I\'d come with you, but someone has to mind the heap.',
+    'The lamp burns better for the walk. Don\'t ask me why.',
+  ],
+  /** Afterwards, to someone carrying a relic. */
+  relic: ['That thing on your belt is older than this canyon. Keep it dry.'],
 };

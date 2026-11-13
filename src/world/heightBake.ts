@@ -113,6 +113,11 @@ export class HeightBake {
     if (want !== this.res) this.baked = false;
   }
 
+  /** The ground has changed shape (a cavern has opened): bake again on the next update. */
+  invalidate(): void {
+    this.baked = false;
+  }
+
   /** Re-bake when `center` is more than 512 m (xz) from the current bake centre, or after setSize. */
   update(center: THREE.Vector3): void {
     if (this.baked) {

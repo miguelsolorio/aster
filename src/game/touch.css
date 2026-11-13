@@ -225,6 +225,16 @@
   stroke-linejoin: round;
 }
 
+/* The same button swings the pick when nobody is in reach. */
+.aster-touch__talk .aster-touch__pick,
+.aster-touch--dig .aster-touch__talk svg:not(.aster-touch__pick) {
+  display: none;
+}
+
+.aster-touch--dig .aster-touch__talk .aster-touch__pick {
+  display: block;
+}
+
 /* Board: above the talk button, shown once there is a board. Filled in while riding. */
 .aster-touch__board {
   bottom: calc(env(safe-area-inset-bottom, 0px) + 92px);

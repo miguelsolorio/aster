@@ -663,6 +663,46 @@ export const pickGeometry = (i: number): THREE.BufferGeometry => {
   return b.done().scale(1.2, 1.2, 1.2); // a little larger than life, so it reads on the back
 };
 
+// ------------------------------------------------------------------ small things carried
+
+/** A miner's lamp, hanging from the top of its ring: iron frame, horn panes. */
+export const lampGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  const pane: V3 = [1.0, 0.84, 0.5];
+  b.tube([[-0.03, -0.01, 0], [-0.03, 0.03, 0], [0.03, 0.03, 0], [0.03, -0.01, 0]], [0.006, 0.006, 0.006, 0.006], 4, IRON);
+  b.tube([[0, -0.01, 0], [0, -0.05, 0]], [0.05, 0.062], 4, IRON, Math.PI / 4);
+  b.box([0, -0.105, 0], [0.07, 0.11, 0.07], pane);
+  b.box([0, -0.17, 0], [0.095, 0.022, 0.095], IRON);
+  for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) b.box([x * 0.038, -0.105, z * 0.038], [0.012, 0.11, 0.012], DARK);
+  return b.done();
+};
+
+/** A relic from under the sand: two crossed spindles of old gold, hung by its middle. */
+export const relicGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  const gold: V3 = [0.98, 0.74, 0.3];
+  b.tube([[0, -0.11, 0], [0, 0, 0], [0, 0.11, 0]], [0.002, 0.05, 0.002], 4, gold);
+  b.tube([[-0.085, 0, 0], [0, 0, 0], [0.085, 0, 0]], [0.002, 0.04, 0.002], 4, mul(gold, 0.85));
+  return b.done();
+};
+
+/** The miner's heap: a low pile of broken stone, sorted by an eye nobody else has. Sits on the ground at y = 0. */
+export const heapGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  // (fixed, not random: every miner's heap is the same heap)
+  const stones: Array<[number, number, number, number, number]> = [
+    [0, 0, 0.2, 0.17, 0.3], [0.26, 0.05, 0.16, 0.13, 1.1], [-0.22, 0.1, 0.15, 0.12, 2.0], [0.08, 0.27, 0.14, 0.12, 0.7],
+    [-0.1, -0.24, 0.15, 0.1, 2.6], [0.3, -0.2, 0.11, 0.09, 1.7], [0.04, 0.03, 0.13, 0.3, 0.9], [-0.33, -0.12, 0.09, 0.07, 0.2],
+    [0.42, 0.2, 0.08, 0.06, 2.2],
+  ];
+  stones.forEach(([x, z, r, top, rot], i) => {
+    const col = mul(i % 3 === 0 ? SAND : STONE, 0.8 + 0.12 * (i % 4));
+    const y0 = i === 6 ? 0.17 : 0;
+    b.tube([[x, y0, z], [x + 0.02, y0 + (top - y0) * 0.6, z], [x + 0.03, top, z + 0.02]], [r, r * 0.9, r * 0.45], 5, col, rot, [1, 0.8]);
+  });
+  return b.done();
+};
+
 // ------------------------------------------------------------------ material
 
 const solidVert = /* glsl */ `
