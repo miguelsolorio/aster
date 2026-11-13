@@ -55,10 +55,10 @@ function keyControls(k: Known): string[] {
 }
 
 function touchControls(k: Known): string[] {
-  const out = ['Left thumb: walk (push to the edge to run)', 'Right thumb: look, pinch to zoom'];
-  out.push('Button: leap, hold to rise, let go to glide', 'In the air: stick steers (edge to boost), small button drops');
+  const out = ['Left thumb: walk (push past the ring to run)', 'Right thumb: look, pinch to zoom'];
+  out.push('Button: leap, hold to rise, let go to glide', 'In the air: stick steers (push past the ring to boost), small button drops');
   if (k.talk) out.push('Speech button: talk, when someone is near');
-  if (k.board) out.push('Board button: step on or off the board', 'On the board: the stick glides (edge to boost)');
+  if (k.board) out.push('Board button: step on or off the board', 'On the board: the stick glides (push past the ring to boost)');
   if (k.carpet) out.push('The carpet unrolls when you fly, and flies faster');
   if (k.dig) out.push('Pick button: swing the pick, when nobody is near');
   return out;
