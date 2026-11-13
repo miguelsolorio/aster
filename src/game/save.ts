@@ -27,6 +27,8 @@ export interface SaveData {
   opened: number[];
   /** Relics lifted from their caverns (by site key). */
   taken: number[];
+  /** Waking stones touched in their deeps (by site key). */
+  woken: number[];
 }
 
 const KEY = 'aster.save';
@@ -39,6 +41,7 @@ const fresh = (): SaveData => ({
   roles: { miner: 0 },
   opened: [],
   taken: [],
+  woken: [],
 });
 
 const keys = (v: unknown): number[] => (Array.isArray(v) ? v.filter((k): k is number => typeof k === 'number' && Number.isFinite(k)).slice(0, 4096) : []);
@@ -69,6 +72,7 @@ export class Save {
         }
         this.data.opened = keys(raw.opened);
         this.data.taken = keys(raw.taken);
+        this.data.woken = keys(raw.woken);
       }
     } catch {
       /* unreadable save: start again */
@@ -110,6 +114,13 @@ export class Save {
   open(key: number): void {
     if (this.data.opened.includes(key)) return;
     this.data.opened.push(key);
+    this.write();
+  }
+
+  /** A waking stone has been touched: it stays awake. */
+  wake(key: number): void {
+    if (this.data.woken.includes(key)) return;
+    this.data.woken.push(key);
     this.write();
   }
 

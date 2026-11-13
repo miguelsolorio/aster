@@ -73,6 +73,8 @@ export class Player {
   lifting = false;
   /** Seconds of climb left; refilled on landing. */
   reserve = LIFT_TIME;
+  /** Multiplier on the climb reserve: grows with each waking stone woken. */
+  lift = 1;
   /** Flight path angle in radians: positive climbing, negative diving. */
   climb = 0;
   /** Height above the ground, metres. */
@@ -112,10 +114,29 @@ export class Player {
   /** Optional: how far the ground is sunk below the terrain at (x, z), e.g. the bed of a pool. */
   dip: ((x: number, z: number) => number) | null = null;
 
-  /** The surface you can stand on: the terrain (or a pool bed), or a roof above it. */
+  /**
+   * Optional: the floor for feet at height y over (x, z) where something other than the terrain
+   * decides it (the deep under a cavern, which has rooms over rooms), or null where the terrain's
+   * own height stands. A floor far above y is a wall; solid rock all the way up is +Infinity.
+   */
+  floor: ((x: number, z: number, y: number) => number | null) | null = null;
+
+  /** True while the feet are where `floor` has the say: underground, on cut rock. */
+  under = false;
+
+  /** The surface you can stand on: a floor underground, else the terrain (or a pool bed), or a roof above it. */
   private top(x: number, z: number): number {
+    if (this.floor) {
+      const f = this.floor(x, z, this.state.pos.y);
+      if (f !== null) return f;
+    }
     const h = this.world.height(x, z) - (this.dip ? this.dip(x, z) : 0);
     return this.roof ? Math.max(h, this.roof(x, z, this.state.pos.y)) : h;
+  }
+
+  /** Whether feet at (x, z), at the height they are now, are where `floor` has the say. */
+  private isUnder(x: number, z: number): boolean {
+    return !!this.floor && this.floor(x, z, this.state.pos.y) !== null;
   }
 
   /**
@@ -129,7 +150,8 @@ export class Player {
 
   place(x: number, z: number) {
     const st = this.state;
-    st.pos.set(x, this.top(x, z), z);
+    const h = this.top(x, z);
+    st.pos.set(x, Number.isFinite(h) ? h : this.world.height(x, z), z);
     st.vel.set(0, 0, 0);
     st.grounded = true;
     st.sliding = false;
@@ -142,15 +164,24 @@ export class Player {
     if (dt <= 0) return;
     this.clock += dt;
 
-    w.sample(pos.x, pos.z, this.s);
-    w.normal(pos.x, pos.z, this.n);
+    // Underground the ground is cut rock, and level as far as riding and sliding go: the
+    // terrain overhead, and whatever slope it has, is nothing to do with the feet.
+    const under = (this.under = !!this.floor && this.floor(pos.x, pos.z, pos.y) !== null);
+    if (under) {
+      this.s.rock = 1;
+      this.s.salt = 0;
+      this.n.set(0, 1, 0);
+    } else {
+      w.sample(pos.x, pos.z, this.s);
+      w.normal(pos.x, pos.z, this.n);
+    }
     const gx = -this.n.x / this.n.y; // uphill gradient
     const gz = -this.n.z / this.n.y;
     const slope = Math.hypot(gx, gz);
     this.slope = slope;
     if (slope > 1e-4) this.downhill.set(-gx / slope, -gz / slope);
     // A stone or a bone underfoot is walked on like rock, whatever the ground beneath it is.
-    st.onRock = st.grounded && this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.soft?.(pos.x, pos.z, pos.y) ? 0 : this.s.rock;
+    st.onRock = under ? 1 : st.grounded && this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.soft?.(pos.x, pos.z, pos.y) ? 0 : this.s.rock;
     const rock = st.onRock > 0.5;
 
     // Wish direction in world space, relative to the camera.
@@ -168,7 +199,7 @@ export class Player {
       this.climb = 0;
       this.gliding = false;
       this.lifting = false;
-      this.reserve = LIFT_TIME * (this.carpet ? 2 : 1);
+      this.reserve = LIFT_TIME * this.lift * (this.carpet ? 2 : 1);
       this.holdT = 0;
       this.armed = true;
       this.flew = false;
@@ -320,7 +351,9 @@ export class Player {
               }
             }
           }
-          nh = Math.min(this.top(nx, nz), step);
+          nh = this.top(nx, nz);
+          // (stood where the rock is solid all the way up, which nothing should allow: stay level, do not climb it)
+          nh = nh === Infinity ? pos.y : Math.min(nh, step);
         }
         const follow = (nh - pos.y) / dt;
         // If the ground falls away faster than we can follow, we are airborne.
@@ -334,7 +367,8 @@ export class Player {
           pos.set(nx, nh, nz);
           // The ground's own rise is kept, so a crest taken fast throws you off it. A step
           // up onto a roof, a stone or a bone is not a slope and throws nobody.
-          vel.y = follow > 0 && nh > w.height(nx, nz) + 0.05 ? 0 : follow;
+          // Nor is a stair underground.
+          vel.y = follow > 0 && (this.isUnder(nx, nz) || nh > w.height(nx, nz) + 0.05) ? 0 : follow;
         }
       }
 
@@ -437,7 +471,8 @@ export class Player {
       } else if (this.gliding) {
         // A steady, gentle sink. Rising air where the wind meets a slope holds you up,
         // and the last metre and a half is slower still, for a soft touchdown.
-        w.normal(pos.x, pos.z, this.n);
+        if (under) this.n.set(0, 1, 0);
+        else w.normal(pos.x, pos.z, this.n);
         const up = Math.min(0.7, Math.max(0, (-this.n.x * input.wind.x - this.n.z * input.wind.y) / this.n.y));
         const ridge = 6 * up * Math.max(0, 1 - this.alt / 35);
         const near = Math.min(1, this.alt / 1.5);
@@ -466,10 +501,23 @@ export class Player {
           }
         }
       }
+      const bx = pos.x;
+      const by = pos.y;
+      const bz = pos.z;
       pos.addScaledVector(vel, dt);
-      const h = this.top(pos.x, pos.z);
+      let h = this.top(pos.x, pos.z);
+      if (h === Infinity) {
+        // into solid rock (underground, a wall with nothing over it): the move is not made
+        pos.set(bx, Math.min(by, pos.y), bz);
+        vel.x = 0;
+        vel.z = 0;
+        h = this.top(bx, bz);
+        if (h === Infinity) h = -Infinity;
+      }
       if (pos.y <= h) {
-        w.normal(pos.x, pos.z, this.n);
+        const below = this.isUnder(pos.x, pos.z);
+        if (below) this.n.set(0, 1, 0);
+        else w.normal(pos.x, pos.z, this.n);
         const into = -(vel.x * this.n.x + vel.y * this.n.y + vel.z * this.n.z);
         pos.y = h;
         vel.y = 0;
@@ -481,7 +529,7 @@ export class Player {
           vel.x *= keep;
           vel.z *= keep;
         }
-        st.onRock = this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.soft?.(pos.x, pos.z, pos.y) ? 0 : w.sample(pos.x, pos.z, this.s).rock;
+        st.onRock = below ? 1 : this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.soft?.(pos.x, pos.z, pos.y) ? 0 : w.sample(pos.x, pos.z, this.s).rock;
         const onRock = st.onRock > 0.5;
         if (onRock || !this.board) {
           const sp = Math.hypot(vel.x, vel.z);

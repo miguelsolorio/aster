@@ -6,7 +6,7 @@
 //
 // Every constant below is emitted into the GLSL source, so tune them here.
 import type * as THREE from 'three';
-import { Vector4 } from 'three';
+import { Vector3, Vector4 } from 'three';
 import type { SurfaceSample, World } from '../game/contract';
 import { CITY_SHAPE_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 import { CITY_CELL, CityIndex, cellHash, cityBlendAt, type CityBlend } from '../city/placement';
@@ -159,8 +159,13 @@ export interface Cavern {
   len: number;
   ramp: number;
   roof: number;
-  /** Radius of the basin in the end chamber's floor (m), or 0. */
-  pool: number;
+  /**
+   * u of the middle of the hole in the chamber's floor (m), or 0 for none: the way down to the
+   * deep under it (DEEP_HOLE in deep/types.ts gives its size). The terrain does not cut it: the
+   * floor is level there, and once the cavern is fully open the ground is simply not drawn, and
+   * not walked on, inside it.
+   */
+  hole: number;
   /** 0 sealed .. 1 open: the sand drains as this rises. */
   open: number;
   /** Depth of the dimple that marks the spot (m). */
@@ -631,7 +636,7 @@ ${CITY_SHAPE_GLSL}
 
 // The nearest caverns (see Cavern in surface.ts; len 0 means unused):
 // uCavA = (x, z, dir x, dir z), uCavB = (top, floor, open 0..1, roof u),
-// uCavC = (half, bend, bulge, len), uCavD = (ramp, pool radius, dimple, spot u).
+// uCavC = (half, bend, bulge, len), uCavD = (ramp, hole u, dimple, spot u).
 uniform vec4 uCavA[${MAX_CAVERNS}];
 uniform vec4 uCavB[${MAX_CAVERNS}];
 uniform vec4 uCavC[${MAX_CAVERNS}];
@@ -673,7 +678,6 @@ vec2 sfCaverns(vec2 p, float h) {
     float m = (1.0 - smoothstep(hw, sd, lat)) * smoothstep(-1.0, 3.0, u) * (1.0 - smoothstep(cc.w, cc.w + 2.0, u));
     if (m <= 0.0) continue;
     float tgt = cb.y + (cb.x - cb.y) * (1.0 - smoothstep(2.0, 2.0 + cd.x, u));
-    if (cd.y > 0.0) tgt -= 0.75 * (1.0 - smoothstep(cd.y - 2.5, cd.y, length(vec2(u - (cc.w - er), v - cl))));
     h = mix(h, min(h, mix(h, tgt, m)), o);
   }
   return vec2(h, rock);
@@ -739,6 +743,10 @@ export function cavernUniforms(u: Record<string, { value: unknown }>): void {
   }
   // what glows in the nearest open cavern: position, and how far its light carries (0 = nothing)
   if (!u.uCavGlow) u.uCavGlow = { value: new Vector4() };
+  // its colour: a lamp's, down in a deep
+  if (!u.uCavGlowCol) u.uCavGlowCol = { value: new Vector3(1, 0.72, 0.4) };
+  // 0 under the sky .. 1 down in a deep, where no daylight, haze or sky reaches what moves there
+  if (!u.uDeepDark) u.uDeepDark = { value: 0 };
 }
 
 /** Hand the shaders the same caverns the world was given by setCaverns. */
@@ -756,7 +764,7 @@ export function writeCaverns(u: Record<string, { value: unknown }>, list: readon
     a[i].set(cv.x, cv.z, cv.dx, cv.dz);
     b[i].set(cv.top, cv.floor, cv.open, cv.roof);
     c[i].set(cv.half, cv.bend, cv.bulge, cv.len);
-    d[i].set(cv.ramp, cv.pool, cv.dimple, cv.spot);
+    d[i].set(cv.ramp, cv.hole, cv.dimple, cv.spot);
   }
 }
 
@@ -1136,12 +1144,7 @@ export function createWorld(seed: number): DesertWorld {
       if (m <= 0) continue;
       const top = cav[o + 4];
       const floor = cav[o + 5];
-      let tgt = floor + (top - floor) * (1 - smoothstep(2, 2 + cav[o + 10], u));
-      const pool = cav[o + 12];
-      if (pool > 0) {
-        // (v is measured from the bent centre line, which has finished bending by the end chamber)
-        tgt -= 0.75 * (1 - smoothstep(pool - 2.5, pool, Math.hypot(u - (len - cav[o + 6] - cav[o + 8]), cf.v)));
-      }
+      const tgt = floor + (top - floor) * (1 - smoothstep(2, 2 + cav[o + 10], u));
       const h = out.h;
       out.h = h + (Math.min(h, h + (tgt - h) * m) - h) * k;
     }
@@ -1201,7 +1204,7 @@ export function createWorld(seed: number): DesertWorld {
       cavN = Math.min(MAX_CAVERNS, list.length);
       for (let i = 0; i < cavN; i++) {
         const c = list[i];
-        cav.set([c.x, c.z, c.dx, c.dz, c.top, c.floor, c.half, c.bend, c.bulge, c.len, c.ramp, c.roof, c.pool, c.open, c.dimple, c.spot], i * CV);
+        cav.set([c.x, c.z, c.dx, c.dz, c.top, c.floor, c.half, c.bend, c.bulge, c.len, c.ramp, c.roof, c.hole, c.open, c.dimple, c.spot], i * CV);
       }
     },
     cavernCeil(x: number, z: number): number {

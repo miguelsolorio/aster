@@ -305,13 +305,17 @@ export class Dust {
     }
   }
 
+  /** The wanderer is underground: no wind reaches there, and no sunlit motes hang in the air. */
+  under = false;
+
   update(f: FrameState): void {
+    this.motes.visible = !this.under;
     // Pixel scale for size attenuation.
     const cam = f.camera;
     const h = typeof window !== 'undefined' ? window.innerHeight * Math.min(window.devicePixelRatio || 1, 2) : 1080;
     this.scaleU.value = h / (2 * Math.tan((cam.fov * Math.PI) / 360));
 
-    this.spindrift(f);
+    if (!this.under) this.spindrift(f);
 
     if (this.dirtyMax >= 0) {
       const b = this.buffer;

@@ -109,6 +109,9 @@ uniform float uFog;
 uniform float uNight;
 uniform float uBody;   // 0 = dark cloth .. 1 = the white face
 uniform float uTone;   // 0 = the dress, near-black .. 1 = the cloak, a shade warmer
+uniform float uDeepDark;  // 0 under the sky .. 1 down in a deep, out of the daylight
+uniform vec4 uCavGlow; // the lamp that matters most down there: position, reach (0 = none)
+uniform vec3 uCavGlowCol;
 varying vec3 vW;
 varying vec3 vN;
 #ifdef FACE
@@ -148,7 +151,23 @@ void main() {
   float lf = smoothstep(-0.1, 0.35, dot(n0, uSunDir));
   vec3 white = vec3(0.97, 0.95, 0.9) * mix(vec3(1.0), uSunCol, 0.3) * (1.0 - 0.42 * uNight) * mix(0.84, 1.0, lf);
   vec3 col = mix(dark, white, body);
-  col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));
+  if (uDeepDark > 0.0) {
+    // underground: nearly black, as the stones of a cavern are, and lit only by what glows there
+    vec3 lit = vec3(0.0);
+    if (uCavGlow.w > 0.0) {
+      vec3 gd = uCavGlow.xyz - vW;
+      float g2 = dot(gd, gd);
+      float ga = 1.0 / (1.0 + g2 / (0.16 * uCavGlow.w * uCavGlow.w));
+      vec3 gn = gd * inversesqrt(g2 + 1e-3);
+      float gl = 0.45 + 0.55 * max(dot(n, gn), 0.0);
+      // the cloth barely takes it; the face does, and a thin edge of light keeps the shape readable
+      vec3 alb = mix(mix(vec3(0.1, 0.09, 0.085), vec3(0.2, 0.18, 0.16), uTone), vec3(0.92, 0.9, 0.86), body);
+      float edge = pow(1.0 - max(dot(n, V), 0.0), 3.0) * smoothstep(-0.3, 0.4, dot(n, gn));
+      lit = uCavGlowCol * ga * (0.85 * alb * gl + 0.12 * edge) * inside;
+    }
+    col = mix(col, col * 0.2 + lit, uDeepDark);
+  }
+  col = mix(col, uFogCol, (1.0 - exp(-dist * uFog)) * (1.0 - uDeepDark));
   gl_FragColor = vec4(col, 1.0);
 }
 `;

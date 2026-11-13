@@ -50,6 +50,9 @@ export class Talk {
   private readonly near: Speaker = { kind: 'townsfolk', ref: null, x: 0, y: 0, z: 0, pitch: 200 };
   private readonly who: Speaker = { kind: 'townsfolk', ref: null, x: 0, y: 0, z: 0, pitch: 200 };
   private hasNear = false;
+  /** A short line over a point, outside any conversation: where, and until when (ms). */
+  private note: { x: number; y: number; z: number } | null = null;
+  private noteUntil = 0;
   private script: Script | null = null;
   private line = 0;
   private readonly v = new THREE.Vector3();
@@ -125,6 +128,14 @@ export class Talk {
     this.show();
   }
 
+  /** Say one line over a point for a few seconds (the stone waking), with no one to talk to. */
+  tell(at: { x: number; y: number; z: number }, line: string, seconds = 4.5): void {
+    this.note = { x: at.x, y: at.y, z: at.z };
+    this.noteUntil = performance.now() + seconds * 1000;
+    this.text.textContent = line;
+    this.more.style.display = 'none';
+  }
+
   end(): void {
     this.script = null;
     this.say.classList.remove('is-on');
@@ -150,6 +161,9 @@ export class Talk {
       this.hasNear = this.hooks.find(this.near);
       this.cue.classList.toggle('is-on', this.hasNear);
       if (this.hasNear) this.place(this.cue, camera, this.near, 0.34, false);
+      const noted = this.note !== null && performance.now() < this.noteUntil;
+      this.say.classList.toggle('is-on', noted);
+      if (noted && this.note) this.place(this.say, camera, this.note, 0.32, true);
     }
     this.available = this.talking || this.hasNear;
   }
