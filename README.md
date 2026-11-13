@@ -4,7 +4,7 @@ Take the long way.
 
 A calm desert to wander, glide and fly through. It runs in the browser, there's nothing to install, and nobody tells you where to go.
 
-**[Play it](https://miguelsolorio.github.io/aster/)**
+**[Play it](https://miguelsolorio.com/projects/aster/)**
 
 ![A lone wanderer on a rippled dune at golden hour, the sun setting behind a snow-capped mountain. Aster: take the long way](public/og.jpg)
 
