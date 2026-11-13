@@ -151,10 +151,10 @@
   display: flex;
   flex-direction: column;
   /* One size on every tab: only the pane scrolls, never the frame */
-  width: min(100%, 400px);
-  height: min(100%, 680px);
+  width: min(100%, 370px);
+  height: min(100%, 530px);
   overflow: hidden;
-  padding: 26px 24px 22px;
+  padding: 20px 20px 18px;
   background: var(--aster-panel);
   border: 1px solid var(--aster-line-soft);
   border-radius: 14px;
@@ -169,10 +169,10 @@
 
 .aster-ui .aster-panel__title {
   flex: 0 0 auto;
-  margin: 0 0 16px;
+  margin: 0 0 10px;
   font-family: var(--aster-serif);
   font-weight: 400;
-  font-size: 1.9rem;
+  font-size: 1.5rem;
   line-height: 1.1;
 }
 
@@ -286,9 +286,14 @@
 .aster-ui .aster-actions {
   flex: 0 0 auto;
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 18px 0 0;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.aster-ui .aster-actions .aster-btn {
+  flex: 0 0 auto;
+  min-height: 38px;
 }
 
 .aster-ui .aster-btn {
@@ -328,8 +333,8 @@
 .aster-ui .aster-panel__controls {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  font-size: 0.86rem;
+  gap: 10px;
+  font-size: 0.82rem;
 }
 
 .aster-ui .aster-ctl__title {
@@ -352,7 +357,7 @@
   grid-template-columns: 5.6rem 1fr;
   gap: 4px 10px;
   align-items: baseline;
-  padding: 6px 0;
+  padding: 4px 0;
   border-bottom: 1px solid var(--aster-line-soft);
 }
 
@@ -396,7 +401,7 @@
   flex: 0 0 auto;
   display: flex;
   gap: 2px;
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   border-bottom: 1px solid var(--aster-line-soft);
 }
 
