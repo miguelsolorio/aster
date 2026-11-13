@@ -8,6 +8,12 @@ export interface UIHooks {
   onResume(): void;
   onPause(): void;
   onVolume(v: number): void;
+  onMusic(v: number): void;
+  onEffects(v: number): void;
+  /** True while a level is being adjusted, so the game can let the real mix through. */
+  onLevelPreview(active: boolean): void;
+  /** Play one short effect so the effects level can be judged by ear. */
+  onEffectsSample(): void;
   onQuality(q: Quality): void;
   onPhoto(active: boolean): void;
   onHideFigure(hidden: boolean): void;
@@ -21,6 +27,10 @@ export interface StyleChoice {
 }
 
 const KEY_VOLUME = 'aster.volume';
+const KEY_MUSIC = 'aster.music';
+const KEY_EFFECTS = 'aster.effects';
+/** How long the true mix stays audible after a level is let go, in ms. */
+const PREVIEW_HOLD = 500;
 const KEY_QUALITY = 'aster.quality';
 const KEY_STYLE = 'aster.style';
 /** What the player has found out so far. The controls list only shows what has been earned. */
@@ -103,8 +113,6 @@ export class UI {
   private readonly photo: HTMLElement;
   private readonly bar: HTMLElement;
   private readonly toastEl: HTMLElement;
-  private readonly slider: HTMLInputElement;
-  private readonly volumeOut: HTMLElement;
   private readonly qualityBtns: Record<Quality, HTMLButtonElement>;
   private readonly resumeBtn: HTMLButtonElement;
   private readonly captureBtn: HTMLButtonElement;
@@ -124,7 +132,7 @@ export class UI {
   private rotateTimer = 0;
   private rotateDone = false;
 
-  private volume: number;
+  private previewTimer = 0;
   private quality: Quality;
   private figureHidden = false;
   private idleTimer = 0;
@@ -142,9 +150,7 @@ export class UI {
     const wanted = initial?.style ?? readStore(KEY_STYLE);
     this.styleI = Math.max(0, this.styles.findIndex((st) => st.id === wanted));
 
-    const storedVol = parseFloat(readStore(KEY_VOLUME) ?? '');
     const storedQ = readStore(KEY_QUALITY);
-    this.volume = clamp01(Number.isFinite(storedVol) ? storedVol : (initial?.volume ?? 0.7));
     this.quality =
       storedQ === 'mobile' || storedQ === 'low' || storedQ === 'high' ? storedQ : (initial?.quality ?? 'high');
 
@@ -170,21 +176,19 @@ export class UI {
     h.id = 'aster-menu-title';
     panel.appendChild(h);
 
-    const volField = el('div', 'aster-field');
-    const volHead = el('div', 'aster-field__head');
-    const volLabel = el('label', undefined, 'Volume');
-    volLabel.htmlFor = 'aster-volume';
-    this.volumeOut = el('span', 'aster-field__value');
-    volHead.append(volLabel, this.volumeOut);
-    const slider = el('input', 'aster-range');
-    slider.id = 'aster-volume';
-    slider.type = 'range';
-    slider.min = '0';
-    slider.max = '100';
-    slider.step = '1';
-    this.slider = slider;
-    volField.append(volHead, slider);
-    panel.appendChild(volField);
+    // Levels. Music and Effects sit under the overall Volume; 100 on each is the mix as tuned.
+    panel.append(
+      this.level('aster-volume', 'Volume', KEY_VOLUME, initial?.volume ?? 0.7, (v) => this.hooks.onVolume(v)),
+      this.level('aster-music', 'Music', KEY_MUSIC, 1, (v) => this.hooks.onMusic(v)),
+      this.level(
+        'aster-effects',
+        'Effects',
+        KEY_EFFECTS,
+        0.7,
+        (v) => this.hooks.onEffects(v),
+        () => this.hooks.onEffectsSample(),
+      ),
+    );
 
     const gfx = el('div', 'aster-field');
     const gfxHead = el('div', 'aster-field__head');
@@ -279,15 +283,8 @@ export class UI {
     this.photo.setAttribute('aria-hidden', 'true');
 
     // Wiring
-    this.syncVolume();
     this.syncQuality();
     this.syncStyle();
-    slider.addEventListener('input', () => {
-      this.volume = clamp01(Number(slider.value) / 100);
-      writeStore(KEY_VOLUME, String(this.volume));
-      this.syncVolume();
-      this.hooks.onVolume(this.volume);
-    });
     this.resumeBtn.addEventListener('click', () => this.closeMenu());
     photoBtn.addEventListener('click', () => this.enterPhoto());
     this.captureBtn.addEventListener('click', () => this.hooks.onCapture());
@@ -309,7 +306,6 @@ export class UI {
     window.addEventListener('touchstart', this.onTouchActivity, { passive: true });
 
     // Restored / initial values
-    this.hooks.onVolume(this.volume);
     this.hooks.onQuality(this.quality);
     if (this.styles.length) this.hooks.onStyle(this.styleI);
   }
@@ -509,12 +505,83 @@ export class UI {
     this.hooks.onQuality(q);
   }
 
-  private syncVolume(): void {
-    const pct = Math.round(this.volume * 100);
-    this.slider.value = String(pct);
-    this.slider.style.setProperty('--aster-fill', `${pct}%`);
-    this.slider.setAttribute('aria-valuetext', `${pct} percent`);
-    this.volumeOut.textContent = String(pct);
+  /**
+   * One 0..100 level slider with its label and readout. Restores the saved value, applies it
+   * straight away, and saves and applies every change as it happens. `sample` is played each
+   * time the level is settled on (pointer release or a keyboard step).
+   */
+  private level(
+    id: string,
+    label: string,
+    key: string,
+    fallback: number,
+    apply: (v: number) => void,
+    sample?: () => void,
+  ): HTMLElement {
+    const stored = parseFloat(readStore(key) ?? '');
+    let value = clamp01(Number.isFinite(stored) ? stored : fallback);
+
+    const field = el('div', 'aster-field');
+    const head = el('div', 'aster-field__head');
+    const lab = el('label', undefined, label);
+    lab.htmlFor = id;
+    const out = el('span', 'aster-field__value');
+    head.append(lab, out);
+    const slider = el('input', 'aster-range');
+    slider.id = id;
+    slider.type = 'range';
+    slider.min = '0';
+    slider.max = '100';
+    slider.step = '1';
+    field.append(head, slider);
+
+    const sync = (): void => {
+      const pct = Math.round(value * 100);
+      slider.value = String(pct);
+      slider.style.setProperty('--aster-fill', `${pct}%`);
+      slider.setAttribute('aria-valuetext', `${pct} percent`);
+      out.textContent = String(pct);
+    };
+    sync();
+    apply(value);
+
+    slider.addEventListener('pointerdown', () => {
+      this.previewLevels();
+      const up = (): void => {
+        window.removeEventListener('pointerup', up);
+        window.removeEventListener('pointercancel', up);
+        this.releaseLevels();
+      };
+      window.addEventListener('pointerup', up);
+      window.addEventListener('pointercancel', up);
+    });
+    slider.addEventListener('input', () => {
+      this.previewLevels();
+      value = clamp01(Number(slider.value) / 100);
+      writeStore(key, String(value));
+      sync();
+      apply(value);
+    });
+    slider.addEventListener('change', () => {
+      sample?.();
+      this.releaseLevels();
+    });
+    return field;
+  }
+
+  /** The pause menu muffles the game; let the true mix through while a level is in hand. */
+  private previewLevels(): void {
+    window.clearTimeout(this.previewTimer);
+    this.previewTimer = 0;
+    this.hooks.onLevelPreview(true);
+  }
+
+  private releaseLevels(): void {
+    window.clearTimeout(this.previewTimer);
+    this.previewTimer = window.setTimeout(() => {
+      this.previewTimer = 0;
+      this.hooks.onLevelPreview(false);
+    }, PREVIEW_HOLD);
   }
 
   private syncQuality(): void {
