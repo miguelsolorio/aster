@@ -247,6 +247,15 @@ float cityRoof(vec2 l) {
   return textureLod(uCityMap, uv, 0.0).r * 63.75;
 }
 
+// Soft contact shade on the ground at the feet of the buildings and under the tree crowns (map G),
+// faded out where the ground lies well off the plateau.
+float cityContact(vec3 p) {
+  if (uCityRect.z <= 0.0) return 0.0;
+  vec2 uv = cityLocal(p.xz) / (2.0 * uCityRect.z) + 0.5;
+  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) return 0.0;
+  return textureLod(uCityMap, uv, 0.0).g * (1.0 - smoothstep(1.5, 4.0, abs(p.y - uCityGround)));
+}
+
 float cityShadow(vec3 p, vec3 sunDir) {
   if (uCityRect.z <= 0.0) return 1.0;
   vec2 l = cityLocal(p.xz);

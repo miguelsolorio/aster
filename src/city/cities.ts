@@ -10,6 +10,7 @@ import { EMITTER_KINDS, SolidIndex, createExtraCtx, type EmitterKind, type Extra
 import { EXTRAS } from './extrasList';
 import { WORLD_SCALE } from '../world/scale';
 import { RouteNet } from './routes';
+import { contactShade } from './contactShade';
 
 const KIND_ID: Record<CityKind, number> = { hill: 1, canyon: 2, oasis: 3, trade: 4 };
 
@@ -25,6 +26,8 @@ interface Loaded {
   meshes: CityMeshes;
   holder: THREE.Group;
   map: THREE.DataTexture | null;
+  /** Tree crowns (city-local x, z, radius triples) that shade the ground in the map's G channel. */
+  crowns: number[];
   reached: boolean;
   /** Plants, water, furniture and the rest: built one per scan after the city loads. */
   extras: Extra[];
@@ -210,6 +213,13 @@ export class Cities {
     c.meshes.near.add(e.near);
     if (e.far) c.meshes.far.add(e.far);
     for (const s of e.solids) c.solids.add(s);
+    // tree crowns shade the ground: rebuild the map with them (the update below rebinds it)
+    const crowns = e.near.userData.crowns as number[] | undefined;
+    if (crowns && crowns.length > 0) {
+      for (const v of crowns) c.crowns.push(v);
+      c.map?.dispose();
+      c.map = null;
+    }
     return true;
   }
 
@@ -222,17 +232,24 @@ export class Cities {
     holder.add(meshes.near, meshes.far);
     meshes.near.visible = false;
     this.group.add(holder);
-    const entry: Loaded = { site, plan, meshes, holder, map: null, reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex() };
+    const entry: Loaded = { site, plan, meshes, holder, map: null, crowns: [], reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex() };
     this.loaded.set(site.id, entry);
     return entry;
   }
 
   private roofMap(c: Loaded): THREE.DataTexture {
     if (c.map) return c.map;
-    const { grid, gridSize } = c.plan;
-    const data = new Uint8Array(gridSize * gridSize);
-    for (let k = 0; k < data.length; k++) data[k] = Math.min(255, Math.round(grid[k] * 4));
-    const tex = new THREE.DataTexture(data, gridSize, gridSize, THREE.RedFormat, THREE.UnsignedByteType);
+    // R: roof height (0.25 m steps), G: soft contact shade on the ground around the buildings and trees
+    const { grid, gridSize, gridHalf } = c.plan;
+    const shade = contactShade(grid, gridSize, gridHalf, c.crowns);
+    const n = gridSize * gridSize;
+    const data = new Uint8Array(n * 2);
+    for (let k = 0; k < n; k++) {
+      data[2 * k] = Math.min(255, Math.round(grid[k] * 4));
+      data[2 * k + 1] = Math.min(255, Math.round(shade[k] * 255));
+    }
+    const tex = new THREE.DataTexture(data, gridSize, gridSize, THREE.RGFormat, THREE.UnsignedByteType);
+    tex.unpackAlignment = 2;
     tex.minFilter = tex.magFilter = THREE.LinearFilter;
     tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.needsUpdate = true;

@@ -537,6 +537,8 @@ void main() {
     }
     col = mix(col, paveCol, pave);
   }
+  // the ground darkens softly where it meets the walls and under the tree crowns
+  col *= 1.0 - 0.42 * cityContact(p);
 
   // ---- sparkle on sand only
   float spk = sandW * (1.0 - track) * (1.0 - smoothstep(25.0 * dk, 60.0 * dk, dist));
