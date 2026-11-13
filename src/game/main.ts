@@ -303,6 +303,14 @@ function start() {
     onBegin() {
       void audio.start();
       lock();
+      // Without a click the browser may keep audio suspended: retry on the first real gesture.
+      const retry = () => {
+        void audio.start();
+        window.removeEventListener('pointerdown', retry);
+        window.removeEventListener('keydown', retry);
+      };
+      window.addEventListener('pointerdown', retry);
+      window.addEventListener('keydown', retry);
     },
     onResume() {
       audio.setPaused(false);
