@@ -63,23 +63,73 @@ export interface Known {
   dig: boolean;
 }
 
-function keyControls(k: Known): string[] {
-  const out = ['WASD walk', 'Mouse look', 'Shift run', 'Space leap, hold to rise, let go to glide', 'In the air: WASD steer, Shift boost, double-tap Space to drop'];
-  if (k.talk) out.push('E talk');
-  if (k.board) out.push('Q step on or off the board', 'On the board: WASD glide, Shift boost');
-  if (k.carpet) out.push('The carpet unrolls when you fly, and flies faster');
-  if (k.dig) out.push('E swing the pick, when nobody is near');
-  out.push('Esc menu');
+/** One line of the controls list: what you do, the keys for it, and a short note. */
+interface ControlRow {
+  action: string;
+  keys?: string[];
+  note?: string;
+}
+interface ControlSection {
+  title: string;
+  rows: ControlRow[];
+}
+
+function keyControls(k: Known): ControlSection[] {
+  const wasd = ['W', 'A', 'S', 'D'];
+  const fly: ControlRow[] = [
+    { action: 'Leap', keys: ['Space'], note: 'hold to rise, release to glide' },
+    { action: 'Steer', keys: wasd },
+    { action: 'Boost', keys: ['Shift'] },
+    { action: 'Drop', keys: ['Space', 'Space'], note: 'double-tap in the air' },
+  ];
+  if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, and flies faster' });
+  const out: ControlSection[] = [
+    {
+      title: 'Move',
+      rows: [
+        { action: 'Walk', keys: wasd, note: 'or arrow keys' },
+        { action: 'Run', keys: ['Shift'] },
+        { action: 'Look', note: 'Mouse drag or move' },
+        { action: 'Zoom', note: 'Mouse wheel' },
+      ],
+    },
+    { title: 'Fly', rows: fly },
+  ];
+  const act: ControlRow[] = [];
+  if (k.talk) act.push({ action: 'Talk', keys: ['E'] });
+  if (k.dig) act.push({ action: 'Swing pick', keys: ['E'], note: 'when nobody is near' });
+  if (k.board) act.push({ action: 'Board', keys: ['Q'], note: 'step on or off. On it, WASD glide and Shift boosts' });
+  if (act.length) out.push({ title: 'Interact', rows: act });
+  out.push({ title: 'Menu', rows: [{ action: 'Pause', keys: ['Esc'] }] });
   return out;
 }
 
-function touchControls(k: Known): string[] {
-  const out = ['Left thumb: walk (push past the ring to run)', 'Right thumb: look, pinch to zoom'];
-  out.push('Button: leap, hold to rise, let go to glide', 'In the air: stick steers (push past the ring to boost), small button drops');
-  if (k.talk) out.push('Speech button: talk, when someone is near');
-  if (k.board) out.push('Board button: step on or off the board', 'On the board: the stick glides (push past the ring to boost)');
-  if (k.carpet) out.push('The carpet unrolls when you fly, and flies faster');
-  if (k.dig) out.push('Pick button: swing the pick, when nobody is near');
+function touchControls(k: Known): ControlSection[] {
+  const fly: ControlRow[] = [
+    { action: 'Leap', note: 'Leap button. Hold to rise, release to glide' },
+    { action: 'Steer', note: 'Left thumb stick' },
+    { action: 'Boost', note: 'Push the stick past the ring' },
+    { action: 'Drop', note: 'Small button in the air' },
+  ];
+  if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, and flies faster' });
+  const out: ControlSection[] = [
+    {
+      title: 'Move',
+      rows: [
+        { action: 'Walk', note: 'Left thumb stick' },
+        { action: 'Run', note: 'Push the stick past the ring' },
+        { action: 'Look', note: 'Right thumb drag' },
+        { action: 'Zoom', note: 'Pinch' },
+      ],
+    },
+    { title: 'Fly', rows: fly },
+  ];
+  const act: ControlRow[] = [];
+  if (k.talk) act.push({ action: 'Talk', note: 'Speech button, when someone is near' });
+  if (k.dig) act.push({ action: 'Swing pick', note: 'Pick button, when nobody is near' });
+  if (k.board) act.push({ action: 'Board', note: 'Board button to step on or off. On it, the stick glides' });
+  if (act.length) out.push({ title: 'Interact', rows: act });
+  out.push({ title: 'Menu', rows: [{ action: 'Pause', note: 'Pause button' }] });
   return out;
 }
 const QUALITIES: Quality[] = ['mobile', 'low', 'high'];
@@ -96,8 +146,29 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return e;
 }
 
-function fillControls(ul: HTMLElement, items: string[]): void {
-  ul.replaceChildren(...items.map((c) => el('li', undefined, c)));
+function fillControls(host: HTMLElement, sections: ControlSection[]): void {
+  host.replaceChildren(
+    ...sections.map((sec, i) => {
+      const group = el('section', 'aster-ctl');
+      const h = el('h3', 'aster-ctl__title', sec.title);
+      h.id = `aster-ctl-${i}`;
+      const dl = el('dl', 'aster-ctl__list');
+      for (const r of sec.rows) {
+        const row = el('div', 'aster-ctl__row');
+        const dd = el('dd', 'aster-ctl__what');
+        if (r.keys) {
+          const caps = el('span', 'aster-ctl__keys');
+          for (const key of r.keys) caps.appendChild(el('kbd', 'aster-kbd', key));
+          dd.appendChild(caps);
+        }
+        if (r.note) dd.appendChild(el('span', 'aster-ctl__note', r.note));
+        row.append(el('dt', 'aster-ctl__action', r.action), dd);
+        dl.appendChild(row);
+      }
+      group.append(h, dl);
+      return group;
+    }),
+  );
 }
 
 
@@ -274,7 +345,7 @@ export class UI {
     }
 
     // Controls: read-only, and only the set for the device in hand.
-    this.panelControls = el('ul', 'aster-panel__controls');
+    this.panelControls = el('div', 'aster-panel__controls');
     fillControls(this.panelControls, keyControls(this.known));
     this.tabPanes.controls.appendChild(this.panelControls);
 
