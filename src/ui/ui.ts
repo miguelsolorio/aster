@@ -161,7 +161,7 @@ export class UI {
     // Title card
     const title = el('div', 'aster-layer aster-title is-on');
     title.appendChild(el('h1', 'aster-title__name', 'Aster'));
-    title.appendChild(el('p', 'aster-title__line', 'The desert is your map'));
+    title.appendChild(el('p', 'aster-title__line', 'Take the long way'));
     this.beginEl = el('p', 'aster-title__begin', 'Click to begin');
     title.appendChild(this.beginEl);
     this.title = title;
