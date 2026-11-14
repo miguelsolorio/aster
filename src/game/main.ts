@@ -88,6 +88,7 @@ function start() {
   player.carpet = save.has('carpet');
 
   let seekMiner = false;
+  let resetting = false; // set by "start again" so the page-leave save cannot bring the spawn back
   // ---- spawn at the same place every visit, on open sand
   // The default arrival is the same for everyone: found from the origin with a fixed-seed generator.
   // Only the menu's respawn button passes Math.random and goes somewhere new.
@@ -412,6 +413,7 @@ function start() {
     },
     // Forget the journey and the spawn, keep the settings, and arrive at the default spot.
     onReset() {
+      resetting = true;
       clearProgress();
       const url = new URL(window.location.href);
       for (const k of ['x', 'z', 'miner', 'reset', 'tools', 'deep']) url.searchParams.delete(k);
@@ -714,6 +716,20 @@ function start() {
   let jumpQueued = false;
   let camYaw = player.facing + Math.PI;
   let camPitch = 0.22;
+
+  // ---- autosave the spawn: where you stand on open sand is where the next visit starts.
+  // Off for ?x=&z= and ?miner visits, so a shared link never overwrites your own spot.
+  if (!(qs.has('x') && qs.has('z')) && !qs.has('miner') && !qs.has('reset')) {
+    const keepSpot = () => {
+      if (resetting || player.under || discoveries.deepIn) return;
+      saveSpawn({ x: player.state.pos.x, z: player.state.pos.z, facing: camYaw + Math.PI });
+    };
+    window.setInterval(keepSpot, 5000);
+    window.addEventListener('pagehide', keepSpot);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') keepSpot();
+    });
+  }
   let camDist = 7.5;
   let dragging = false;
 
