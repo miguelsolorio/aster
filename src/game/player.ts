@@ -15,11 +15,16 @@ const GLIDE_SPEED = 16; // forward speed in flight
 const GLIDE_BOOST = 45; // in flight with Shift
 const HOVER_SINK = 4.5; // sink with no direction held: he stops and settles down
 const MAX_SPEED = 60;
-const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
+export const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
 const REACH = 0.38; // how far ahead of the feet a wall is felt
 const CARPET = 1.6; // a carpet flies this much faster, and climbs for twice as long
 const TAP_GRACE = 0.12; // in flight a press waits this long before climbing, so a double tap can drop instead
 const DOUBLE_TAP = 0.3; // two presses this close together in flight drop you
+
+/** The wall test behind Player.walled, on any height query: something above `step` underfoot, at arm's length, or between. */
+export function wallAhead(top: (x: number, z: number) => number, x: number, z: number, dx: number, dz: number, step: number): boolean {
+  return top(x, z) > step || top(x + dx * 0.5, z + dz * 0.5) > step || top(x + dx, z + dz) > step;
+}
 
 /** Metres per step on rock. Running lengthens the stride with speed so the step rate stays put. */
 export const strideLength = (speed: number, running: boolean) => (running ? Math.max(1.15, speed / 8.3) : 0.8);
@@ -145,7 +150,7 @@ export class Player {
    * what catches a thing thinner than the reach, which the far point alone would look past.
    */
   private walled(x: number, z: number, dx: number, dz: number, step: number): boolean {
-    return this.top(x, z) > step || this.top(x + dx * 0.5, z + dz * 0.5) > step || this.top(x + dx, z + dz) > step;
+    return wallAhead((px, pz) => this.top(px, pz), x, z, dx, dz, step);
   }
 
   place(x: number, z: number) {

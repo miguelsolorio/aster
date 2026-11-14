@@ -148,10 +148,13 @@
 }
 
 .aster-ui .aster-panel {
-  width: min(100%, 380px);
-  max-height: 100%;
-  overflow: auto;
-  padding: 26px 24px 22px;
+  display: flex;
+  flex-direction: column;
+  /* One size on every tab: only the pane scrolls, never the frame */
+  width: min(100%, 370px);
+  height: min(100%, 530px);
+  overflow: hidden;
+  padding: 20px 20px 18px;
   background: var(--aster-panel);
   border: 1px solid var(--aster-line-soft);
   border-radius: 14px;
@@ -165,10 +168,11 @@
 }
 
 .aster-ui .aster-panel__title {
-  margin: 0 0 20px;
+  flex: 0 0 auto;
+  margin: 0 0 10px;
   font-family: var(--aster-serif);
   font-weight: 400;
-  font-size: 1.9rem;
+  font-size: 1.5rem;
   line-height: 1.1;
 }
 
@@ -280,10 +284,16 @@
 /* Buttons */
 
 .aster-ui .aster-actions {
+  flex: 0 0 auto;
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin: 24px 0 0;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.aster-ui .aster-actions .aster-btn {
+  flex: 0 0 auto;
+  min-height: 38px;
 }
 
 .aster-ui .aster-btn {
@@ -321,15 +331,187 @@
 }
 
 .aster-ui .aster-panel__controls {
-  margin: 20px 0 0;
-  padding: 16px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 0.82rem;
+}
+
+.aster-ui .aster-ctl__title {
+  margin: 0 0 4px;
+  font-family: var(--aster-sans);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--aster-accent);
+}
+
+.aster-ui .aster-ctl__list {
+  margin: 0;
   border-top: 1px solid var(--aster-line-soft);
-  list-style: none;
+}
+
+.aster-ui .aster-ctl__row {
+  display: grid;
+  grid-template-columns: 5.6rem 1fr;
+  gap: 4px 10px;
+  align-items: baseline;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--aster-line-soft);
+}
+
+.aster-ui .aster-ctl__action {
+  color: var(--aster-ink);
+}
+
+.aster-ui .aster-ctl__what {
+  margin: 0;
   display: flex;
   flex-wrap: wrap;
-  gap: 2px 14px;
+  align-items: center;
+  gap: 4px 8px;
+  color: var(--aster-ink-muted);
+}
+
+.aster-ui .aster-ctl__keys {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.aster-ui .aster-kbd {
+  display: inline-block;
+  min-width: 1.7em;
+  padding: 1px 6px 2px;
+  border: 1px solid var(--aster-line);
+  border-bottom-width: 2px;
+  border-radius: 5px;
+  background: rgba(239, 230, 216, 0.08);
+  color: var(--aster-ink);
+  font-family: var(--aster-sans);
+  font-size: 0.78rem;
+  line-height: 1.3;
+  text-align: center;
+}
+
+/* Tabs */
+
+.aster-ui .aster-tabs {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 2px;
+  margin: 0 0 12px;
+  border-bottom: 1px solid var(--aster-line-soft);
+}
+
+.aster-ui .aster-tab {
+  flex: 1 1 0;
+  min-height: 38px;
+  padding: 6px 4px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--aster-ink-muted);
+  font-size: 0.86rem;
+  cursor: pointer;
+}
+
+.aster-ui .aster-tab:hover {
+  color: var(--aster-ink);
+}
+
+.aster-ui .aster-tab[aria-selected="true"] {
+  color: var(--aster-ink);
+  border-bottom-color: var(--aster-accent);
+}
+
+.aster-ui .aster-panes {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* room for the focus ring, which would otherwise be clipped at the edge */
+  margin: 0 -4px;
+  padding: 4px 4px 0;
+}
+
+.aster-ui .aster-pane[hidden],
+.aster-ui .aster-confirm[hidden],
+.aster-ui .aster-btn[hidden],
+.aster-ui .aster-hint[hidden] {
+  display: none;
+}
+
+/* Game tab */
+
+.aster-ui .aster-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.aster-ui .aster-stack .aster-btn {
+  flex: 0 0 auto;
+}
+
+.aster-ui .aster-hint {
+  margin: 0;
   font-size: 0.78rem;
   color: var(--aster-ink-muted);
+}
+
+.aster-ui .aster-status {
+  min-height: 1.45em;
+  margin: 10px 0 0;
+  font-size: 0.82rem;
+  color: var(--aster-accent);
+}
+
+.aster-ui .aster-danger {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 0;
+  padding: 14px 0 0;
+  border-top: 1px solid var(--aster-line-soft);
+}
+
+.aster-ui .aster-btn--danger {
+  border-color: rgba(226, 120, 96, 0.6);
+  color: #f0a898;
+}
+
+.aster-ui .aster-btn--danger:hover {
+  background: rgba(226, 120, 96, 0.16);
+  border-color: #e27860;
+}
+
+.aster-ui .aster-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+}
+
+.aster-ui .aster-confirm__q {
+  flex: 1 0 100%;
+  color: #f0a898;
+}
+
+.aster-ui .aster-confirm .aster-btn {
+  flex: 1 1 0;
+}
+
+.aster-ui .aster-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.aster-ui .aster-btn:disabled:hover {
+  background: transparent;
+  border-color: var(--aster-line);
 }
 
 /* Photo bar */
@@ -523,6 +705,13 @@
   display: none;
 }
 
+/* Touch: larger tabs wherever the device is a touch one, whatever the window size */
+.aster-ui.is-touch .aster-tab,
+.aster-ui.is-touch .aster-btn,
+.aster-ui.is-touch .aster-seg button {
+  min-height: 44px;
+}
+
 /* Small screens */
 
 @media (max-width: 420px) {
@@ -547,16 +736,15 @@
       calc(12px + env(safe-area-inset-bottom, 0px)) calc(12px + env(safe-area-inset-left, 0px));
   }
 
-  .aster-ui .aster-panel {
-    overflow-y: auto;
+  .aster-ui .aster-panes {
     -webkit-overflow-scrolling: touch;
-    overscroll-behavior: contain;
     touch-action: pan-y;
   }
 
   .aster-ui .aster-btn,
   .aster-ui .aster-bar .aster-btn,
   .aster-ui .aster-seg button,
+  .aster-ui .aster-tab,
   .aster-ui .aster-pick__step {
     min-height: 44px;
     min-width: 44px;
@@ -636,13 +824,20 @@
   }
 
   .aster-ui .aster-actions {
-    margin-top: 12px;
+    margin-top: 10px;
+  }
+
+  .aster-ui .aster-tabs {
+    margin-bottom: 10px;
   }
 
   .aster-ui .aster-panel__controls {
-    margin-top: 12px;
-    padding-top: 10px;
-    font-size: 0.72rem;
+    font-size: 0.8rem;
+    gap: 10px;
+  }
+
+  .aster-ui .aster-ctl__row {
+    padding: 4px 0;
   }
 }
 

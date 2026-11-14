@@ -9,6 +9,11 @@ import type { FrameState } from '../game/contract';
 import { EMITTER_KINDS, SolidIndex, createExtraCtx, type EmitterKind, type Extra, type ExtraCtx } from './extras';
 import { EXTRAS } from './extrasList';
 import { WORLD_SCALE } from '../world/scale';
+import { RouteNet } from './routes';
+import { Interiors } from './interiors';
+import { depthIn, roomAt, shellCeil, shellSolid, shellTop } from './rooms';
+import type { Room } from './types';
+import { contactShade } from './contactShade';
 
 const KIND_ID: Record<CityKind, number> = { hill: 1, canyon: 2, oasis: 3, trade: 4 };
 
@@ -24,12 +29,19 @@ interface Loaded {
   meshes: CityMeshes;
   holder: THREE.Group;
   map: THREE.DataTexture | null;
+  /** Tree crowns (city-local x, z, radius triples) that shade the ground in the map's G channel. */
+  crowns: number[];
   reached: boolean;
   /** Plants, water, furniture and the rest: built one per scan after the city loads. */
   extras: Extra[];
   ctx: ExtraCtx | null;
   solids: SolidIndex;
+  /** The insides of the rooms near the wanderer: only while this is the city they are in. */
+  interiors: Interiors | null;
 }
+
+/** Seconds for the roof of the room you are in to fade away (and back). */
+const CUT_FADE = 0.35;
 
 /**
  * Finds the cities around the player, shows each as a distant skyline or in full,
@@ -41,6 +53,16 @@ export class Cities {
   onReach: ((site: CitySite) => void) | null = null;
   /** The city currently loaded in full, if any. */
   active: Loaded | null = null;
+  /** The routes between cities: the worn paths, their camps, the travellers' ways. */
+  readonly routes: RouteNet;
+  /** The room the wanderer stands in (feet under its ceiling), in the active city. */
+  inside: Room | null = null;
+  /**
+   * The room drawn cut away: the one the wanderer is in, kept while the eye is still over it after
+   * they leave, so the roof is never put back over the camera. Its roof is nothing to the camera.
+   */
+  cutRoom: Room | null = null;
+  private cutFade = 0;
 
   private loaded = new Map<number, Loaded>();
   private reachedIds = new Set<number>();
@@ -57,6 +79,9 @@ export class Cities {
     u.uCityA = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
     u.uCityB = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
     u.uCityC = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
+    u.uCityD = { value: Array.from({ length: MAX_SITES }, () => new THREE.Vector4()) };
+    this.routes = new RouteNet(world);
+    RouteNet.uniforms(u);
     u.uCityMap = { value: this.blank };
     u.uCityRect = { value: new THREE.Vector4() };
     u.uCityGround = { value: 0 };
@@ -73,13 +98,16 @@ export class Cities {
     const a = this.u.uCityA.value as THREE.Vector4[];
     const b = this.u.uCityB.value as THREE.Vector4[];
     const c = this.u.uCityC.value as THREE.Vector4[];
+    const d = this.u.uCityD.value as THREE.Vector4[];
     for (let i = 0; i < MAX_SITES; i++) {
       const s = near[i];
       a[i].set(s.cx, s.cz, s.radius, s.groundY);
       b[i].set(s.phase1, s.phase2, s.falloff, KIND_ID[s.kind]);
-      const t = this.tracks(s);
-      c[i].set(t[0], t[1], s.aveA, s.aveB);
+      const w = this.world.cities.ways(s);
+      c[i].set(w.t1, w.t2, s.aveA, s.aveB);
+      d[i].set(w.t3, w.t4, 0, 0);
     }
+    this.routes.focus(this.u, x, z);
   }
 
   /** Depth of water to wade through at (x, z): the pool of the loaded city, shelving at its edge. */
@@ -97,16 +125,10 @@ export class Cities {
     return t * t * (3 - 2 * t) * 0.6;
   }
 
-  private trackCache = new Map<number, [number, number]>();
-  /** Bearings from a city toward its two neighbours. */
-  private tracks(s: CitySite): [number, number] {
-    let t = this.trackCache.get(s.id);
-    if (!t) {
-      const n = this.world.cities.neighbours(s);
-      t = [Math.atan2(n[0].cz - s.cz, n[0].cx - s.cx), Math.atan2(n[1].cz - s.cz, n[1].cx - s.cx)];
-      this.trackCache.set(s.id, t);
-    }
-    return t;
+  /** Bearings of the ways out of a city: one per route leaving it. */
+  private tracks(s: CitySite): number[] {
+    const w = this.world.cities.ways(s);
+    return [...new Set([w.t1, w.t2, w.t3, w.t4])];
   }
 
   /** Absolute height of the roof over (x, z) in the loaded city, or -Infinity on open ground. */
@@ -125,8 +147,103 @@ export class Cities {
     const i = Math.floor(lx + p.gridHalf);
     const j = Math.floor(lz + p.gridHalf);
     if (i < 0 || j < 0 || i >= p.gridSize || j >= p.gridSize) return top;
-    const h = p.grid[j * p.gridSize + i];
+    const k = j * p.gridSize + i;
+    const ri = p.roomOf[k];
+    if (ri > 0) {
+      // a hollow building: its shell answers (walls, the doorway, the floor inside, the roof)
+      const r = p.rooms[ri - 1];
+      const st = shellTop(r, lx, lz, y - s.groundY, r === this.cutRoom);
+      return st > -Infinity ? Math.max(top, s.groundY + st) : top;
+    }
+    const h = p.grid[k];
     return h > 0 ? Math.max(top, s.groundY + h) : top;
+  }
+
+  /** Whether the point (x, y, z), grown by a margin, is inside a building of the loaded city. */
+  solidAt(x: number, y: number, z: number, m = 0): boolean {
+    const c = this.active;
+    if (!c) return false;
+    const s = c.site;
+    const dx = x - s.cx;
+    const dz = z - s.cz;
+    const co = Math.cos(s.rot);
+    const si = Math.sin(s.rot);
+    const p = c.plan;
+    const lx = co * dx + si * dz;
+    const lz = -si * dx + co * dz;
+    const ly = y - s.groundY;
+    if (c.solids.contains(lx, ly, lz, m)) return true;
+    for (let k = 0; k < 5; k++) {
+      const ox = k === 1 ? m : k === 2 ? -m : 0;
+      const oz = k === 3 ? m : k === 4 ? -m : 0;
+      const i = Math.floor(lx + ox + p.gridHalf);
+      const j = Math.floor(lz + oz + p.gridHalf);
+      if (i < 0 || j < 0 || i >= p.gridSize || j >= p.gridSize) continue;
+      const q = j * p.gridSize + i;
+      const ri = p.roomOf[q];
+      if (ri > 0) {
+        // (the point itself with the margin all round; a probe off to the side, as it stands)
+        const r = p.rooms[ri - 1];
+        if (shellSolid(r, lx + ox, ly, lz + oz, k === 0 ? m : 0, r === this.cutRoom)) return true;
+        continue;
+      }
+      const h = p.grid[q];
+      if (h > 0 && ly < h + m) return true;
+    }
+    return false;
+  }
+
+  /** Absolute height of the ceiling over feet at (x, y, z) inside a room (or its doorway), or Infinity. */
+  ceilAt(x: number, z: number, y: number): number {
+    const c = this.active;
+    if (!c || c.plan.rooms.length === 0) return Infinity;
+    const s = c.site;
+    const dx = x - s.cx;
+    const dz = z - s.cz;
+    const co = Math.cos(s.rot);
+    const si = Math.sin(s.rot);
+    const lx = co * dx + si * dz;
+    const lz = -si * dx + co * dz;
+    const r = roomAt(c.plan, lx, lz);
+    return r ? s.groundY + shellCeil(r, lx, lz, y - s.groundY) : Infinity;
+  }
+
+  /**
+   * Per frame, before the camera: which room the wanderer is in, and how far its roof is drawn
+   * away. `eye` is where the camera was last frame (the cut-away stays while it is over the room).
+   */
+  interior(dt: number, feet: THREE.Vector3, eye: THREE.Vector3) {
+    const c = this.active;
+    let room: Room | null = null;
+    if (c && c.plan.rooms.length > 0) {
+      const s = c.site;
+      const co = Math.cos(s.rot);
+      const si = Math.sin(s.rot);
+      const lx = co * (feet.x - s.cx) + si * (feet.z - s.cz);
+      const lz = -si * (feet.x - s.cx) + co * (feet.z - s.cz);
+      const r = roomAt(c.plan, lx, lz);
+      if (r && feet.y - s.groundY < r.ceil) room = r;
+      if (room) this.cutRoom = room;
+      else if (this.cutRoom) {
+        const r2 = this.cutRoom;
+        const ex = co * (eye.x - s.cx) + si * (eye.z - s.cz);
+        const ez = -si * (eye.x - s.cx) + co * (eye.z - s.cz);
+        if (depthIn(r2, ex, ez) < -0.4 || eye.y - s.groundY > r2.h + 3) this.cutRoom = null;
+      }
+    } else this.cutRoom = null;
+    this.inside = room;
+    if (!c) {
+      this.cutFade = 0;
+      return;
+    }
+    const want = this.cutRoom ? 1 : 0;
+    const step = dt / CUT_FADE;
+    this.cutFade = want > this.cutFade ? Math.min(want, this.cutFade + step) : Math.max(want, this.cutFade - step);
+    const cut = c.meshes.cut;
+    const r = this.cutRoom;
+    if (r) cut.uCutBox.value.set(r.x0, r.z0, r.x1, r.z1);
+    if (r) cut.uCutY.value.x = r.ceil - 0.015;
+    cut.uCutY.value.y = this.cutFade;
   }
 
   /** 1 on desktop, 0.7 low, 0.35 phones. Changing it rebuilds the extras of every loaded city. */
@@ -163,6 +280,13 @@ export class Cities {
   private local = new THREE.Vector3();
   private ambience: Record<EmitterKind, number> = { water: 0, leaves: 0, mill: 0, fire: 0, birds: 0 };
 
+  private dropInteriors(c: Loaded) {
+    if (!c.interiors) return;
+    c.meshes.near.remove(c.interiors.group);
+    c.interiors.dispose();
+    c.interiors = null;
+  }
+
   private dropExtras(c: Loaded) {
     for (const e of c.extras) {
       c.meshes.near.remove(e.near);
@@ -183,6 +307,13 @@ export class Cities {
     c.meshes.near.add(e.near);
     if (e.far) c.meshes.far.add(e.far);
     for (const s of e.solids) c.solids.add(s);
+    // tree crowns shade the ground: rebuild the map with them (the update below rebinds it)
+    const crowns = e.near.userData.crowns as number[] | undefined;
+    if (crowns && crowns.length > 0) {
+      for (const v of crowns) c.crowns.push(v);
+      c.map?.dispose();
+      c.map = null;
+    }
     return true;
   }
 
@@ -195,17 +326,24 @@ export class Cities {
     holder.add(meshes.near, meshes.far);
     meshes.near.visible = false;
     this.group.add(holder);
-    const entry: Loaded = { site, plan, meshes, holder, map: null, reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex() };
+    const entry: Loaded = { site, plan, meshes, holder, map: null, crowns: [], reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex(), interiors: null };
     this.loaded.set(site.id, entry);
     return entry;
   }
 
   private roofMap(c: Loaded): THREE.DataTexture {
     if (c.map) return c.map;
-    const { grid, gridSize } = c.plan;
-    const data = new Uint8Array(gridSize * gridSize);
-    for (let k = 0; k < data.length; k++) data[k] = Math.min(255, Math.round(grid[k] * 4));
-    const tex = new THREE.DataTexture(data, gridSize, gridSize, THREE.RedFormat, THREE.UnsignedByteType);
+    // R: roof height (0.25 m steps), G: soft contact shade on the ground around the buildings and trees
+    const { grid, gridSize, gridHalf } = c.plan;
+    const shade = contactShade(grid, gridSize, gridHalf, c.crowns);
+    const n = gridSize * gridSize;
+    const data = new Uint8Array(n * 2);
+    for (let k = 0; k < n; k++) {
+      data[2 * k] = Math.min(255, Math.round(grid[k] * 4));
+      data[2 * k + 1] = Math.min(255, Math.round(shade[k] * 255));
+    }
+    const tex = new THREE.DataTexture(data, gridSize, gridSize, THREE.RGFormat, THREE.UnsignedByteType);
+    tex.unpackAlignment = 2;
     tex.minFilter = tex.magFilter = THREE.LinearFilter;
     tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.needsUpdate = true;
@@ -244,6 +382,7 @@ export class Cities {
       if (d > FAR_OUT) {
         this.group.remove(c.holder);
         this.dropExtras(c);
+        this.dropInteriors(c);
         c.meshes.dispose();
         c.map?.dispose();
         this.loaded.delete(site.id);
@@ -266,7 +405,27 @@ export class Cities {
         best = c;
       }
     }
+    if (this.active !== best) {
+      if (this.active) {
+        this.active.meshes.cut.uCutY.value.y = 0;
+        this.dropInteriors(this.active);
+      }
+      this.cutRoom = null;
+      this.inside = null;
+      this.cutFade = 0;
+    }
     this.active = best;
+    // the insides of the rooms around you, in the city you are in
+    if (best && best.plan.rooms.length > 0) {
+      if (!best.interiors) {
+        best.interiors = new Interiors(best.plan, this.u, best.meshes.cut);
+        best.meshes.near.add(best.interiors.group);
+      }
+      const s = best.site;
+      const co = Math.cos(s.rot);
+      const si = Math.sin(s.rot);
+      best.interiors.update(co * (pos.x - s.cx) + si * (pos.z - s.cz), -si * (pos.x - s.cx) + co * (pos.z - s.cz));
+    }
     const rect = this.u.uCityRect.value as THREE.Vector4;
     if (best) {
       this.u.uCityMap.value = this.roofMap(best);

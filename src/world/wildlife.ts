@@ -3,6 +3,7 @@
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import { STYLE_GLSL } from '../render/styleGlsl';
+import { blockedAt, steer, steered, type SolidQuery } from './avoid';
 
 const BIRDS = 3;
 const FIREFLIES = 60;
@@ -291,6 +292,8 @@ export class Wildlife {
   private readonly world: World;
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private inited = false;
+  /** What stands in the lizard's way: the top over (x, z) for feet at y, or -Infinity (as the wanderer's roof). Set by the game. */
+  solid: SolidQuery | null = null;
 
   // birds
   private readonly birdMesh: THREE.Mesh;
@@ -308,6 +311,8 @@ export class Wildlife {
   private lizHeading = 0;
   private lizX = 0;
   private lizZ = 0;
+  private lizY = 0;
+  private lizSide = 1;
   private lizT = 0;
   private lizDur = 0;
   private readonly n = new THREE.Vector3();
@@ -537,12 +542,14 @@ export class Wildlife {
       const x = pl.pos.x + fx * d - fz * side;
       const z = pl.pos.z + fz * d + fx * side;
       const s = w.sample(x, z, this.sample);
-      if (s.rock > 0.2 || s.salt > 0.3) {
+      if (s.rock > 0.2 || s.salt > 0.3 || (this.solid && blockedAt(this.solid, x, z, s.h))) {
         this.lizTimer = 5;
         return;
       }
       this.lizX = x;
       this.lizZ = z;
+      this.lizY = s.h;
+      this.lizSide = Math.random() < 0.5 ? 1 : -1;
       this.lizYaw = Math.random() * Math.PI * 2;
       this.lizState = 1;
       this.lizT = 0;
@@ -571,8 +578,20 @@ export class Wildlife {
       this.lizRun.value = 1;
       this.lizYaw = this.lizHeading + Math.sin(t * 9) * 0.45 + Math.sin(t * 3.3) * 0.25;
       const sp = 7 * (1 - THREE.MathUtils.smoothstep(t, this.lizDur - 0.5, this.lizDur));
-      this.lizX += Math.sin(this.lizYaw) * sp * dt;
-      this.lizZ += Math.cos(this.lizYaw) * sp * dt;
+      const mx = Math.sin(this.lizYaw) * sp * dt;
+      const mz = Math.cos(this.lizYaw) * sp * dt;
+      if (this.solid) {
+        // a stone in the way: it darts round it, and keeps going that way
+        if (steer(this.solid, this.lizX, this.lizZ, this.lizY, mx, mz, 0.08, this.lizSide)) {
+          this.lizSide = steered.side;
+          this.lizHeading += steered.turn !== 0 ? steered.turn : this.lizSide * 1.6;
+        }
+        this.lizX = steered.x;
+        this.lizZ = steered.z;
+      } else {
+        this.lizX += mx;
+        this.lizZ += mz;
+      }
       // dives into the sand at the end
       sink = THREE.MathUtils.smoothstep(t, this.lizDur - 0.45, this.lizDur) * 0.12;
       if (t > this.lizDur) {
@@ -581,6 +600,7 @@ export class Wildlife {
       }
     }
     const y = w.height(this.lizX, this.lizZ);
+    this.lizY = y;
     w.normal(this.lizX, this.lizZ, this.n);
     this.q1.setFromUnitVectors(UP, this.n);
     this.q2.setFromAxisAngle(UP, this.lizYaw);

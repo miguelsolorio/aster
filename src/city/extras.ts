@@ -215,6 +215,17 @@ export class SolidIndex {
       }
   }
 
+  /** Whether (x, y, z), grown by a margin, is inside a solid. */
+  contains(x: number, y: number, z: number, m = 0): boolean {
+    const C = SolidIndex.C;
+    const l = this.cells.get((Math.floor(x / C) + 4096) * 8192 + (Math.floor(z / C) + 4096));
+    if (!l) return false;
+    for (const s of l) {
+      if (Math.abs(x - s.x) <= s.hw + m && Math.abs(z - s.z) <= s.hd + m && y >= s.y0 - m && y <= s.y1 + m) return true;
+    }
+    return false;
+  }
+
   /** Top of the highest solid over (x, z) that the feet at height y are not underneath, or -Infinity. */
   topAt(x: number, z: number, y: number): number {
     const C = SolidIndex.C;

@@ -2,7 +2,7 @@
 // localStorage; the world itself is seeded, so only the changes are stored.
 //
 // Testing: ?tools=board,carpet,pick grants tools for this visit without saving them,
-// and ?reset clears the save before the game starts.
+// and ?reset clears the save and the saved spawn before the game starts.
 
 export type Tool = 'board' | 'carpet' | 'pick';
 export const TOOLS: Tool[] = ['board', 'carpet', 'pick'];
@@ -32,6 +32,56 @@ export interface SaveData {
 }
 
 const KEY = 'aster.save';
+const KEY_SPAWN = 'aster.spawn';
+
+/** A place the wanderer chose to arrive at: where, and which way to face. Height is read from the terrain on load. */
+export interface Spawn {
+  x: number;
+  z: number;
+  facing: number;
+}
+
+/** The saved spawn, or null if there is none or it cannot be trusted. */
+export function loadSpawn(): Spawn | null {
+  try {
+    const raw = JSON.parse(localStorage.getItem(KEY_SPAWN) ?? 'null') as Partial<Spawn> | null;
+    if (!raw || typeof raw !== 'object') return null;
+    const { x, z, facing } = raw;
+    if (typeof x !== 'number' || typeof z !== 'number' || typeof facing !== 'number') return null;
+    if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(facing)) return null;
+    return { x, z, facing };
+  } catch {
+    return null;
+  }
+}
+
+/** Remember a spawn. Returns false if it could not be stored. */
+export function saveSpawn(s: Spawn): boolean {
+  try {
+    localStorage.setItem(KEY_SPAWN, JSON.stringify({ x: s.x, z: s.z, facing: s.facing }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function clearSpawn(): void {
+  try {
+    localStorage.removeItem(KEY_SPAWN);
+  } catch {
+    /* storage unavailable; nothing to clear */
+  }
+}
+
+/** Forget the save and the spawn. Settings (volume, graphics, style) are left alone. */
+export function clearProgress(): void {
+  try {
+    localStorage.removeItem(KEY);
+  } catch {
+    /* storage unavailable; nothing to clear */
+  }
+  clearSpawn();
+}
 
 const fresh = (): SaveData => ({
   v: 1,
@@ -53,11 +103,7 @@ export class Save {
 
   constructor(qs: URLSearchParams) {
     if (qs.has('reset')) {
-      try {
-        localStorage.removeItem(KEY);
-      } catch {
-        /* storage unavailable; nothing to clear */
-      }
+      clearProgress();
     }
     this.data = fresh();
     try {

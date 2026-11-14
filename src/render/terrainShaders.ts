@@ -14,6 +14,7 @@
 import { MAX_TERRAIN_H, SURFACE_GLSL, TERRAIN } from '../world/surface';
 import { DEEP_HOLE } from '../world/deep/types';
 import { CITY_SHADOW_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
+import { ROUTE_GLSL } from '../city/routes';
 import { STYLE_GLSL } from './styleGlsl';
 
 // The look's settings (see render/types.ts Params; the game's 35 mm look sets them
@@ -161,29 +162,6 @@ uniform vec3 uFogCol;
 ${CITY_SITES_GLSL}
 ${CITY_SHADOW_GLSL}
 
-// Faint tracks worn into the sand, leading out of a city toward its neighbours and fading away.
-float cityTracks(vec2 p) {
-  float m = 0.0;
-  for (int i = 0; i < 4; i++) {
-    vec4 a = uCityA[i];
-    if (a.z <= 0.0) continue;
-    vec2 d = p - a.xy;
-    float dist = length(d);
-    if (dist < a.z * 0.85 || dist > a.z + 2200.0) continue;
-    float ang = atan(d.y, d.x);
-    float fade = 1.0 - smoothstep(a.z + 800.0, a.z + 2200.0, dist);
-    for (int k = 0; k < 2; k++) {
-      float ta = k == 0 ? uCityC[i].x : uCityC[i].y;
-      float da = ang - ta;
-      da = atan(sin(da), cos(da));
-      if (abs(da) > 0.5) continue;
-      float lat = da * dist + sin(dist * 0.011 + ta * 7.0) * 14.0 + sin(dist * 0.031 + ta * 3.0) * 4.0;
-      m = max(m, (1.0 - smoothstep(2.0, 4.2, abs(lat))) * fade);
-    }
-  }
-  return m;
-}
-
 // The nearest caverns (see sfCaverns in surface.ts), for the mark a sealed one leaves on the
 // sand, and the hole in an open one's floor.
 uniform vec4 uCavA[4];
@@ -206,6 +184,7 @@ varying float vCave;
 ${LOOK}
 ${COMMON}
 ${HIGH}
+${ROUTE_GLSL}
 
 // Explicit LOD everywhere: these run inside loops and branches.
 // The heightmap holds raw metres in both the 32-bit and the 16-bit float bake.
@@ -306,7 +285,6 @@ void main() {
   float rock = clamp(vMask.x, 0.0, 1.0) * (1.0 - pave);
   float salt = clamp(vMask.y, 0.0, 1.0) * (1.0 - rock) * (1.0 - pave);
   float sandW = (1.0 - rock) * (1.0 - salt) * (1.0 - pave);
-  float track = cityTracks(p.xz) * sandW;
 
   // ---- every screen-space derivative up front, in uniform control flow
   // Ripples are set in the sand by the prevailing wind, so their direction is
@@ -341,6 +319,10 @@ void main() {
     vec2 hd = p.xz - uCavA[i].xy;
     if (abs(dot(hd, uCavA[i].zw) - uCavD[i].y) < ${DEEP_HOLE.halfU.toFixed(2)} && abs(dot(hd, vec2(-uCavA[i].w, uCavA[i].z))) < ${DEEP_HOLE.halfV.toFixed(2)} && p.y < uCavB[i].y + 0.5) discard;
   }
+
+  // ---- the worn paths between cities (and the camps along them), on sand and salt alike
+  float track = 0.0;
+  if (sandW + salt > 0.01) track = routePaths(p.xz, fwXZ, dist) * (sandW + 0.75 * salt);
 
   // ---- base normal: mesh near, heightmap far
   vec2 huv = (p.xz - uRect.xy) / max(uRect.z, 1.0);
@@ -520,9 +502,18 @@ void main() {
     saltCol *= 0.97 + 0.05 * vnoise(p.xz * 0.02);
   }
 
-  // trodden sand is a little darker and flatter than the dunes around it
-  sandCol *= 1.0 - 0.13 * track;
   vec3 col = mix(mix(sandCol, saltCol, salt), rockCol, rock);
+  // trodden ground is flatter, darker and a little browner than the dunes around it, with grit
+  // and small stones kicked up along it close by
+  if (track > 0.001) {
+    float grit = 1.0;
+    if (dist < 80.0) {
+      float g = vnoise(p.xz * 3.1) * 0.6 + vnoise(p.xz * 9.0) * 0.4;
+      grit = 1.0 + (g - 0.5) * 0.16 * (1.0 - smoothstep(30.0, 80.0, dist));
+    }
+    vec3 worn = col * vec3(0.87, 0.83, 0.78) * grit;
+    col = mix(col, worn, track);
+  }
   // ---- snow on the high peaks
   if (p.y > SNOW_LINE - 50.0) {
     float snow = snowAt(p, n.y);
@@ -546,9 +537,11 @@ void main() {
     }
     col = mix(col, paveCol, pave);
   }
+  // the ground darkens softly where it meets the walls and under the tree crowns
+  col *= 1.0 - 0.42 * cityContact(p);
 
   // ---- sparkle on sand only
-  float spk = sandW * (1.0 - smoothstep(25.0 * dk, 60.0 * dk, dist));
+  float spk = sandW * (1.0 - track) * (1.0 - smoothstep(25.0 * dk, 60.0 * dk, dist));
   if (spk > 0.001) {
     vec2 id = floor(sc);
     vec2 f = fract(sc) - 0.5;

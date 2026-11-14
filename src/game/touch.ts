@@ -19,7 +19,10 @@ export type TouchMode = 'off' | 'play' | 'photo';
 
 const STICK_RADIUS = 56;
 const DEAD_ZONE = 0.12;
-const BOOST_EDGE = 0.92;
+// Full tilt is a walk, as on a keyboard. Boost (the Shift run) is a deliberate push past the ring.
+const BOOST_EDGE = 1.3;
+// The stick only follows the finger once it is dragged this far out, so there is room to overshoot.
+const FOLLOW_EDGE = 1.5;
 const STICK_SIDE = 0.45;
 const IDLE_MS = 4000;
 
@@ -353,13 +356,18 @@ export class TouchControls {
     let dx = x - this.stickCx;
     let dy = y - this.stickCy;
     const len = Math.sqrt(dx * dx + dy * dy);
-    const edge = len >= STICK_RADIUS * BOOST_EDGE;
-    if (len > STICK_RADIUS) {
-      const k = (len - STICK_RADIUS) / len;
+    if (len > STICK_RADIUS * FOLLOW_EDGE) {
+      const k = (len - STICK_RADIUS * FOLLOW_EDGE) / len;
       this.stickCx += dx * k;
       this.stickCy += dy * k;
       dx = x - this.stickCx;
       dy = y - this.stickCy;
+    }
+    const l2raw = Math.sqrt(dx * dx + dy * dy);
+    const edge = l2raw >= STICK_RADIUS * BOOST_EDGE;
+    if (l2raw > STICK_RADIUS) {
+      dx *= STICK_RADIUS / l2raw;
+      dy *= STICK_RADIUS / l2raw;
     }
     const l2 = Math.sqrt(dx * dx + dy * dy);
     const mag = Math.min(1, l2 / STICK_RADIUS);

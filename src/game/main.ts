@@ -11,11 +11,14 @@ import { Splash } from '../world/splash';
 import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
 import { Fauna } from '../world/fauna';
+import { Props } from '../world/props';
 import { Cities } from '../city/cities';
 import { Caravans, ROLE_KEEPER, ROLE_PILGRIM } from '../city/caravans';
 import { Waymarks } from '../city/waymarks';
 import { People } from '../city/people';
 import { Figure } from './figure';
+import { HEADROOM } from '../city/rooms';
+import { CollisionOverlay } from './collisionDebug';
 import { AudioEngine } from '../audio/audio';
 import { UI } from '../ui/ui';
 import { TouchControls, type TouchMode } from './touch';
@@ -26,7 +29,7 @@ import { DEFAULTS, type Params } from '../render/types';
 import { LOOKS, stylesUnlocked, type Look } from './looks';
 import { WORLD_SCALE } from '../world/scale';
 import { Massifs } from '../world/massifs';
-import { Save } from './save';
+import { Save, loadSpawn, saveSpawn, clearSpawn, clearProgress } from './save';
 import { Talk, type Speaker } from './talk';
 import { KEEPER, MINER, PILGRIM, TOWNSFOLK, TRAVELLER, type Line } from './lines';
 
@@ -85,7 +88,7 @@ function start() {
 
   let seekMiner = false;
   // ---- spawn somewhere new each visit, on open sand
-  {
+  const arrival = (): { x: number; z: number; city: { cx: number; cz: number } | null } => {
     const s = { h: 0, rock: 0, salt: 0 };
     const n = new THREE.Vector3();
     let x = 0;
@@ -129,8 +132,18 @@ function start() {
       z = fallback.z;
       spawnCity = fallback.city;
     }
+    return { x, z, city: spawnCity };
+  };
+  {
+    // Where to arrive: ?x=&z=, then ?miner, then the spawn saved from the menu, then somewhere new.
+    const pinned = qs.has('x') && qs.has('z');
+    const saved = !pinned && !qs.has('miner') ? loadSpawn() : null;
+    const r = saved ? null : arrival();
+    let x = saved ? saved.x : r!.x;
+    let z = saved ? saved.z : r!.z;
+    let spawnCity = r ? r.city : null;
     // ?x=..&z=.. pins the spawn point (handy for sharing a place).
-    if (qs.has('x') && qs.has('z')) {
+    if (pinned) {
       x = Number(qs.get('x'));
       z = Number(qs.get('z'));
     }
@@ -145,8 +158,8 @@ function start() {
       }
     }
     player.place(x, z);
-    // Face the city, so the first thing you see is somewhere to go.
-    player.facing = spawnCity ? Math.atan2(spawnCity.cx - x, spawnCity.cz - z) : Math.random() * Math.PI * 2;
+    // Face the city, so the first thing you see is somewhere to go (or the way a saved spawn faced).
+    player.facing = saved ? saved.facing : spawnCity ? Math.atan2(spawnCity.cx - x, spawnCity.cz - z) : Math.random() * Math.PI * 2;
   }
 
   // ---- scene
@@ -180,7 +193,7 @@ function start() {
   }
   const splash = new Splash(u);
   const wildlife = new Wildlife(world, u);
-  const caravans = new Caravans(world, world.cities, u);
+  const caravans = new Caravans(world, world.cities, cities.routes, u);
   caravans.landmarks = (out) => discoveries.landmarks(out);
   const fauna = new Fauna(world, u);
   fauna.landmarks = (out) => discoveries.landmarks(out);
@@ -188,10 +201,14 @@ function start() {
     const c = cities.nearest(x, z);
     return Math.hypot(c.cx - x, c.cz - z) < c.radius + 300 || discoveries.nearSolids(x, z, 12);
   };
-  const waymarks = new Waymarks(world, world.cities, u);
+  const waymarks = new Waymarks(world, world.cities, cities.routes, u);
   const people = new People(u);
   const massifs = new Massifs(world, u);
-  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, wildlife.group, fauna.group, dust.group, splash.group, massifs.group);
+  // Rocks and cacti out in the open, kept off the finds and their caverns, and off where you start.
+  const props = new Props(world, u);
+  props.blocked = (x, z, r) => discoveries.claimed(x, z, r);
+  props.keepClear(player.state.pos.x, player.state.pos.z, 25);
+  scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, props.group, wildlife.group, fauna.group, dust.group, splash.group, massifs.group);
 
   const figure = new Figure(u);
   figure.board = player.board;
@@ -234,7 +251,10 @@ function start() {
         }
       }
     }
-    if (best) caravans.addCamp(best.x, best.z, WORLD_SEED ^ Math.round(best.x * 31 + best.z * 17));
+    if (best) {
+      caravans.addCamp(best.x, best.z, WORLD_SEED ^ Math.round(best.x * 31 + best.z * 17));
+      props.keepClear(best.x, best.z, 22);
+    }
   }
 
   const sky = new THREE.Mesh(
@@ -270,6 +290,7 @@ function start() {
     cities.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     splash.setDensity(auto.tier === 'mobile' ? 0.5 : auto.tier === 'low' ? 0.75 : 1);
     discoveries.tier = auto.tier === 'mobile' ? 2 : auto.tier === 'low' ? 1 : 0;
+    props.setTier(auto.tier);
     resize();
   }
   function resize() {
@@ -303,6 +324,14 @@ function start() {
     onBegin() {
       void audio.start();
       lock();
+      // Without a click the browser may keep audio suspended: retry on the first real gesture.
+      const retry = () => {
+        void audio.start();
+        window.removeEventListener('pointerdown', retry);
+        window.removeEventListener('keydown', retry);
+      };
+      window.addEventListener('pointerdown', retry);
+      window.addEventListener('keydown', retry);
     },
     onResume() {
       audio.setPaused(false);
@@ -350,6 +379,27 @@ function start() {
     onStyle(i) {
       applyLook(LOOKS[i]);
       stillDrawn = false;
+    },
+    // A spawn is kept for the open sand only: not down in a cavern, or in the vault under the strata.
+    canSetSpawn: () => !player.under && !discoveries.deepIn,
+    onSetSpawn: () => saveSpawn({ x: player.state.pos.x, z: player.state.pos.z, facing: camYaw + Math.PI }),
+    onClearSpawn: () => clearSpawn(),
+    // A fresh arrival now, found the way a new visit finds one, whatever spawn is saved.
+    onRespawn() {
+      const at = arrival();
+      seekMiner = false;
+      player.place(at.x, at.z);
+      player.facing = at.city ? Math.atan2(at.city.cx - at.x, at.city.cz - at.z) : Math.random() * Math.PI * 2;
+      camYaw = player.facing + Math.PI;
+      camTarget.copy(player.state.pos);
+      cities.setFocus(at.x, at.z);
+    },
+    // Forget the journey and the spawn, keep the settings, and arrive somewhere new.
+    onReset() {
+      clearProgress();
+      const url = new URL(window.location.href);
+      for (const k of ['x', 'z', 'miner', 'reset', 'tools', 'deep']) url.searchParams.delete(k);
+      window.location.replace(url.toString());
     },
     },
     { quality: auto.tier, styles: unlocked ? LOOKS.map(({ id, name }) => ({ id, name })) : [], style: unlocked ? qs.get('style') : null },
@@ -563,14 +613,22 @@ function start() {
     return ceil < Infinity && y > ceil - 0.3 ? world.uncarved(x, z) : -Infinity;
   };
   // (and the things found out in the desert: standing stones, fallen columns, the great bones)
-  player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y), discoveries.topAt(x, z, y));
+  // (and the rocks and cacti between them)
+  player.roof = (x, z, y) => Math.max(cities.roofAt(x, z, y), caveRoofAt(x, z, y), discoveries.topAt(x, z, y), props.topAt(x, z, y));
+  // What stands in the way of everything else that walks the ground: the same solids, less the
+  // cave roofs (only ever overhead down at the feet).
+  const obstacle = (x: number, z: number, y: number) => Math.max(cities.roofAt(x, z, y), discoveries.topAt(x, z, y), props.topAt(x, z, y));
+  const collisionDebug = new CollisionOverlay(scene, obstacle, (x, z) => world.height(x, z));
+  people.solid = fauna.solid = wildlife.solid = caravans.solid = obstacle;
   // Under an open cavern the deep has floors of its own, one over another: where it has the
   // say, the terrain (and every roof above) is not asked.
   player.floor = (x, z, y) => discoveries.deepFloor(x, z, y);
   // What the feet are on when it is not the ground: 0 stone, 1 bone, 2 wood, or -1 for the ground itself.
   const propUnder = (x: number, z: number, y: number) => {
-    const t = discoveries.topAt(x, z, y);
-    return Math.abs(t - y) < 0.3 && t > world.height(x, z) + 0.4 ? discoveries.solidKind : -1;
+    const td = discoveries.topAt(x, z, y);
+    const tp = props.topAt(x, z, y);
+    const t = Math.max(td, tp);
+    return Math.abs(t - y) < 0.3 && t > world.height(x, z) + 0.4 ? (tp > td ? props.kind : discoveries.solidKind) : -1;
   };
   player.hard = (x, z, y) => propUnder(x, z, y) >= 0;
   // The roof over a cavern is the sand it always was, though the floor under it is rock.
@@ -796,6 +854,7 @@ function start() {
     }
     if (e.code === 'KeyE' && !e.repeat) interact();
     if (e.code === 'KeyQ' && !e.repeat) toggleBoard();
+    if (e.code === 'KeyC' && !e.repeat && !e.ctrlKey && !e.metaKey) collisionDebug.toggle(); // debug: collision overlay
     keys.add(e.code);
   });
   window.addEventListener('keyup', (e) => keys.delete(e.code));
@@ -846,6 +905,10 @@ function start() {
   let cityNear = 0;
   let bustle = 0;
   let airCam = 0;
+  let camLift = 0; // how much steeper the eye looks down while a wall is behind it, eased
+  let clearDist = -1; // how far back the eye sits clear of walls on the surface, eased
+  let roomCam = 0; // 0..1 how far the eye has settled into a room's closer, higher view, eased
+  let roomReach = 9; // how far back the eye may sit in the room you are in
   let deepDist = -1; // how far back the eye sits underground, eased; -1 up on the sand
   let figNear = false; // the eye is drawn in so close underground that the figure is not shown
   let underK = 0; // 0 under the sky .. 1 well down in a deep, eased
@@ -968,7 +1031,7 @@ function start() {
       // Under the lid the open desert is not drawn at all: a deep is a closed shell, and any
       // crack in it should show the dark, never the sky and the hills.
       const shut = !!deepIn && st.pos.y < deepIn.spec.y + deepIn.spec.lid - 1;
-      massifs.group.visible = cities.group.visible = clipmap.group.visible = !shut;
+      massifs.group.visible = cities.group.visible = clipmap.group.visible = props.group.visible = !shut;
       // and the sky goes sooner, as soon as the stair is a little way down the well
       sky.visible = !(deepIn && st.pos.y < deepIn.spec.y - 1.2);
     }
@@ -993,7 +1056,7 @@ function start() {
     // Near the things found in the desert a fast move is taken in short steps, so a rib a
     // hand's width across is not stepped clean over between two frames.
     {
-      const near = dt > 0 && (!!deepIn || discoveries.nearSolids(st.pos.x, st.pos.z, 15));
+      const near = dt > 0 && (!!deepIn || discoveries.nearSolids(st.pos.x, st.pos.z, 15) || props.nearSolids(st.pos.x, st.pos.z, 15));
       const steps = near ? Math.min(8, Math.max(1, Math.ceil((Math.hypot(st.vel.x, st.vel.y, st.vel.z) * dt) / 0.3))) : 1;
       const h = dt / steps;
       for (let i = 0; i < steps; i++) {
@@ -1001,12 +1064,13 @@ function start() {
         // You cannot rise through a stone you are under: slow to meet its underside, and stay below it.
         let under = Infinity;
         if (near && !st.grounded) {
-          under = discoveries.ceilAt(st.pos.x, st.pos.z, st.pos.y) - 1.9;
+          under = Math.min(discoveries.ceilAt(st.pos.x, st.pos.z, st.pos.y), props.ceilAt(st.pos.x, st.pos.z, st.pos.y)) - 1.9;
           if (st.vel.y > 0 && st.pos.y + st.vel.y * h > under) st.vel.y = Math.max(0, (under - st.pos.y) / h);
         }
         player.update(h, input, camYaw, events);
         if (near && !st.grounded) {
-          under = discoveries.ceilAt(st.pos.x, st.pos.z, Math.min(st.pos.y, under)) - 1.9;
+          const uy = Math.min(st.pos.y, under);
+          under = Math.min(discoveries.ceilAt(st.pos.x, st.pos.z, uy), props.ceilAt(st.pos.x, st.pos.z, uy)) - 1.9;
           if (st.pos.y > under) {
             st.pos.y = under;
             if (st.vel.y > 0) st.vel.y = 0;
@@ -1030,6 +1094,12 @@ function start() {
       inCave = ceil < Infinity && st.pos.y < ceil - 0.3;
       if (inCave && st.pos.y > ceil - 1.9) {
         st.pos.y = ceil - 1.9;
+        if (st.vel.y > 0) st.vel.y = 0;
+      }
+      // and a room its ceiling (and its doorway a lintel): no rising through to the roof
+      const roomCeil = cities.ceilAt(st.pos.x, st.pos.z, st.pos.y);
+      if (st.pos.y > roomCeil - HEADROOM - 0.02) {
+        st.pos.y = roomCeil - HEADROOM - 0.02;
         if (st.vel.y > 0) st.vel.y = 0;
       }
     }
@@ -1137,10 +1207,59 @@ function start() {
     tmp.copy(st.pos);
     tmp.y += 1.5;
     camTarget.lerp(tmp, 1 - Math.exp(-dt * 12));
-    const cp = Math.cos(camPitch);
-    tmp2.set(Math.sin(camYaw) * cp, Math.sin(camPitch), Math.cos(camYaw) * cp);
+    // Inside a room the roof is drawn away and the eye comes in closer and looks down from a
+    // little higher, eased in as you cross the threshold and back out as you leave.
+    cities.interior(dt, st.pos, camera.position);
+    {
+      const rm = cities.inside;
+      if (rm) roomReach = Math.min(9, Math.max(3.2, 0.55 * Math.min(rm.x1 - rm.x0, rm.z1 - rm.z0) + 1.6));
+      roomCam += ((rm ? 1 : 0) - roomCam) * (1 - Math.exp(-dt * 3));
+    }
+    const reach0 = camDist * (1 + 0.6 * airCam);
+    const reach = reach0 + (Math.min(reach0, roomReach) - reach0) * roomCam;
+    const pitch0 = camPitch + (Math.max(camPitch, 0.5) - camPitch) * roomCam;
+    // Against a wall the eye is lifted: of a few steeper angles, the one that leaves the most
+    // room (a little steeper costs a little room) is eased into, so the figure is seen from above
+    // the wall instead of from inside it. Open ground leaves the angle alone.
+    if (!discoveries.deepIn) {
+      let bestLift = 0;
+      let maxFree = 0;
+      const frees = [0, 0, 0, 0];
+      for (let l = 0; l <= 3; l++) {
+        const pitch = Math.min(Math.max(pitch0, 1.05), pitch0 + l * 0.3);
+        const c2 = Math.cos(pitch);
+        const dx = Math.sin(camYaw) * c2;
+        const dy = Math.sin(pitch);
+        const dz = Math.cos(camYaw) * c2;
+        let free = reach;
+        for (let d = 0.4; d <= reach; d += 0.3) {
+          const x = camTarget.x + dx * d;
+          const y = camTarget.y + dy * d;
+          const z = camTarget.z + dz * d;
+          if (cities.solidAt(x, y, z, 0.3) || discoveries.solidAt(x, y, z, 0.3)) {
+            free = d - 0.3;
+            break;
+          }
+        }
+        frees[l] = free;
+        maxFree = Math.max(maxFree, free);
+        // (open all the way back: the first such angle will do, and the flattest is preferred)
+        if (free >= reach) {
+          bestLift = l * 0.3;
+          maxFree = Infinity;
+          break;
+        }
+      }
+      // the steepest angle that costs hardly any room: as high as the wall and roof allow
+      // (a nook too tight for any angle to leave real room is left level: looking straight down
+      // from a hand's width above the head shows nothing but floor)
+      if (maxFree < Infinity) for (let l = 0; l <= 3; l++) if (frees[l] >= Math.max(1.5, maxFree * 0.85)) bestLift = l * 0.3;
+      camLift += (bestLift - camLift) * (1 - Math.exp(-dt * (bestLift > camLift ? 5 : 1.5)));
+    } else camLift = 0;
+    const lp = Math.min(pitch0 + camLift, Math.max(pitch0, 1.05));
+    const cp = Math.cos(lp);
+    tmp2.set(Math.sin(camYaw) * cp, Math.sin(lp), Math.cos(camYaw) * cp);
     // pull back and rise a little while airborne
-    const reach = camDist * (1 + 0.6 * airCam);
     tmp2.y += 0.12 * airCam;
     tmp2.normalize();
     let dist = reach;
@@ -1187,9 +1306,30 @@ function start() {
         break;
       }
     }
+    // Walls and roofs of buildings, shrines and ruins stand in the eye's way too: it is drawn in
+    // until nothing solid is between it and the figure. Quickly in, slowly back out, so a pass
+    // along a doorway or a ragged wall does not shake the view.
+    let hit = Infinity;
+    if (!deepIn && dist > 0.3) {
+      for (let d = 0.4; d <= dist; d += 0.2) {
+        const x = camTarget.x + tmp2.x * d;
+        const y = camTarget.y + tmp2.y * d;
+        const z = camTarget.z + tmp2.z * d;
+        if (cities.solidAt(x, y, z, 0.3) || discoveries.solidAt(x, y, z, 0.3)) {
+          hit = Math.max(0.12, d - 0.3);
+          break;
+        }
+      }
+    }
+    const room = Math.min(hit, dist);
+    if (clearDist < 0 || dt <= 0) clearDist = room;
+    else clearDist += (room - clearDist) * (1 - Math.exp(-dt * (room < clearDist ? 14 : 1.4)));
+    clearDist = Math.min(clearDist, hit); // never past the wall itself
+    const walled = clearDist < dist - 0.01;
+    if (walled) dist = Math.max(0.12, clearDist);
     camera.position.copy(camTarget).addScaledVector(tmp2, dist);
     // drawn right in against a wall, the eye is inside the figure: see past it, not its lining
-    const tooNear = !!deepIn && dist < 0.75;
+    const tooNear = (!!deepIn || walled) && dist < 0.75;
     if (tooNear !== figNear) {
       figNear = tooNear;
       figure.group.visible = !tooNear;
@@ -1209,7 +1349,7 @@ function start() {
     const fov = 50 + Math.min(14, st.speed * 0.55);
     // Underground the eye is often a hand's width from a wall, and the half metre it does not
     // draw in front of itself up on the sand would cut a window through one.
-    const near = deepIn ? 0.06 : 0.5;
+    const near = deepIn || walled ? 0.06 : 0.5;
     if (Math.abs(camera.fov - fov) > 0.05 || camera.near !== near) {
       camera.fov += (fov - camera.fov) * (1 - Math.exp(-dt * 3));
       camera.near = near;
@@ -1240,12 +1380,14 @@ function start() {
     }
 
     cities.update(dt, st.pos);
+    collisionDebug.update(dt, st.pos.x, st.pos.y, st.pos.z);
     bake.update(st.pos);
     clipmap.update(camera.position);
     trail.update(dt, st.pos.x, st.pos.z);
     dust.update(frame);
     splash.update(frame);
     discoveries.update(frame);
+    props.update(frame);
     // Small things lying about are picked up by walking onto them.
     if (playing && st.grounded) {
       const rk = discoveries.relicNear(st.pos.x, st.pos.y, st.pos.z, 1.5);
@@ -1309,8 +1451,10 @@ function start() {
     wildlife.update(frame);
     fauna.update(frame);
     const ambience = cities.frame(frame);
-    audio.setAmbience(ambience);
     caravans.update(frame);
+    // the camp fires out on the routes crackle like the city's own
+    ambience.fire = Math.min(1, Math.hypot(ambience.fire, caravans.fireLevel(frame.player.pos.x, frame.player.pos.z)));
+    audio.setAmbience(ambience);
     waymarks.update(frame);
     people.setCity(cities.active);
     people.update(frame);
@@ -1393,7 +1537,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
+        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, props, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
   }
 
   let frozen = false;

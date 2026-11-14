@@ -368,6 +368,9 @@ export function reeds(w: Writer, x: number, y: number, z: number, n: number, hgt
 }
 
 /** A clay or glazed urn of height about 0.5 s with something growing in it. */
+/** Where tall pots register their solids while a city is being built (set by the builder). */
+let potSink: Solid[] | null = null;
+
 function pot(w: Writer, x: number, y: number, z: number, s: number, rng: () => number): void {
   const S = 6;
   const rot = rng() * TAU;
@@ -384,6 +387,8 @@ function pot(w: Writer, x: number, y: number, z: number, s: number, rng: () => n
   }
   w.extra = 0;
   const hgt = s * (0.45 + rng() * 0.25);
+  // a pot as tall as a step is a post to walk round; shorter ones are stepped over
+  if (potSink && hgt >= 0.75) potSink.push({ x, z, hw: 0.27 * s, hd: 0.27 * s, y0: y - 1, y1: y + hgt });
   w.reserve(S * 5 + 1, S * 6 * 3 + S * 3);
   const a = ring(w, x, y - 0.02, z, 0.16 * s, S, rot, 0, -0.4);
   const b = ring(w, x, y + hgt * 0.45, z, 0.27 * s, S, rot, 0, 0);
@@ -797,6 +802,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
 
   const treeW = new Writer(1 << 15, 1 << 16);
   const solids: Solid[] = [];
+  potSink = solids;
   for (let i = 0; i < tx.length; i++) {
     const x = tx[i], z = tz[i];
     const y = bedAt(x, z) ? BED_SOIL : ctx.groundAt(x, z);
@@ -962,8 +968,13 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     const bb = g.boundingBox!;
     bounds.push(bb.min.x, bb.min.z, bb.max.x, bb.max.z);
   }
+  potSink = null;
   const bx = new Float32Array(bounds);
   near.userData.triangles = tris;
+  // crowns that shade the ground under them (read by Cities into the city map)
+  const crowns: number[] = [];
+  for (let i = 0; i < tx.length; i++) crowns.push(tx[i], tz[i], 1.2 + 0.22 * th[i]);
+  near.userData.crowns = crowns;
   near.userData.counts = { trees: tx.length, shrubs: nShrubs, reeds: nReeds, vines: nVines, pots: nPots };
 
   // ---------------------------------------------------------------- sound: leaves in the groves

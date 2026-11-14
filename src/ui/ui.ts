@@ -1,6 +1,9 @@
 import './ui.css';
 
 export type Quality = 'mobile' | 'low' | 'high';
+/** How long the title card stays up before it fades into the game by itself. */
+const TITLE_HOLD_MS = 3200;
+
 export type UIState = 'title' | 'playing' | 'menu' | 'photo';
 
 export interface UIHooks {
@@ -19,7 +22,26 @@ export interface UIHooks {
   onHideFigure(hidden: boolean): void;
   onCapture(): void;
   onStyle(index: number): void;
+  /** Whether a spawn may be saved where the player stands (open ground only). */
+  canSetSpawn(): boolean;
+  /** Save here, facing the way the player looks, as where to arrive. Returns false if it could not be kept. */
+  onSetSpawn(): boolean;
+  onClearSpawn(): void;
+  /** Move to a fresh random arrival point now. */
+  onRespawn(): void;
+  /** Forget the journey and the saved spawn (settings stay) and start again. */
+  onReset(): void;
 }
+
+type TabId = 'audio' | 'graphics' | 'controls' | 'game';
+const TABS: Array<{ id: TabId; label: string }> = [
+  { id: 'audio', label: 'Audio' },
+  { id: 'graphics', label: 'Graphics' },
+  { id: 'controls', label: 'Controls' },
+  { id: 'game', label: 'Game' },
+];
+/** How long an inline status line stays up, in ms. */
+const STATUS_MS = 2600;
 
 export interface StyleChoice {
   id: string;
@@ -41,23 +63,73 @@ export interface Known {
   dig: boolean;
 }
 
-function keyControls(k: Known): string[] {
-  const out = ['WASD walk', 'Mouse look', 'Shift run', 'Space leap, hold to rise, let go to glide', 'In the air: WASD steer, Shift boost, double-tap Space to drop'];
-  if (k.talk) out.push('E talk');
-  if (k.board) out.push('Q step on or off the board', 'On the board: WASD glide, Shift boost');
-  if (k.carpet) out.push('The carpet unrolls when you fly, and flies faster');
-  if (k.dig) out.push('E swing the pick, when nobody is near');
-  out.push('Esc menu');
+/** One line of the controls list: what you do, the keys for it, and a short note. */
+interface ControlRow {
+  action: string;
+  keys?: string[];
+  note?: string;
+}
+interface ControlSection {
+  title: string;
+  rows: ControlRow[];
+}
+
+function keyControls(k: Known): ControlSection[] {
+  const wasd = ['W', 'A', 'S', 'D'];
+  const fly: ControlRow[] = [
+    { action: 'Leap', keys: ['Space'], note: 'hold to rise, release to glide' },
+    { action: 'Steer', keys: wasd },
+    { action: 'Boost', keys: ['Shift'] },
+    { action: 'Drop', keys: ['Space', 'Space'], note: 'double-tap in the air' },
+  ];
+  if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, and flies faster' });
+  const out: ControlSection[] = [
+    {
+      title: 'Move',
+      rows: [
+        { action: 'Walk', keys: wasd, note: 'or arrow keys' },
+        { action: 'Run', keys: ['Shift'] },
+        { action: 'Look', note: 'Mouse drag or move' },
+        { action: 'Zoom', note: 'Mouse wheel' },
+      ],
+    },
+    { title: 'Fly', rows: fly },
+  ];
+  const act: ControlRow[] = [];
+  if (k.talk) act.push({ action: 'Talk', keys: ['E'] });
+  if (k.dig) act.push({ action: 'Swing pick', keys: ['E'], note: 'when nobody is near' });
+  if (k.board) act.push({ action: 'Board', keys: ['Q'], note: 'step on or off. On it, WASD glide and Shift boosts' });
+  if (act.length) out.push({ title: 'Interact', rows: act });
+  out.push({ title: 'Menu', rows: [{ action: 'Pause', keys: ['Esc'] }] });
   return out;
 }
 
-function touchControls(k: Known): string[] {
-  const out = ['Left thumb: walk (push to the edge to run)', 'Right thumb: look, pinch to zoom'];
-  out.push('Button: leap, hold to rise, let go to glide', 'In the air: stick steers (edge to boost), small button drops');
-  if (k.talk) out.push('Speech button: talk, when someone is near');
-  if (k.board) out.push('Board button: step on or off the board', 'On the board: the stick glides (edge to boost)');
-  if (k.carpet) out.push('The carpet unrolls when you fly, and flies faster');
-  if (k.dig) out.push('Pick button: swing the pick, when nobody is near');
+function touchControls(k: Known): ControlSection[] {
+  const fly: ControlRow[] = [
+    { action: 'Leap', note: 'Leap button. Hold to rise, release to glide' },
+    { action: 'Steer', note: 'Left thumb stick' },
+    { action: 'Boost', note: 'Push the stick past the ring' },
+    { action: 'Drop', note: 'Small button in the air' },
+  ];
+  if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, and flies faster' });
+  const out: ControlSection[] = [
+    {
+      title: 'Move',
+      rows: [
+        { action: 'Walk', note: 'Left thumb stick' },
+        { action: 'Run', note: 'Push the stick past the ring' },
+        { action: 'Look', note: 'Right thumb drag' },
+        { action: 'Zoom', note: 'Pinch' },
+      ],
+    },
+    { title: 'Fly', rows: fly },
+  ];
+  const act: ControlRow[] = [];
+  if (k.talk) act.push({ action: 'Talk', note: 'Speech button, when someone is near' });
+  if (k.dig) act.push({ action: 'Swing pick', note: 'Pick button, when nobody is near' });
+  if (k.board) act.push({ action: 'Board', note: 'Board button to step on or off. On it, the stick glides' });
+  if (act.length) out.push({ title: 'Interact', rows: act });
+  out.push({ title: 'Menu', rows: [{ action: 'Pause', note: 'Pause button' }] });
   return out;
 }
 const QUALITIES: Quality[] = ['mobile', 'low', 'high'];
@@ -74,8 +146,29 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return e;
 }
 
-function fillControls(ul: HTMLElement, items: string[]): void {
-  ul.replaceChildren(...items.map((c) => el('li', undefined, c)));
+function fillControls(host: HTMLElement, sections: ControlSection[]): void {
+  host.replaceChildren(
+    ...sections.map((sec, i) => {
+      const group = el('section', 'aster-ctl');
+      const h = el('h3', 'aster-ctl__title', sec.title);
+      h.id = `aster-ctl-${i}`;
+      const dl = el('dl', 'aster-ctl__list');
+      for (const r of sec.rows) {
+        const row = el('div', 'aster-ctl__row');
+        const dd = el('dd', 'aster-ctl__what');
+        if (r.keys) {
+          const caps = el('span', 'aster-ctl__keys');
+          for (const key of r.keys) caps.appendChild(el('kbd', 'aster-kbd', key));
+          dd.appendChild(caps);
+        }
+        if (r.note) dd.appendChild(el('span', 'aster-ctl__note', r.note));
+        row.append(el('dt', 'aster-ctl__action', r.action), dd);
+        dl.appendChild(row);
+      }
+      group.append(h, dl);
+      return group;
+    }),
+  );
 }
 
 
@@ -117,8 +210,17 @@ export class UI {
   private readonly resumeBtn: HTMLButtonElement;
   private readonly captureBtn: HTMLButtonElement;
   private readonly hideBtn: HTMLButtonElement;
-  private readonly beginEl: HTMLElement;
   private readonly panelControls: HTMLElement;
+  private readonly tabBtns: Record<TabId, HTMLButtonElement>;
+  private readonly tabPanes: Record<TabId, HTMLElement>;
+  private readonly spawnBtn: HTMLButtonElement;
+  private readonly spawnHint: HTMLElement;
+  private readonly statusEl: HTMLElement;
+  private readonly resetBtn: HTMLButtonElement;
+  private readonly resetCancel: HTMLButtonElement;
+  private readonly resetAsk: HTMLElement;
+  private tab: TabId = 'audio';
+  private statusTimer = 0;
   private readonly photoHint: HTMLElement;
   private readonly pauseBtn: HTMLButtonElement;
   private readonly styleNames: HTMLElement[] = [];
@@ -162,8 +264,6 @@ export class UI {
     const title = el('div', 'aster-layer aster-title is-on');
     title.appendChild(el('h1', 'aster-title__name', 'Aster'));
     title.appendChild(el('p', 'aster-title__line', 'Take the long way'));
-    this.beginEl = el('p', 'aster-title__begin', 'Click to begin');
-    title.appendChild(this.beginEl);
     this.title = title;
 
     // Menu
@@ -176,8 +276,32 @@ export class UI {
     h.id = 'aster-menu-title';
     panel.appendChild(h);
 
-    // Levels. Music and Effects sit under the overall Volume; 100 on each is the mix as tuned.
-    panel.append(
+    // Tabs. Resume and Photo mode sit below them, always in reach.
+    const tablist = el('div', 'aster-tabs');
+    tablist.setAttribute('role', 'tablist');
+    tablist.setAttribute('aria-label', 'Settings');
+    const panes = el('div', 'aster-panes');
+    this.tabBtns = {} as Record<TabId, HTMLButtonElement>;
+    this.tabPanes = {} as Record<TabId, HTMLElement>;
+    for (const t of TABS) {
+      const tab = el('button', 'aster-tab', t.label);
+      tab.type = 'button';
+      tab.id = `aster-tab-${t.id}`;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-controls', `aster-pane-${t.id}`);
+      tab.addEventListener('click', () => this.selectTab(t.id));
+      const pane = el('div', 'aster-pane');
+      pane.id = `aster-pane-${t.id}`;
+      pane.setAttribute('role', 'tabpanel');
+      pane.setAttribute('aria-labelledby', tab.id);
+      this.tabBtns[t.id] = tab;
+      this.tabPanes[t.id] = pane;
+      tablist.appendChild(tab);
+      panes.appendChild(pane);
+    }
+
+    // Audio. Music and Effects sit under the overall Volume; 100 on each is the mix as tuned.
+    this.tabPanes.audio.append(
       this.level('aster-volume', 'Volume', KEY_VOLUME, initial?.volume ?? 0.7, (v) => this.hooks.onVolume(v)),
       this.level('aster-music', 'Music', KEY_MUSIC, 1, (v) => this.hooks.onMusic(v)),
       this.level(
@@ -192,7 +316,7 @@ export class UI {
 
     const gfx = el('div', 'aster-field');
     const gfxHead = el('div', 'aster-field__head');
-    const gfxLabel = el('span', undefined, 'Graphics');
+    const gfxLabel = el('span', undefined, 'Quality');
     gfxLabel.id = 'aster-gfx-label';
     gfxHead.appendChild(gfxLabel);
     const seg = el('div', 'aster-seg');
@@ -208,7 +332,7 @@ export class UI {
     };
     this.qualityBtns = { mobile: mk('mobile', 'Mobile'), low: mk('low', 'Low'), high: mk('high', 'High') };
     gfx.append(gfxHead, seg);
-    panel.appendChild(gfx);
+    this.tabPanes.graphics.appendChild(gfx);
 
     if (this.styles.length > 1) {
       const sty = el('div', 'aster-field');
@@ -217,19 +341,82 @@ export class UI {
       styLabel.id = 'aster-style-label';
       styHead.appendChild(styLabel);
       sty.append(styHead, this.stylePicker('aster-pick aster-pick--wide', 'aster-style-label'));
-      panel.appendChild(sty);
+      this.tabPanes.graphics.appendChild(sty);
     }
+
+    // Controls: read-only, and only the set for the device in hand.
+    this.panelControls = el('div', 'aster-panel__controls');
+    fillControls(this.panelControls, keyControls(this.known));
+    this.tabPanes.controls.appendChild(this.panelControls);
+
+    // Game
+    const game = this.tabPanes.game;
+    const btn = (label: string, cls = 'aster-btn'): HTMLButtonElement => {
+      const b = el('button', cls, label);
+      b.type = 'button';
+      return b;
+    };
+    this.spawnBtn = btn('Set spawn here');
+    this.spawnHint = el('span', 'aster-hint');
+    this.spawnHint.id = 'aster-spawn-hint';
+    const clearBtn = btn('Clear saved spawn');
+    const respawnBtn = btn('Respawn elsewhere');
+    const spawnRow = el('div', 'aster-stack');
+    spawnRow.append(this.spawnBtn, this.spawnHint, clearBtn, respawnBtn);
+    this.statusEl = el('p', 'aster-status');
+    this.statusEl.setAttribute('role', 'status');
+    this.statusEl.setAttribute('aria-live', 'polite');
+    this.resetBtn = btn('Start over', 'aster-btn aster-btn--danger');
+    const resetAsk = el('div', 'aster-confirm');
+    resetAsk.hidden = true;
+    resetAsk.setAttribute('role', 'group');
+    resetAsk.setAttribute('aria-label', 'Start over');
+    const resetQ = el('span', 'aster-confirm__q', 'Really reset?');
+    resetQ.id = 'aster-reset-q';
+    resetAsk.setAttribute('aria-labelledby', 'aster-reset-q');
+    this.resetCancel = btn('Cancel');
+    const resetYes = btn('Confirm', 'aster-btn aster-btn--danger');
+    resetAsk.append(resetQ, this.resetCancel, resetYes);
+    this.resetAsk = resetAsk;
+    const danger = el('div', 'aster-danger');
+    const dangerNote = el('p', 'aster-hint', 'Clears your journey and saved spawn. Settings stay.');
+    danger.append(dangerNote, this.resetBtn, resetAsk);
+    game.append(spawnRow, this.statusEl, danger);
+
+    this.spawnBtn.addEventListener('click', () => {
+      if (!this.hooks.canSetSpawn()) {
+        this.syncSpawn();
+        return;
+      }
+      this.say(this.hooks.onSetSpawn() ? 'Spawn saved' : 'Could not save the spawn');
+    });
+    clearBtn.addEventListener('click', () => {
+      this.hooks.onClearSpawn();
+      this.say('Saved spawn cleared');
+    });
+    respawnBtn.addEventListener('click', () => {
+      this.closeMenu();
+      this.hooks.onRespawn();
+    });
+    this.resetBtn.addEventListener('click', () => this.askReset(true));
+    this.resetCancel.addEventListener('click', () => {
+      this.askReset(false);
+      this.resetBtn.focus();
+    });
+    resetYes.addEventListener('click', () => {
+      resetYes.disabled = true;
+      this.hooks.onReset();
+    });
+
+    panel.append(tablist, panes);
 
     const actions = el('div', 'aster-actions');
     this.resumeBtn = el('button', 'aster-btn aster-btn--primary', 'Resume');
     this.resumeBtn.type = 'button';
     const photoBtn = el('button', 'aster-btn', 'Photo mode');
     photoBtn.type = 'button';
-    actions.append(this.resumeBtn, photoBtn);
+    actions.append(photoBtn, this.resumeBtn);
     panel.appendChild(actions);
-    this.panelControls = el('ul', 'aster-panel__controls');
-    fillControls(this.panelControls, keyControls(this.known));
-    panel.appendChild(this.panelControls);
     menu.appendChild(panel);
     this.menu = menu;
     this.panel = panel;
@@ -285,12 +472,15 @@ export class UI {
     // Wiring
     this.syncQuality();
     this.syncStyle();
+    this.selectTab('audio');
     this.resumeBtn.addEventListener('click', () => this.closeMenu());
     photoBtn.addEventListener('click', () => this.enterPhoto());
     this.captureBtn.addEventListener('click', () => this.hooks.onCapture());
     this.hideBtn.addEventListener('click', () => this.setFigureHidden(!this.figureHidden));
     done.addEventListener('click', () => this.exitPhoto());
     title.addEventListener('click', () => this.begin());
+    // The title card holds a moment, then fades on its own into the world.
+    window.setTimeout(() => this.begin(), TITLE_HOLD_MS);
     pause.addEventListener('click', () => this.openMenu());
     const onOrient = (): void => {
       if (this.portraitMq && !this.portraitMq.matches) this.rotateDone = false;
@@ -320,11 +510,14 @@ export class UI {
     this.returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     this.setState('menu');
     this.hooks.onPause();
+    this.syncSpawn();
     this.resumeBtn.focus();
   }
 
   closeMenu(): void {
     if (this._state !== 'menu') return;
+    this.askReset(false);
+    this.say('');
     this.setState('playing');
     this.restoreFocus();
     this.hooks.onResume();
@@ -341,7 +534,6 @@ export class UI {
     if (on === this.touch) return;
     this.touch = on;
     this.host.classList.toggle('is-touch', on);
-    this.beginEl.textContent = on ? 'Tap to begin' : 'Click to begin';
     this.syncControls();
     this.fillPhotoHint();
     this.syncPause();
@@ -497,6 +689,59 @@ export class UI {
     this.hooks.onHideFigure(hidden);
   }
 
+  private selectTab(id: TabId, focus = false): void {
+    this.tab = id;
+    for (const t of TABS) {
+      const on = t.id === id;
+      this.tabBtns[t.id].setAttribute('aria-selected', String(on));
+      this.tabBtns[t.id].tabIndex = on ? 0 : -1;
+      this.tabPanes[t.id].hidden = !on;
+    }
+    this.askReset(false);
+    this.say('');
+    if (id === 'game') this.syncSpawn();
+    if (focus) this.tabBtns[id].focus();
+  }
+
+  /** Left and Right (and Home, End) move between tabs, which open as they are reached. */
+  private arrowTab(e: KeyboardEvent): boolean {
+    if (!(e.target instanceof HTMLElement) || e.target.getAttribute('role') !== 'tab') return false;
+    const i = TABS.findIndex((t) => t.id === this.tab);
+    const n = TABS.length;
+    let j: number;
+    if (e.key === 'ArrowRight') j = (i + 1) % n;
+    else if (e.key === 'ArrowLeft') j = (i - 1 + n) % n;
+    else if (e.key === 'Home') j = 0;
+    else if (e.key === 'End') j = n - 1;
+    else return false;
+    this.selectTab(TABS[j].id, true);
+    return true;
+  }
+
+  /** The spawn button follows where the player stands: open ground only. */
+  private syncSpawn(): void {
+    const ok = this.hooks.canSetSpawn();
+    this.spawnBtn.disabled = !ok;
+    this.spawnHint.textContent = ok ? '' : 'Surface only';
+    this.spawnHint.hidden = ok;
+    if (ok) this.spawnBtn.removeAttribute('aria-describedby');
+    else this.spawnBtn.setAttribute('aria-describedby', 'aster-spawn-hint');
+  }
+
+  /** A short line of feedback in the Game tab. */
+  private say(text: string): void {
+    window.clearTimeout(this.statusTimer);
+    this.statusEl.textContent = text;
+    if (text) this.statusTimer = window.setTimeout(() => (this.statusEl.textContent = ''), STATUS_MS);
+  }
+
+  /** Start over asks twice: the button turns into a question with Confirm and Cancel. */
+  private askReset(on: boolean): void {
+    this.resetBtn.hidden = on;
+    this.resetAsk.hidden = !on;
+    if (on) this.resetCancel.focus();
+  }
+
   private chooseQuality(q: Quality): void {
     if (q === this.quality) return;
     this.quality = q;
@@ -627,7 +872,10 @@ export class UI {
         this.closeMenu();
       } else if (e.key === 'Tab') {
         this.trapTab(e);
-      } else if (e.key.startsWith('Arrow') && this.arrowSegment(e)) {
+      } else if (
+        (e.key.startsWith('Arrow') || e.key === 'Home' || e.key === 'End') &&
+        (this.arrowTab(e) || (e.key.startsWith('Arrow') && this.arrowSegment(e)))
+      ) {
         e.preventDefault();
       }
       return;

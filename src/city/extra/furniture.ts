@@ -4,7 +4,7 @@ import { Glows, Writer, layoutOf } from '../build';
 import { CITY_SHADOW_GLSL } from '../cityGlsl';
 import { STYLE_GLSL } from '../../render/styleGlsl';
 import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, trackViewport } from '../cityShaders';
-import type { Extra, ExtraBuilder, ExtraCtx } from '../extras';
+import type { Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
 import type { Building, CityKind } from '../types';
 
 // Street furniture: the small things that make the streets look lived in. Clay jars and
@@ -22,7 +22,9 @@ import type { Building, CityKind } from '../types';
 // Draws: everything static is merged per 80 m cell into a masonry mesh, hidden beyond HIDE;
 // what moves (cloth that waves, lanterns that swing on their chains) goes per cell into a small
 // "flex" material of its own that follows the masonry lighting, hidden beyond HIDE_HIGH. All the
-// lantern lights are one glow mesh. Nothing is solid and nothing makes a sound.
+// lantern lights are one glow mesh. Bulky props about a step high or more (tall jars, stacked
+// crates, handcarts, banner poles) register solids; low and flat things stay walkable.
+// Nothing makes a sound.
 
 const TAU = Math.PI * 2;
 const CELL = 80;
@@ -392,6 +394,12 @@ function cord(
 
 // ------------------------------------------------------------------ props
 
+/** Where the props below register their solids while a city is being built (set by the builder). */
+let solidSink: Solid[] | null = null;
+/** Props at least this tall (about a step) get a solid. */
+const SOLID_MIN = 0.75;
+
+
 // Profiles (radius, height) from the foot up, for a height of 1.
 const JAR = [0.2, 0, 0.31, 0.1, 0.37, 0.36, 0.33, 0.62, 0.21, 0.82, 0.15, 0.92, 0.19, 1];
 const AMPHORA = [0.06, 0, 0.14, 0.12, 0.24, 0.42, 0.24, 0.6, 0.15, 0.78, 0.085, 0.88, 0.08, 0.98, 0.11, 1.02];
@@ -420,6 +428,11 @@ function jar(w: Writer, x: number, y: number, z: number, s: number, kind: number
   }
   const rot = rng() * TAU;
   const prof = kind === 0 ? JAR : kind === 1 ? AMPHORA : JUG;
+  const jh = s * (kind === 1 ? 1.02 : kind === 2 ? 0.84 : 1);
+  if (solidSink && jh >= SOLID_MIN) {
+    const jr = JAR_R[kind] * s;
+    solidSink.push({ x, z, hw: jr, hd: jr, y0: y - 1, y1: y + jh });
+  }
   lathe(w, x, y - 0.02, z, prof, s, s, kind === 2 ? 6 : 7, rot, MAT.opening, 128);
   if (kind === 1) {
     // two loop handles from the neck to the shoulder
@@ -566,6 +579,19 @@ function cart(w: Writer, x: number, y: number, z: number, ux: number, uz: number
   const t = 70 + Math.floor(rng() * 100);
   w.tint = t;
   const yb = y + 0.5;
+  if (solidSink) {
+    // the bed and its wheels, three boxes along the cart so a diagonal one is not one fat box;
+    // the thin shafts ahead stay walkable
+    const ax = Math.abs(ux), az = Math.abs(uz);
+    for (let k = 0; k < 3; k++) {
+      const a = (k - 1) * (0.65 * 2) / 3, hs = 0.65 / 3;
+      solidSink.push({
+        x: x + ux * a, z: z + uz * a,
+        hw: ax * hs + az * 0.54, hd: az * hs + ax * 0.54,
+        y0: y - 1, y1: y + 0.87,
+      });
+    }
+  }
   ybox(w, x, z, ux, uz, 0.65, 0.42, yb, yb + 0.07);
   for (const s of [1, -1]) {
     ybox(w, x + vx * s * 0.4, z + vz * s * 0.4, ux, uz, 0.65, 0.022, yb + 0.07, yb + 0.3, 1 | 2 | 4 | 16 | 32);
@@ -699,6 +725,7 @@ function pennant(f: Writer, x: number, yt: number, z: number, ex: number, ez: nu
 
 /** A tall pole on a stone foot, with a small finial. */
 function pole(w: Writer, x: number, y: number, z: number, h: number, rng: () => number): void {
+  if (solidSink) solidSink.push({ x, z, hw: 0.17, hd: 0.17, y0: y - 1, y1: y + h });
   w.mat = MAT.stone;
   w.tint = 100 + Math.floor(rng() * 100);
   ybox(w, x, z, 1, 0, 0.17, 0.17, y - 0.05, y + 0.32, 1 | 2 | 4 | 16 | 32);
@@ -1019,6 +1046,8 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     counts.jars + counts.crates + counts.sacks + counts.baskets + counts.rugs + counts.benches + counts.carts +
     counts.ladders + counts.lanterns + counts.banners + counts.poles + counts.washing + counts.bunting;
   const ground = (x: number, z: number): number => ctx.groundAt(x, z);
+  const solids: Solid[] = [];
+  solidSink = solids;
   const rugsLater: number[] = []; // flat rugs are claimed last, so goods can stand on them
 
   // ---------------------------------------------------------------- single goods
@@ -1047,6 +1076,11 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       if (!open && rng() < 0.35) {
         crate(w, x, y + hh, z, -cz, cu, hn * 0.9, hu * 0.8, hh * 0.85, rng() < 0.5, rng);
         counts.crates++;
+        if (hh * 1.85 >= SOLID_MIN) {
+          // the stack: the lower crate's footprint, as high as the upper one
+          const sx = Math.abs(cu) * hu + Math.abs(cz) * hn, sz = Math.abs(cz) * hu + Math.abs(cu) * hn;
+          solids.push({ x, z, hw: sx, hd: sz, y0: y - 1, y1: y + hh * 1.85 });
+        }
       }
     } else if (p < 0.72) {
       const r = 0.2 + rng() * 0.08;
@@ -1665,6 +1699,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     near.add(me);
     tris += G.count * 2;
   }
+  solidSink = null;
   const bx = new Float32Array(bounds);
   const h2 = new Float32Array(hides);
   near.userData.triangles = tris;
@@ -1673,7 +1708,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   return {
     near,
     far: null,
-    solids: [],
+    solids,
     emitters: [],
     update(_f, p) {
       for (let i = 0; i < cellMeshes.length; i++) {

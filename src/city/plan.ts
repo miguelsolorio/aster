@@ -15,6 +15,7 @@
 // only ever build on cells that are still free. All randomness comes from site.seed.
 
 import type { Building, BuildingRole, CityKind, CityPlan, CitySite, RoofKind, Spot, SpotKind } from './types';
+import { planRooms } from './rooms';
 
 const STOREY = 3.2;
 const TAU = Math.PI * 2;
@@ -101,7 +102,11 @@ interface Gate {
 }
 
 export function planCity(site: CitySite): CityPlan {
-  return new Planner(site).run();
+  const plan = new Planner(site).run();
+  const { rooms, roomOf } = planRooms(plan);
+  plan.rooms = rooms;
+  plan.roomOf = roomOf;
+  return plan;
 }
 
 /**
@@ -293,6 +298,8 @@ class Planner {
       grid,
       gridSize: this.S,
       gridHalf: this.G,
+      rooms: [],
+      roomOf: new Uint16Array(0),
     };
   }
 
