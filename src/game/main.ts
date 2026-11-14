@@ -88,8 +88,16 @@ function start() {
   player.carpet = save.has('carpet');
 
   let seekMiner = false;
-  // ---- spawn somewhere new each visit, on open sand
-  const arrival = (): { x: number; z: number; city: { cx: number; cz: number } | null } => {
+  // ---- spawn at the same place every visit, on open sand
+  // The default arrival is the same for everyone: found from the origin with a fixed-seed generator.
+  // Only the menu's respawn button passes Math.random and goes somewhere new.
+  const seededRandom = (seed: number) => () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const arrival = (rand: () => number = seededRandom(WORLD_SEED), anchored = true): { x: number; z: number; city: { cx: number; cz: number } | null } => {
     const s = { h: 0, rock: 0, salt: 0 };
     const n = new THREE.Vector3();
     let x = 0;
@@ -99,15 +107,15 @@ function start() {
     // that ring, looking down at it. If the nearest city gives no clear view, the next ones are
     // tried, and only then is any open sand accepted.
     let spawnCity: { cx: number; cz: number } | null = null;
-    const ax = (Math.random() * 2 - 1) * SPAWN_RANGE;
-    const az = (Math.random() * 2 - 1) * SPAWN_RANGE;
+    const ax = anchored ? 0 : (rand() * 2 - 1) * SPAWN_RANGE;
+    const az = anchored ? 0 : (rand() * 2 - 1) * SPAWN_RANGE;
     const cands = world.cities.near(ax, az).slice(0, 3);
     let fallback: { x: number; z: number; city: (typeof cands)[number] } | null = null;
     search: for (const city of cands) {
       const oasis = city.kind === 'oasis';
       for (let i = 0; i < 40; i++) {
-        const a = Math.random() * Math.PI * 2;
-        const d = oasis ? city.radius + 250 + Math.random() * 400 : city.radius + (2000 + Math.random() * 2500) * WORLD_SCALE;
+        const a = rand() * Math.PI * 2;
+        const d = oasis ? city.radius + 250 + rand() * 400 : city.radius + (2000 + rand() * 2500) * WORLD_SCALE;
         x = city.cx + Math.cos(a) * d;
         z = city.cz + Math.sin(a) * d;
         world.sample(x, z, s);
@@ -136,7 +144,7 @@ function start() {
     return { x, z, city: spawnCity };
   };
   {
-    // Where to arrive: ?x=&z=, then ?miner, then the spawn saved from the menu, then somewhere new.
+    // Where to arrive: ?x=&z=, then ?miner, then the spawn saved from the menu, then the shared default.
     const pinned = qs.has('x') && qs.has('z');
     const saved = !pinned && !qs.has('miner') ? loadSpawn() : null;
     const r = saved ? null : arrival();
@@ -160,7 +168,7 @@ function start() {
     }
     player.place(x, z);
     // Face the city, so the first thing you see is somewhere to go (or the way a saved spawn faced).
-    player.facing = saved ? saved.facing : spawnCity ? Math.atan2(spawnCity.cx - x, spawnCity.cz - z) : Math.random() * Math.PI * 2;
+    player.facing = saved ? saved.facing : spawnCity ? Math.atan2(spawnCity.cx - x, spawnCity.cz - z) : 0;
   }
 
   // ---- scene
@@ -394,7 +402,7 @@ function start() {
     onClearSpawn: () => clearSpawn(),
     // A fresh arrival now, found the way a new visit finds one, whatever spawn is saved.
     onRespawn() {
-      const at = arrival();
+      const at = arrival(Math.random, false);
       seekMiner = false;
       player.place(at.x, at.z);
       player.facing = at.city ? Math.atan2(at.city.cx - at.x, at.city.cz - at.z) : Math.random() * Math.PI * 2;
@@ -402,7 +410,7 @@ function start() {
       camTarget.copy(player.state.pos);
       cities.setFocus(at.x, at.z);
     },
-    // Forget the journey and the spawn, keep the settings, and arrive somewhere new.
+    // Forget the journey and the spawn, keep the settings, and arrive at the default spot.
     onReset() {
       clearProgress();
       const url = new URL(window.location.href);
