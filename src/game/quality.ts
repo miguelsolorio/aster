@@ -85,16 +85,32 @@ const MAX_FRAME_S = 0.25; // longer frames are tab switches or stalls
 const FLOOR_FPS = 27;
 
 /**
+ * The next step down from (tier, scaleIdx), or null when there is nowhere left to go.
+ * Render scale goes first (1 -> 0.85 -> 0.7 -> 0.6); at the lowest scale the tier drops
+ * (high -> low -> mobile) and scale resets to 1. With lockTier (the player picked the tier
+ * by hand) only the render scale is lowered and the tier is never changed.
+ */
+export function nextStep(tier: QualityTier, scaleIdx: number, lockTier: boolean): { tier: QualityTier; scaleIdx: number } | null {
+  if (scaleIdx < SCALES.length - 1) return { tier, scaleIdx: scaleIdx + 1 };
+  if (lockTier) return null;
+  const i = ORDER.indexOf(tier);
+  if (i < 0 || i >= ORDER.length - 1) return null;
+  return { tier: ORDER[i + 1], scaleIdx: 0 };
+}
+
+/**
  * Watches real frame times and steps quality down when it cannot hold the floor.
  * First it lowers render scale (1 -> 0.85 -> 0.7 -> 0.6), then drops a tier (high -> low -> mobile) and resets scale to 1.
  * It measures over ~2.5 s windows, ignores the first second after start or after any change,
  * ignores frames longer than 250 ms (tab switches), and steps down when the average is below ~27 fps.
- * It never steps up on its own. After the user picks a tier by hand, call setTier and it restarts from there
- * (setTier does not call onChange; the caller applies the tier it picked).
+ * It never steps up on its own. After the user picks a tier by hand, call setTier(tier, true): it restarts
+ * from there and keeps that tier, lowering only render scale (setTier does not call onChange; the caller
+ * applies the tier it picked). A tier the game lowered by itself is not a manual pick and stays unlocked.
  */
 export class AutoQuality {
   private _tier: QualityTier;
   private scaleIdx = 0;
+  private locked = false; // the player picked the tier by hand
   private settle = SETTLE_S;
   private sum = 0;
   private frames = 0;
@@ -131,25 +147,22 @@ export class AutoQuality {
     if (fps < FLOOR_FPS) this.stepDown();
   }
 
-  setTier(tier: QualityTier): void {
+  setTier(tier: QualityTier, manual = false): void {
     this._tier = tier;
+    this.locked = manual;
     this.scaleIdx = 0;
     this.restart();
   }
 
   private atFloor(): boolean {
-    return this._tier === 'mobile' && this.scaleIdx === SCALES.length - 1;
+    return nextStep(this._tier, this.scaleIdx, this.locked) === null;
   }
 
   private stepDown(): void {
-    if (this.scaleIdx < SCALES.length - 1) {
-      this.scaleIdx++;
-    } else {
-      const i = ORDER.indexOf(this._tier);
-      if (i < 0 || i >= ORDER.length - 1) return;
-      this._tier = ORDER[i + 1];
-      this.scaleIdx = 0;
-    }
+    const next = nextStep(this._tier, this.scaleIdx, this.locked);
+    if (!next) return;
+    this._tier = next.tier;
+    this.scaleIdx = next.scaleIdx;
     this.restart();
     this.onChange(this._tier, this.renderScale);
   }

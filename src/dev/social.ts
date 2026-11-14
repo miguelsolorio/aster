@@ -37,7 +37,7 @@ interface Hook {
   player: { board: boolean; carpet: boolean; facing: number; place(x: number, z: number): void; state: { pos: { x: number; y: number; z: number } } };
   figure: { board: boolean; boardOn: boolean; carpet: boolean; pick: boolean };
   /** The game's interface. enterPhoto and exitPhoto are private there, but this page drives them. */
-  ui: { state: 'title' | 'playing' | 'menu' | 'photo'; begin(): void; openMenu(): void; closeMenu(): void; enterPhoto(): void; exitPhoto(): void };
+  ui: { state: 'title' | 'intro' | 'playing' | 'menu' | 'photo'; begin(): void; endIntro(): void; openMenu(): void; closeMenu(): void; enterPhoto(): void; exitPhoto(): void };
   world: {
     cities: { near(x: number, z: number): Site[] };
     sample(x: number, z: number, out: { h: number; rock: number; salt: number }): unknown;
@@ -390,6 +390,7 @@ function toggleFree(): void {
   const ui = hook.ui;
   const doc = game.contentDocument;
   if (ui.state === 'title') ui.begin();
+  if (ui.state === 'intro') ui.endIntro();
   if (ui.state === 'playing') {
     ui.openMenu();
     ui.enterPhoto();

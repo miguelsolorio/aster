@@ -1,13 +1,16 @@
 import './ui.css';
+import { findsText } from '../game/finds';
 
 export type Quality = 'mobile' | 'low' | 'high';
 /** How long the title card stays up before it fades into the game by itself. */
 const TITLE_HOLD_MS = 3200;
 
-export type UIState = 'title' | 'playing' | 'menu' | 'photo';
+export type UIState = 'title' | 'intro' | 'playing' | 'menu' | 'photo';
 
 export interface UIHooks {
   onBegin(): void;
+  /** The first-run intro has been put away, so it need not be shown again. */
+  onIntroDone(): void;
   onResume(): void;
   onPause(): void;
   onVolume(v: number): void;
@@ -17,7 +20,8 @@ export interface UIHooks {
   onLevelPreview(active: boolean): void;
   /** Play one short effect so the effects level can be judged by ear. */
   onEffectsSample(): void;
-  onQuality(q: Quality): void;
+  /** `manual` is true when the player picked this tier by hand (now or in an earlier session). */
+  onQuality(q: Quality, manual: boolean): void;
   onPhoto(active: boolean): void;
   onHideFigure(hidden: boolean): void;
   onCapture(): void;
@@ -54,6 +58,8 @@ const KEY_EFFECTS = 'aster.effects';
 /** How long the true mix stays audible after a level is let go, in ms. */
 const PREVIEW_HOLD = 500;
 const KEY_QUALITY = 'aster.quality';
+// '1' once the player has picked a tier by hand; tiers the game lowered by itself are saved without it.
+const KEY_QUALITY_MANUAL = 'aster.qualityManual';
 const KEY_STYLE = 'aster.style';
 /** What the player has found out so far. The controls list only shows what has been earned. */
 export interface Known {
@@ -132,6 +138,25 @@ function touchControls(k: Known): ControlSection[] {
   out.push({ title: 'Menu', rows: [{ action: 'Pause', note: 'Pause button' }] });
   return out;
 }
+/** The first-run intro: only the few controls needed to set out. The pause menu has the rest. */
+function introControls(touch: boolean): ControlSection[] {
+  const rows: ControlRow[] = touch
+    ? [
+        { action: 'Walk', note: 'Left thumb stick' },
+        { action: 'Look', note: 'Drag with your right thumb' },
+        { action: 'Fly', note: 'Hold the leap button to rise' },
+        { action: 'Pause', note: 'Pause button, top right' },
+      ]
+    : [
+        { action: 'Walk', keys: ['W', 'A', 'S', 'D'], note: 'or arrow keys' },
+        { action: 'Run', keys: ['Shift'] },
+        { action: 'Look', note: 'Move the mouse' },
+        { action: 'Fly', keys: ['Space'], note: 'hold to rise, release to glide' },
+        { action: 'Pause', keys: ['Esc'] },
+      ];
+  return [{ title: 'Controls', rows }];
+}
+
 const QUALITIES: Quality[] = ['mobile', 'low', 'high'];
 const FOCUSABLE = 'button:not([disabled]), input:not([disabled])';
 
@@ -146,12 +171,12 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return e;
 }
 
-function fillControls(host: HTMLElement, sections: ControlSection[]): void {
+function fillControls(host: HTMLElement, sections: ControlSection[], idPrefix = 'aster-ctl'): void {
   host.replaceChildren(
     ...sections.map((sec, i) => {
       const group = el('section', 'aster-ctl');
       const h = el('h3', 'aster-ctl__title', sec.title);
-      h.id = `aster-ctl-${i}`;
+      h.id = `${idPrefix}-${i}`;
       const dl = el('dl', 'aster-ctl__list');
       for (const r of sec.rows) {
         const row = el('div', 'aster-ctl__row');
@@ -201,6 +226,13 @@ export class UI {
   private readonly hooks: UIHooks;
   private readonly host: HTMLElement;
   private readonly title: HTMLElement;
+  private readonly intro: HTMLElement;
+  private readonly introControls: HTMLElement;
+  private readonly introHint: HTMLElement;
+  private readonly introBtn: HTMLButtonElement;
+  /** The intro is still to be shown, once, after the title card. */
+  private introPending: boolean;
+  private readonly finds: HTMLElement;
   private readonly menu: HTMLElement;
   private readonly panel: HTMLElement;
   private readonly photo: HTMLElement;
@@ -244,9 +276,19 @@ export class UI {
   constructor(
     root: HTMLElement,
     hooks: UIHooks,
-    initial?: { volume?: number; quality?: Quality; styles?: StyleChoice[]; style?: string | null },
+    initial?: {
+      volume?: number;
+      quality?: Quality;
+      styles?: StyleChoice[];
+      style?: string | null;
+      /** Show the first-run intro after the title card. */
+      intro?: boolean;
+      /** How many kinds of discovery have been found so far. */
+      finds?: number;
+    },
   ) {
     this.hooks = hooks;
+    this.introPending = initial?.intro === true;
     this.styles = initial?.styles ?? [];
     // A style named in the URL wins for this visit, without replacing the saved choice.
     const wanted = initial?.style ?? readStore(KEY_STYLE);
@@ -265,6 +307,32 @@ export class UI {
     title.appendChild(el('h1', 'aster-title__name', 'Aster'));
     title.appendChild(el('p', 'aster-title__line', 'Take the long way'));
     this.title = title;
+
+    // First-run intro: what to press, and what to do. Any key, click or tap puts it away.
+    const intro = el('div', 'aster-layer aster-intro');
+    const introPanel = el('div', 'aster-panel aster-intro__panel');
+    introPanel.setAttribute('role', 'dialog');
+    introPanel.setAttribute('aria-modal', 'true');
+    introPanel.setAttribute('aria-labelledby', 'aster-intro-title');
+    introPanel.setAttribute('aria-describedby', 'aster-intro-line');
+    const introTitle = el('h2', 'aster-panel__title', 'How to play');
+    introTitle.id = 'aster-intro-title';
+    const introLine = el('p', 'aster-intro__line', 'Wander the desert and find what it hides.');
+    introLine.id = 'aster-intro-line';
+    this.introControls = el('div', 'aster-panel__controls');
+    this.introBtn = el('button', 'aster-btn aster-btn--primary', 'Start');
+    this.introBtn.type = 'button';
+    const introActions = el('div', 'aster-actions');
+    introActions.appendChild(this.introBtn);
+    this.introHint = el('p', 'aster-hint aster-intro__hint');
+    introPanel.append(introTitle, introLine, this.introControls, introActions, this.introHint);
+    intro.appendChild(introPanel);
+    this.intro = intro;
+    this.syncIntro();
+
+    // How many kinds of discovery have been found: a quiet count in the corner while playing.
+    this.finds = el('p', 'aster-finds');
+    this.setFinds(initial?.finds ?? 0);
 
     // Menu
     const menu = el('div', 'aster-layer aster-menu');
@@ -462,12 +530,14 @@ export class UI {
     this.rotateEl = rotate;
     this.portraitMq = typeof window.matchMedia === 'function' ? window.matchMedia('(orientation: portrait)') : null;
 
-    host.append(title, menu, photo, pause, rotate, toast);
+    host.append(title, intro, menu, photo, this.finds, pause, rotate, toast);
     root.appendChild(host);
 
     // Menu is inert until shown
     this.menu.setAttribute('aria-hidden', 'true');
     this.photo.setAttribute('aria-hidden', 'true');
+    this.intro.setAttribute('aria-hidden', 'true');
+    this.finds.setAttribute('aria-hidden', 'true');
 
     // Wiring
     this.syncQuality();
@@ -479,6 +549,7 @@ export class UI {
     this.hideBtn.addEventListener('click', () => this.setFigureHidden(!this.figureHidden));
     done.addEventListener('click', () => this.exitPhoto());
     title.addEventListener('click', () => this.begin());
+    intro.addEventListener('click', () => this.endIntro());
     // The title card holds a moment, then fades on its own into the world.
     window.setTimeout(() => this.begin(), TITLE_HOLD_MS);
     pause.addEventListener('click', () => this.openMenu());
@@ -496,7 +567,7 @@ export class UI {
     window.addEventListener('touchstart', this.onTouchActivity, { passive: true });
 
     // Restored / initial values
-    this.hooks.onQuality(this.quality);
+    this.hooks.onQuality(this.quality, readStore(KEY_QUALITY_MANUAL) === '1');
     if (this.styles.length) this.hooks.onStyle(this.styleI);
   }
 
@@ -535,6 +606,7 @@ export class UI {
     this.touch = on;
     this.host.classList.toggle('is-touch', on);
     this.syncControls();
+    this.syncIntro();
     this.fillPhotoHint();
     this.syncPause();
     this.syncRotate();
@@ -548,6 +620,22 @@ export class UI {
 
   private syncControls(): void {
     fillControls(this.panelControls, this.touch ? touchControls(this.known) : keyControls(this.known));
+  }
+
+  /** The count of kinds of discovery found so far. */
+  setFinds(found: number): void {
+    const { text, label } = findsText(found);
+    const shown = el('span', undefined, text);
+    shown.setAttribute('aria-hidden', 'true');
+    this.finds.replaceChildren(shown, el('span', 'aster-sr', label));
+  }
+
+  /** Put the intro away and set out. Any key, click or tap does it. */
+  endIntro(): void {
+    if (this._state !== 'intro') return;
+    this.introPending = false;
+    this.hooks.onIntroDone();
+    this.start();
   }
 
   toast(text: string, ms = 2200): void {
@@ -566,6 +654,10 @@ export class UI {
     this._state = s;
     this.host.dataset.state = s;
     this.title.classList.toggle('is-on', s === 'title');
+    this.intro.classList.toggle('is-on', s === 'intro');
+    this.finds.classList.toggle('is-on', s === 'playing');
+    this.intro.setAttribute('aria-hidden', String(s !== 'intro'));
+    this.finds.setAttribute('aria-hidden', String(s !== 'playing'));
     this.menu.classList.toggle('is-on', s === 'menu');
     this.photo.classList.toggle('is-on', s === 'photo');
     this.menu.setAttribute('aria-hidden', String(s !== 'menu'));
@@ -575,6 +667,11 @@ export class UI {
     else window.clearTimeout(this.idleTimer);
     this.syncPause();
     this.syncRotate();
+  }
+
+  private syncIntro(): void {
+    fillControls(this.introControls, introControls(this.touch), 'aster-intro-ctl');
+    this.introHint.textContent = this.touch ? 'Tap anywhere to start' : 'Press any key or click to start';
   }
 
   private fillPhotoHint(): void {
@@ -663,6 +760,15 @@ export class UI {
 
   private begin(): void {
     if (this._state !== 'title') return;
+    if (this.introPending) {
+      this.setState('intro');
+      this.introBtn.focus({ preventScroll: true });
+      return;
+    }
+    this.start();
+  }
+
+  private start(): void {
     this.setState('playing');
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     this.hooks.onBegin();
@@ -746,8 +852,9 @@ export class UI {
     if (q === this.quality) return;
     this.quality = q;
     writeStore(KEY_QUALITY, q);
+    writeStore(KEY_QUALITY_MANUAL, '1');
     this.syncQuality();
-    this.hooks.onQuality(q);
+    this.hooks.onQuality(q, true);
   }
 
   /**
@@ -863,6 +970,14 @@ export class UI {
         e.stopPropagation();
         this.begin();
       }
+      return;
+    }
+    if (s === 'intro') {
+      // Any key but a lone modifier puts the intro away; the key itself does nothing in the game.
+      if (e.repeat || e.key === 'Shift' || e.key === 'Control' || e.key === 'Alt' || e.key === 'Meta') return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.key !== 'Tab') this.endIntro();
       return;
     }
     if (s === 'menu') {
