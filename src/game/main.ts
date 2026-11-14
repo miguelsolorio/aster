@@ -365,8 +365,8 @@ function start() {
     onLevelPreview: (active) => audio.setPreview(active),
     // A sand footstep: the effect heard most, so the fairest yardstick.
     onEffectsSample: () => audio.footstep(0.8, false, false),
-    onQuality(q) {
-      auto.setTier(q);
+    onQuality(q, manual) {
+      auto.setTier(q, manual);
       applyTier();
     },
     onPhoto(active) {

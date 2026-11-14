@@ -20,7 +20,8 @@ export interface UIHooks {
   onLevelPreview(active: boolean): void;
   /** Play one short effect so the effects level can be judged by ear. */
   onEffectsSample(): void;
-  onQuality(q: Quality): void;
+  /** `manual` is true when the player picked this tier by hand (now or in an earlier session). */
+  onQuality(q: Quality, manual: boolean): void;
   onPhoto(active: boolean): void;
   onHideFigure(hidden: boolean): void;
   onCapture(): void;
@@ -57,6 +58,8 @@ const KEY_EFFECTS = 'aster.effects';
 /** How long the true mix stays audible after a level is let go, in ms. */
 const PREVIEW_HOLD = 500;
 const KEY_QUALITY = 'aster.quality';
+// '1' once the player has picked a tier by hand; tiers the game lowered by itself are saved without it.
+const KEY_QUALITY_MANUAL = 'aster.qualityManual';
 const KEY_STYLE = 'aster.style';
 /** What the player has found out so far. The controls list only shows what has been earned. */
 export interface Known {
@@ -564,7 +567,7 @@ export class UI {
     window.addEventListener('touchstart', this.onTouchActivity, { passive: true });
 
     // Restored / initial values
-    this.hooks.onQuality(this.quality);
+    this.hooks.onQuality(this.quality, readStore(KEY_QUALITY_MANUAL) === '1');
     if (this.styles.length) this.hooks.onStyle(this.styleI);
   }
 
@@ -849,8 +852,9 @@ export class UI {
     if (q === this.quality) return;
     this.quality = q;
     writeStore(KEY_QUALITY, q);
+    writeStore(KEY_QUALITY_MANUAL, '1');
     this.syncQuality();
-    this.hooks.onQuality(q);
+    this.hooks.onQuality(q, true);
   }
 
   /**
