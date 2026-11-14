@@ -99,7 +99,7 @@ export const TOWNSFOLK = {
   noPick: [
     'The miner has lost a lamp and won\'t stop talking about it. Sits {way} of here, {far}. Go and listen, if you\'ve the patience.',
     'Looking for something to do? Ask the miner. Sits by a pick all day, sorting stones. {way} of here, {far}.',
-    'You want the miner? {way}, {far}. Follow the lanes and look for the heap of stones.',
+    'You want the miner? {way}, {far}. Follow the lanes and look for the bright clothes.',
   ],
   /** Same, when the miner can't be placed in this city. */
   noPickBlind: [
@@ -158,7 +158,7 @@ export const TOWNSFOLK = {
 };
 
 /**
- * The miner: there is one in every city, sat beside a spare pick. A lamp has been left
+ * The miners: there are several in every city, in loud colours, each sat beside a spare pick. A lamp has been left
  * out in the desert; whoever brings it back is given the pick.
  *
  * Where a line says where something is, {way} is a compass direction ("north-east") and {far}
