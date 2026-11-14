@@ -111,4 +111,48 @@ export interface CityPlan {
   grid: Float32Array;
   gridSize: number;
   gridHalf: number;
+  /**
+   * The buildings you can walk into (see rooms.ts): hollow shells with a floor at the plateau,
+   * walls t thick, a ceiling and one open doorway. Their cells keep their roof height in `grid`
+   * (so shadows, props and people treat them as before); `roomOf` says which cells belong to a
+   * room (index + 1, 0 for none) and the room's shell answers what is solid inside.
+   */
+  rooms: Room[];
+  roomOf: Uint16Array;
+}
+
+/** The walk-in doorway of a room, on face `fi` of its footprint (face order as rectFaces in rooms.ts). */
+export interface RoomDoor {
+  fi: number;
+  /** Span along the face, metres from the face origin. */
+  u0: number;
+  u1: number;
+  /** Top of the opening (apex of the arch) and rise of the arch (0 for a flat lintel). */
+  top: number;
+  arch: number;
+  /** A landmark's great portal rather than a plain door. */
+  portal: boolean;
+  /** Centre of the opening on the outer wall plane and the face's outward normal (local). */
+  x: number;
+  z: number;
+  nx: number;
+  nz: number;
+}
+
+/** An enterable building's shell. Local metres, floor at y = 0. */
+export interface Room {
+  /** Index of the building in plan.buildings. */
+  bi: number;
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  /** Wall thickness. */
+  t: number;
+  /** Underside of the ceiling; the roof (walkable from outside) is at h. */
+  ceil: number;
+  h: number;
+  door: RoomDoor;
+  /** A landmark's single great chamber. */
+  grand: boolean;
 }

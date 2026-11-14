@@ -1,8 +1,9 @@
 import * as THREE from 'three';
 import type { Uniforms } from '../game/contract';
-import type { Building, CityPlan } from './types';
-import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, createWaterMaterial, trackViewport } from './cityShaders';
-import { bodyOf, isRound, loopFaces, roundedLoop, shapeOf, slumpRadius, tierRadius, towerRadius, type Body, type Face, type Loop } from './shape';
+import type { Building, CityPlan, Room } from './types';
+import { rectFaces, type Face } from './rooms';
+import { GLOW, MAT, createCutUniforms, type CutUniforms, createGlowMaterial, createMasonryMaterial, createWaterMaterial, trackViewport } from './cityShaders';
+import { bodyOf, isRound, loopFaces, roundedLoop, shapeOf, slumpRadius, tierRadius, towerRadius, type Body, type Loop } from './shape';
 
 // Turns a CityPlan into meshes. Everything is written straight into growable typed arrays
 // and merged per material family:
@@ -13,6 +14,8 @@ import { bodyOf, isRound, loopFaces, roundedLoop, shapeOf, slumpRadius, tierRadi
 // except beam ends, spouts and awnings, which project a little over the lanes above head height.
 
 export interface CityMeshes {
+  /** The cut-away of the building the wanderer is in, shared by the near masonry and the interiors. */
+  cut: CutUniforms;
   /** Full-detail city. Children are in city-local space; the integrator positions and rotates the group. */
   near: THREE.Group;
   /** Simplified skyline for viewing from 1.5 to 9 km away, same local space. */
@@ -328,15 +331,6 @@ export class Glows {
 
 // ------------------------------------------------------------------ faces and openings
 
-function rectFaces(x0: number, z0: number, x1: number, z1: number): Face[] {
-  return [
-    { ox: x1, oz: z0, tx: 0, tz: 1, nx: 1, nz: 0, len: z1 - z0 },
-    { ox: x0, oz: z1, tx: 0, tz: -1, nx: -1, nz: 0, len: z1 - z0 },
-    { ox: x1, oz: z1, tx: -1, tz: 0, nx: 0, nz: 1, len: x1 - x0 },
-    { ox: x0, oz: z0, tx: 1, tz: 0, nx: 0, nz: -1, len: x1 - x0 },
-  ];
-}
-
 /** Faces of a regular prism around (cx, cz) with corner radius r. */
 function prismFaces(cx: number, cz: number, r: number, sides: number, rot: number): Face[] {
   const out: Face[] = [];
@@ -352,7 +346,7 @@ function prismFaces(cx: number, cz: number, r: number, sides: number, rot: numbe
   return out;
 }
 
-interface Hole {
+export interface Hole {
   u0: number;
   u1: number;
   y0: number;
@@ -368,13 +362,15 @@ interface Hole {
   k: number;
   /** 0 round .. 1 sharply pointed. */
   point: number;
+  /** Open right through the wall (a walk-in doorway): no back, the reveal is the wall's thickness. */
+  through?: boolean;
 }
 
-const px = (f: Face, u: number, off: number): number => f.ox + f.tx * u + f.nx * off;
-const pz = (f: Face, u: number, off: number): number => f.oz + f.tz * u + f.nz * off;
+export const px = (f: Face, u: number, off: number): number => f.ox + f.tx * u + f.nx * off;
+export const pz = (f: Face, u: number, off: number): number => f.oz + f.tz * u + f.nz * off;
 
 /** Quad in the plane of a face, offset off along its normal. */
-function faceQuad(w: Writer, f: Face, u0: number, u1: number, y0: number, y1: number, off: number): void {
+export function faceQuad(w: Writer, f: Face, u0: number, u1: number, y0: number, y1: number, off: number): void {
   w.quad(
     px(f, u0, off), y0, pz(f, u0, off),
     px(f, u1, off), y0, pz(f, u1, off),
@@ -400,7 +396,7 @@ function faceBox(
 }
 
 /** A wall face from y0 to y1 with rectangular (optionally arched) openings cut through it. */
-function wallFace(w: Writer, f: Face, y0: number, y1: number, holes: Hole[]): void {
+export function wallFace(w: Writer, f: Face, y0: number, y1: number, holes: Hole[]): void {
   if (y1 - y0 < EPS || f.len < EPS) return;
   if (holes.length === 0) {
     faceQuad(w, f, 0, f.len, y0, y1, 0);
@@ -432,12 +428,19 @@ function holeGeometry(w: Writer, f: Face, h: Hole): void {
   const { u0, u1, y0, y1, d } = h;
   const wallMat = w.mat;
   const ys = h.arch > 0 ? y1 - h.arch : y1;
-  w.mat = h.back;
-  w.seed = h.seed;
-  faceQuad(w, f, u0, u1, y0, y1, -d);
-  w.seed = 0;
-  w.mat = wallMat;
+  if (!h.through) {
+    w.mat = h.back;
+    w.seed = h.seed;
+    faceQuad(w, f, u0, u1, y0, y1, -d);
+    w.seed = 0;
+    w.mat = wallMat;
+  }
   const tx = f.tx, tz = f.tz;
+  if (d < EPS) {
+    // a cut with no depth (the inner face of a doorway): only the spandrels of its arch
+    if (h.arch > 0) arch(w, f, h, ys, 0);
+    return;
+  }
   // side reveals
   w.quad(px(f, u0, 0), y0, pz(f, u0, 0), px(f, u0, -d), y0, pz(f, u0, -d), px(f, u0, -d), ys, pz(f, u0, -d), px(f, u0, 0), ys, pz(f, u0, 0), tx, 0, tz);
   w.quad(px(f, u1, 0), y0, pz(f, u1, 0), px(f, u1, -d), y0, pz(f, u1, -d), px(f, u1, -d), ys, pz(f, u1, -d), px(f, u1, 0), ys, pz(f, u1, 0), -tx, 0, -tz);
@@ -447,7 +450,14 @@ function holeGeometry(w: Writer, f: Face, h: Hole): void {
     w.quad(px(f, u0, 0), y1, pz(f, u0, 0), px(f, u1, 0), y1, pz(f, u1, 0), px(f, u1, -d), y1, pz(f, u1, -d), px(f, u0, -d), y1, pz(f, u0, -d), 0, -1, 0);
     return;
   }
-  // arch: curve points from the left springing over the apex to the right springing
+  arch(w, f, h, ys, d);
+}
+
+/** The arch over an opening: spandrels in the wall plane and, given a depth, the soffit. */
+function arch(w: Writer, f: Face, h: Hole, ys: number, d: number): void {
+  const { u0, u1, y1 } = h;
+  const tx = f.tx, tz = f.tz;
+  // curve points from the left springing over the apex to the right springing
   const K = h.k;
   const hw = (u1 - u0) / 2;
   const p = h.point;
@@ -474,6 +484,7 @@ function holeGeometry(w: Writer, f: Face, h: Hole): void {
       f.nx, 0, f.nz,
     );
     // soffit
+    if (d < EPS) continue;
     const du = cu[i + 1] - cu[i];
     const dy = cy[i + 1] - cy[i];
     const l = Math.hypot(du, dy) || 1;
@@ -487,6 +498,15 @@ function holeGeometry(w: Writer, f: Face, h: Hole): void {
       tx * nu, ny, tz * nu,
     );
   }
+}
+
+/** A room's doorway as a through-hole in a face whose u runs `shift` metres behind the outer one, `d` deep. */
+export function doorHole(room: Room, shift: number, d: number): Hole {
+  const r = room.door;
+  return {
+    u0: r.u0 - shift, u1: r.u1 - shift, y0: 0, y1: r.top, d, back: MAT.opening, seed: 0,
+    arch: r.arch, k: r.portal ? 7 : 4, point: r.portal ? 0.4 : 0.3, through: true,
+  };
 }
 
 function overlaps(holes: Hole[], u0: number, u1: number, y0: number, y1: number, m: number): boolean {
@@ -1094,6 +1114,8 @@ export class NearBuilder {
   readonly plants = new Writer(4096, 8192);
   readonly glows = new Glows();
   readonly doors: CityMeshes['doors'] = [];
+  /** The room each enterable building holds, by building index. */
+  private readonly rooms = new Map<number, Room>();
   private readonly grid: Float32Array;
   /** The grid as an occluder (see occlusionGrid). */
   private readonly occ: Float32Array;
@@ -1111,6 +1133,7 @@ export class NearBuilder {
     this.gs = plan.gridSize | 0;
     this.gh = plan.gridHalf;
     this.seed = plan.site.seed | 0;
+    for (const r of plan.rooms) this.rooms.set(r.bi, r);
     // rough count of the windows the plan would get at the normal spacing (about half the facade is exposed)
     let est = 0;
     for (const b of plan.buildings) {
@@ -1265,6 +1288,27 @@ export class NearBuilder {
     const litChance = clamp(0.15 + 0.5 * hashU(this.seed, i, 0x77), 0, 0.75);
     const lit = (): number => (rng() < litChance ? 1 + Math.floor(rng() * 254) : 0);
     const arcadeFace = faces.map(() => false);
+    const room = this.rooms.get(i) ?? null;
+    // a room's door is on a side of the lot; a slumped house draws that side as a straight edge that starts after its corner arc
+    let doorEdge = -1;
+    let doorShift = 0;
+    let doorway: Hole | null = null;
+    if (room) {
+      const d = room.door;
+      doorEdge = loop ? loop.side.indexOf(d.fi) : d.fi;
+      const f = faces[doorEdge];
+      if (loop) {
+        const f0 = rectFaces(L.x0, L.z0, L.x1, L.z1)[d.fi];
+        doorShift = (f.ox - f0.ox) * f0.tx + (f.oz - f0.oz) * f0.tz;
+      }
+      hid[doorEdge] = false;
+      // the walk-in doorway, open right through the wall (a landmark's is its great portal)
+      doorway = doorHole(room, doorShift, room.t);
+      if (!d.portal) holes[doorEdge].push(doorway);
+      const uc = (d.u0 + d.u1) / 2 - doorShift;
+      this.doors.push({ x: px(f, uc, 0), z: pz(f, uc, 0), nx: f.nx, nz: f.nz, w: d.u1 - d.u0 });
+      this.curtain(f, room, rng, doorShift);
+    }
 
     // ground openings: gate portals, arcades for halls and landmarks, doors for houses
     if (gate) {
@@ -1306,6 +1350,7 @@ export class NearBuilder {
           const ph = Math.min(b.h * 0.75, 12);
           const u0 = (f.len - pw) / 2;
           portal = { u0, u1: u0 + pw, y0: 0, y1: ph, d: 2.4, back: MAT.opening, seed: lit(), arch: pw * 0.6, k: 7, point: 0.4 };
+          if (doorway && room && room.door.portal && doorEdge === fi) portal = doorway;
           holes[fi].push(portal);
         }
         const n = Math.floor((f.len - 1.2) / step);
@@ -1333,7 +1378,7 @@ export class NearBuilder {
         }
       }
       const want = b.role === 'house' ? (rng() < 0.3 ? 2 : 1) : 2;
-      let placed = 0;
+      let placed = room ? 1 : 0; // the doorway is one of them
       for (let tries = 0; tries < 12 && placed < want && cands.length > 0; tries++) {
         const c = cands[Math.floor(rng() * cands.length)];
         const f = faces[c.fi];
@@ -1399,6 +1444,8 @@ export class NearBuilder {
       }
     }
 
+    // a hollow building's openings stop short of its room (the doorway goes right through)
+    if (room) for (const hs of holes) for (const h of hs) if (!h.through) h.d = Math.min(h.d, room.t - 0.06);
     w.mat = wallMat;
     w.tint = this.tintByte(b.tint);
     if (loop) {
@@ -1445,6 +1492,32 @@ export class NearBuilder {
     if (L.tower) this.windTower(b, L, loop !== null);
     if (L.spire) this.spireCrown(b, L);
     if (L.turrets) this.turrets(b, L);
+  }
+
+  /** A cloth hung in a doorway: a valance under the lintel and the two halves drawn back to the jambs. */
+  private curtain(f: Face, room: Room, rng: () => number, shift = 0): void {
+    const c = this.cloth;
+    const d = { ...room.door, u0: room.door.u0 - shift, u1: room.door.u1 - shift };
+    const spring = d.top - d.arch;
+    const off = -Math.min(0.12, room.t * 0.3);
+    c.mat = MAT.cloth;
+    c.tint = Math.floor(rng() * 255);
+    c.extra = rng() < 0.5 ? Math.max(2, Math.round((d.u1 - d.u0) / 0.3)) : 0;
+    const drop = Math.min(0.42, (spring - 1.9) * 0.5 + 0.18);
+    if (d.arch <= 0) faceQuad(c, f, d.u0, d.u1, spring - drop, spring, off);
+    // the drawn-back halves: a little wider at the foot, where they hang loose
+    const side = d.portal ? 0.5 : 0.2;
+    for (const s of [1, -1]) {
+      const ua = s > 0 ? d.u0 : d.u1;
+      const ub = ua + s * side;
+      const uf = ua + s * side * 1.4;
+      c.quadAuto(
+        px(f, ua, off), 0.02, pz(f, ua, off), px(f, uf, off), 0.02, pz(f, uf, off),
+        px(f, ub, off), spring, pz(f, ub, off), px(f, ua, off), spring, pz(f, ua, off),
+        f.nx, 0, f.nz,
+      );
+    }
+    c.extra = 0;
   }
 
   private windowGlow(f: Face, u: number, y: number, s: number): void {
@@ -2762,9 +2835,10 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
 
   const near = new THREE.Group();
   near.name = 'city-near';
+  const cut = createCutUniforms();
   const mg = nb.w.geometry();
   if (mg) {
-    const m = createMasonryMaterial(uniforms, { shadow: true, twoSided: false, sway: false });
+    const m = createMasonryMaterial(uniforms, { shadow: true, twoSided: false, sway: false, cut });
     mats.push(m);
     geos.push(mg);
     near.add(mesh(mg, m, 'city-masonry'));
@@ -2805,6 +2879,7 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
   const far = farGroup(plan, uniforms, geos, mats);
   near.userData.triangles = nb.w.tris + nb.cloth.tris + nb.plants.tris;
   return {
+    cut,
     near,
     far,
     doors: nb.doors,
