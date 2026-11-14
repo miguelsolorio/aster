@@ -8,21 +8,28 @@ import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contrac
 import type { CitySite } from './types';
 import type { Landmark } from '../world/discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
-import { blockedAt, clearAt, CREATURE_STEP, type SolidQuery } from '../world/avoid';
+import { blockedAt, clearAt, CREATURE_STEP, steer, steered, type SolidQuery } from '../world/avoid';
 import { routePos, routeSAtU, routeSlope, routeUAtS, type RouteCamp, type RouteNet, type TravelRoute } from './routes';
+import type { Herder } from '../world/fauna';
 
 const RANGE = 2500;
 const FADE0 = 1200;
-const CAP_A = 220;
-const CAP_P = 220;
-const CAP_PROP = 320;
-const CAP_FIRE = 400;
+// Raised for the shepherds, water carriers, foragers and traders' rests out in the open; the
+// quality tier thins those out (setDensity) well before the caps are reached.
+const CAP_A = 300;
+const CAP_P = 320;
+const CAP_PROP = 440;
+const CAP_FIRE = 500;
 /** Route parties and camps are kept for the routes this near the player (distance to the line between the cities). */
 const ROUTE_NEAR = RANGE + 1500;
 const TAU = Math.PI * 2;
 const AVOID_R = 400; // within this of the player, walkers step round whatever stands on their way
 // How far aside of their line they look for a way past, nearest first (m).
 const SIDESTEP = [0.7, 1.4, 2.1, 2.8, 3.6, 4.5, 5.5];
+// Shepherds keep to cells this big, at most one each, kept within RANGE of the player. They never
+// walk far (SHEP_ROAM round home), so they need no path: a long way is always walked on a route.
+const SHEP_CELL = 1200;
+const SHEP_ROAM = 70;
 
 type V3 = [number, number, number];
 
@@ -191,6 +198,7 @@ export class GB {
 // Kinds (animal): 0 rigid, 1 leg, 2 neck/head, 3 fringe, 4 tail, 5 neck fringe.
 // Kinds (person): 0 rigid, 1 leg, 6 arm, 7 cloak.
 // Parts (animal/person): bit mask of load variants; 0 = always. Props: part = prop type.
+// Person bits: 1 staff, 2 pack, 4 bag, 8 lantern (lit after dark), 16 water jar on the head.
 
 function animalGeometry(): { geo: THREE.InstancedBufferGeometry; tris: number } {
   const b = new GB();
@@ -435,6 +443,20 @@ function personGeometry(): { geo: THREE.InstancedBufferGeometry; tris: number } 
   b.box(-0.3, 0.75, 0.06, 0.16, 0.03, 0.16);
   b.box(-0.3, 0.6, 0.06, 0.15, 0.03, 0.15);
   b.set(6, 12, 8, 0, lv).box(-0.3, 0.675, 0.06, 0.11, 0.12, 0.11);
+  // a water jar carried on the head (water carriers at an oasis): it turns with the hood
+  b.set(0, 7, 16).tube(
+    [
+      { c: [0, 1.84, 0], rx: 0.07, rz: 0.07 },
+      { c: [0, 1.95, 0], rx: 0.15, rz: 0.15 },
+      { c: [0, 2.08, 0], rx: 0.11, rz: 0.11 },
+      { c: [0, 2.13, 0], rx: 0.06, rz: 0.06 },
+      { c: [0, 2.17, 0], rx: 0.075, rz: 0.075 },
+    ],
+    6,
+    0,
+    true,
+    true,
+  );
   return { geo: b.geometry(), tris: b.tris };
 }
 
@@ -939,6 +961,18 @@ function mulberry32(seed: number): () => number {
   };
 }
 
+/** A number in 0..1 from four integers: the same answer every time for the same cell. */
+function hash4(a: number, b: number, c: number, d: number): number {
+  let h = 0x9e3779b9 ^ Math.imul(a | 0, 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) ^ Math.imul(b | 0, 0x27d4eb2d);
+  h = Math.imul(h ^ (h >>> 15), 0x165667b1) ^ Math.imul(c | 0, 0x9e3779b1);
+  h = Math.imul(h ^ (h >>> 16), 0x85ebca6b) ^ Math.imul(d | 0, 0x7feb352d);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x2c1b3c6d);
+  h ^= h >>> 13;
+  return (h >>> 0) / 4294967296;
+}
+
 function ss(a: number, b: number, x: number): number {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
@@ -1025,6 +1059,9 @@ interface Agent {
   avV: number;
   /** The side chosen for the way past (+1, -1, 0 none yet). */
   dside: number;
+  /** Walkers that stop at each end of their way (to fill a jar, to gather): how long for, and how long is left. */
+  pause: number;
+  rest: number;
   scale: number;
   stride: number;
   seed: number;
@@ -1139,6 +1176,27 @@ interface Group {
   /** Route parties: the trip, and how long its clock has been held (someone talking to one of them). */
   trip?: Trip;
   delay: number;
+  /**
+   * Shown only while the quality tier's density is above this (0: always). The extra people out in
+   * the open get a share of 0..1 each so a lesser tier drops them evenly.
+   */
+  rank: number;
+  /** A shepherd: where the flock is kept, and where they are wandering to. */
+  shep?: Shepherd;
+}
+
+/** A shepherd out in the open with a flock (the goats themselves are fauna, following `herder`). */
+interface Shepherd {
+  herder: Herder;
+  hx: number;
+  hz: number;
+  tx: number;
+  tz: number;
+  /** Seconds left standing still, or walking (when `walking`). */
+  t: number;
+  walking: boolean;
+  /** The side a way round something is taken on. */
+  dodge: number;
 }
 
 function routePoint(r: Route, s: number, out: { x: number; z: number }): void {
@@ -1183,6 +1241,8 @@ function newAgent(animal: boolean, rng: () => number): Agent {
     avoid: 0,
     avV: 0,
     dside: 0,
+    pause: 0,
+    rest: 0,
     scale: animal ? 0.9 + rng() * 0.2 : 0.94 + rng() * 0.12,
     stride: animal ? 3.0 : 1.5,
     seed: rng(),
@@ -1278,6 +1338,13 @@ export class Caravans {
   private held: Agent | null = null; // someone the player is talking to
   private heldT = 0;
   private refresh = 0;
+  /** The people of each oasis (a camp by the water, carriers, a forager), by its site key. */
+  private readonly oases = new Map<number, Group[]>();
+  /** Shepherds, by the cell they keep to (null: nobody keeps that one). */
+  private readonly shepCells = new Map<number, Group | null>();
+  /** 0..1 from the quality tier (as people.setDensity): extras with a rank at or above it stay home. */
+  private density = 1;
+  private readonly cityBuf: CitySite[] = [];
 
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private readonly nrm = new THREE.Vector3();
@@ -1417,6 +1484,21 @@ export class Caravans {
     return true;
   }
 
+  /** Fewer people out in the open on a lesser tier: d in 0..1, as people.setDensity. */
+  setDensity(d: number): void {
+    this.density = Math.min(1, Math.max(0.05, d));
+  }
+
+  /** The shepherds out now (for the goats to follow). Fills and returns out. */
+  herders(out: Herder[]): Herder[] {
+    out.length = 0;
+    for (let i = 0; i < this.live.length; i++) {
+      const g = this.live[i];
+      if (g.shep) out.push(g.shep.herder);
+    }
+    return out;
+  }
+
   /** Call every frame while talking to a traveller: they stop walking and turn to the player. */
   hold(ref: unknown): void {
     this.held = ref as Agent;
@@ -1515,7 +1597,7 @@ export class Caravans {
   }
 
   private emptyGroup(kind: number, ax: number, az: number, reach: number): Group {
-    return { kind, s: 0, dir: 1, v: 1, wait: 0, agents: [], route: null, ax, az, reach, pres: 0, active: false, maxO: 0, props: [], fx: 0, fy: 0, fz: 0, fseed: 0, delay: 0 };
+    return { kind, s: 0, dir: 1, v: 1, wait: 0, agents: [], route: null, ax, az, reach, pres: 0, active: false, maxO: 0, props: [], fx: 0, fy: 0, fz: 0, fseed: 0, delay: 0, rank: 0 };
   }
 
   private buildCamp(rng: () => number, x: number, z: number): Group {
@@ -1608,10 +1690,198 @@ export class Caravans {
     const gA = routeSAtU(r, r.gateA);
     const gB = routeSAtU(r, r.gateB);
     if (gB - gA < 200) return groups;
-    // a steady stream: roughly one party per 800 m of road, each way round in turn
-    const n = Math.min(10, Math.max(5, Math.round((gB - gA) / 800)));
-    for (let i = 0; i < n; i++) groups.push(this.buildParty(rng, r, spots, gA, gB, i, n));
+    // A steady stream: about one party per 520 m of road, each way round in turn. One per 800 m
+    // are always out, spread evenly through the order; the tier thins the rest, and since their
+    // places in the order alternate with the others, what is left stays evenly spaced.
+    const n0 = Math.min(10, Math.max(5, Math.round((gB - gA) / 800)));
+    const n = Math.min(16, Math.max(7, Math.round((gB - gA) / 520)));
+    for (let i = 0; i < n; i++) {
+      const g = this.buildParty(rng, r, spots, gA, gB, i, n);
+      const always = Math.floor(((i + 1) * n0) / n) > Math.floor((i * n0) / n);
+      g.rank = always ? 0 : 0.2 + 0.8 * rng();
+      groups.push(g);
+    }
+    // the people round the camps and off the road: separate numbers, so the parties stay as they are
+    const xr = mulberry32((this.world.seed ^ Math.imul(r.a.id | 0, 0x45d9f3b) ^ Math.imul(r.b.id | 0, 0x119de1f3) ^ 0x6a09e667) >>> 0);
+    for (const sp of spots) {
+      if (xr() < 0.65) {
+        const c = sp.camp;
+        // out away from the path to gather brush, crouching at the far end of the way
+        const away = Math.atan2(c.side * -r.dz, c.side * r.dx) + (xr() - 0.5) * 1.4;
+        const fg = this.forager(xr, c.x, c.z, away, 35 + xr() * 55);
+        if (fg) groups.push(fg);
+      }
+    }
+    if (xr() < 0.55) {
+      // A trader resting with their beasts and goods laid out, off the road between the camps.
+      // Rare: about every other route, and only on level open sand.
+      for (let t = 0; t < 8; t++) {
+        const u = r.gateA + (r.gateB - r.gateA) * (0.15 + 0.7 * xr());
+        let near = false;
+        for (const sp of spots) if (Math.abs(sp.camp.u - u) < 260) near = true;
+        if (near) continue;
+        const side = xr() < 0.5 ? -1 : 1;
+        routePos(r, u, side * (30 + xr() * 10), this.P0);
+        const x = this.P0.x;
+        const z = this.P0.z;
+        if (!this.levelAt(x, z)) continue;
+        const g = this.buildCamp(xr, x, z);
+        // the goods face the road, so passers by can see what is on offer
+        this.addGoods(g, xr, x, z, Math.atan2(-side * -r.dz, -side * r.dx));
+        g.rank = 0.15 + 0.85 * xr();
+        groups.push(g);
+        break;
+      }
+    }
     return groups;
+  }
+
+  /**
+   * A trader's wares, laid out on a rug by the fire on the side of `face` (a bearing, as sin, cos):
+   * jars, bales and rolled cloth, a low table, and an awning behind.
+   */
+  private addGoods(g: Group, rng: () => number, x: number, z: number, face: number): void {
+    const w = this.world;
+    const put = (type: number, a: number, rad: number, yaw: number, scale: number, col: V3, dy = 0) => {
+      const px = x + Math.sin(a) * rad;
+      const pz = z + Math.cos(a) * rad;
+      g.props.push({ type, x: px, y: w.height(px, pz) + dy, z: pz, yaw, scale, col });
+    };
+    put(6, face, 4.6, face + Math.PI / 2, 1.25, LOADS[Math.floor(rng() * LOADS.length)], 0.01);
+    put(6, face + 0.42, 4.9, face + Math.PI / 2 + 0.2, 1.0, LOADS[Math.floor(rng() * LOADS.length)], 0.012);
+    for (let k = 0; k < 4; k++) put(3, face - 0.22 + k * 0.15, 4.4 + (k % 2) * 0.6, 0, 0.8 + rng() * 0.35, [0.62, 0.38, 0.26], 0.02);
+    for (let k = 0; k < 2; k++) put(1, face + 0.35 + k * 0.2, 5.2, face + rng() * 0.6, 0.85, LOADS[Math.floor(rng() * LOADS.length)], 0.02);
+    put(2, face - 0.5, 5.3, face + Math.PI / 2, 0.9, LOADS[Math.floor(rng() * LOADS.length)], 0.02);
+    put(9, face + 0.75, 4.0, face, 1, [0.46, 0.34, 0.23]);
+    put(5, face + Math.PI, 6.2, face, 1.1, LOADS[Math.floor(rng() * LOADS.length)]);
+  }
+
+  /**
+   * Someone walking a short way out from (x, z) toward the bearing `away` (as sin, cos) and back,
+   * crouching a while at each end: a forager gathering brush, or (with a jar) a water carrier.
+   */
+  private forager(rng: () => number, x: number, z: number, away: number, len: number, jar = false): Group | null {
+    // makeRoute takes its bearing as (cos, sin)
+    const r = this.makeRoute(rng, x, z, Math.atan2(Math.cos(away), Math.sin(away)), 4, len, jar ? 2 : 6);
+    if (!this.routeClear(r)) return null;
+    const g = this.emptyGroup(2, r.ax, r.az, len + 20);
+    g.route = r;
+    const a = newAgent(false, rng);
+    a.variant = jar ? 16 : rng() < 0.5 ? 4 : 2;
+    a.pause = jar ? 5 + rng() * 4 : 7 + rng() * 9;
+    a.vmax = jar ? 1.05 : 1.15;
+    a.s = rng() * r.len;
+    a.dirSign = rng() < 0.5 ? 1 : -1;
+    g.agents.push(a);
+    g.rank = 0.2 + 0.8 * rng();
+    return g;
+  }
+
+  /** Life round an oasis: a camp a little way out, people fetching water from it, someone gathering. */
+  private buildOasis(l: Landmark): Group[] {
+    const rng = mulberry32((this.world.seed ^ Math.imul(l.key | 0, 0x45d9f3b) ^ 0x0a515c) >>> 0);
+    const groups: Group[] = [];
+    // level ground out past the palms and stones round the pool
+    const a0 = rng() * TAU;
+    let cx = NaN;
+    let cz = NaN;
+    for (let k = 0; k < 10 && Number.isNaN(cx); k++) {
+      const a = a0 + k * 0.63;
+      const d = 55 + rng() * 25;
+      const x = l.x + Math.sin(a) * d;
+      const z = l.z + Math.cos(a) * d;
+      if (!this.levelAt(x, z)) continue;
+      if (this.solid && blockedAt(this.solid, x, z, this.world.height(x, z))) continue;
+      cx = x;
+      cz = z;
+    }
+    if (Number.isNaN(cx)) return groups;
+    const camp = this.buildCamp(rng, cx, cz);
+    const toWater = Math.atan2(l.x - cx, l.z - cz);
+    // traders often stop over at water with their goods out
+    if (rng() < 0.45) this.addGoods(camp, rng, cx, cz, toWater + Math.PI / 2);
+    camp.rank = 0.1 + 0.6 * rng();
+    groups.push(camp);
+    const dist = Math.hypot(l.x - cx, l.z - cz);
+    // the pool reaches at most about 24 m out from the middle: stop at its edge to fill the jar
+    const nCarry = rng() < 0.6 ? 2 : 1;
+    for (let i = 0; i < nCarry; i++) {
+      const g = this.forager(rng, cx, cz, toWater + (rng() - 0.5) * 0.35, Math.max(8, dist - 30 + rng() * 3), true);
+      if (g) groups.push(g);
+    }
+    if (rng() < 0.6) {
+      const g = this.forager(rng, cx, cz, toWater + Math.PI + (rng() - 0.5) * 1.6, 40 + rng() * 50);
+      if (g) groups.push(g);
+    }
+    return groups;
+  }
+
+  /** The shepherd who keeps to a cell, if anyone does: decided by the cell alone. */
+  private buildShepherd(cx: number, cz: number, key: number): Group | null {
+    const s = this.world.seed | 0;
+    if (hash4(cx, cz, s, 71) > 0.32) return null;
+    const x = (cx + 0.2 + 0.6 * hash4(cx, cz, s, 72)) * SHEP_CELL;
+    const z = (cz + 0.2 + 0.6 * hash4(cx, cz, s, 73)) * SHEP_CELL;
+    const sm = this.world.sample(x, z, this.sample);
+    if (sm.rock > 0.25 || sm.salt > 0.4) return null;
+    if (((this.world as Partial<{ river(x: number, z: number): number }>).river?.(x, z) ?? Infinity) < 60) return null;
+    // out in the open: well clear of any city, and of the built places
+    const sites = this.cities.near(x, z);
+    for (let i = 0; i < sites.length; i++) if (Math.hypot(sites[i].cx - x, sites[i].cz - z) < sites[i].radius + 450) return null;
+    for (let i = 0; i < this.marks.length; i++) if (Math.hypot(this.marks[i].x - x, this.marks[i].z - z) < 160) return null;
+    const rng = mulberry32(Math.floor(hash4(cx, cz, s, 74) * 4294967296));
+    const g = this.emptyGroup(6, x, z, 30);
+    g.rank = hash4(cx, cz, s, 75);
+    const lead = newAgent(false, rng);
+    lead.variant = rng() < 0.5 ? 1 : 5; // a crook, and sometimes a bag
+    lead.vmax = 0.75 + rng() * 0.1;
+    g.agents.push(lead);
+    if (rng() < 0.4) {
+      // a child out with them, or a second herder
+      const b = newAgent(false, rng);
+      b.variant = 0;
+      if (rng() < 0.6) b.scale *= 0.74;
+      g.agents.push(b);
+    }
+    const a0 = rng() * TAU;
+    for (let i = 0; i < g.agents.length; i++) {
+      const a = g.agents[i];
+      a.x = x + Math.sin(a0) * 1.6 * i;
+      a.z = z + Math.cos(a0) * 1.6 * i;
+      a.y = this.world.height(a.x, a.z);
+      a.yaw = rng() * TAU;
+    }
+    g.shep = { herder: { key, x, z, on: false, rest: false, seed: rng() }, hx: x, hz: z, tx: x, tz: z, t: rng() * 10, walking: false, dodge: rng() < 0.5 ? 1 : -1 };
+    return g;
+  }
+
+  /** Puts the shepherds of the cells round (px, pz) on the live list, building any not met before. */
+  private shepherdsNear(px: number, pz: number): void {
+    const span = Math.ceil(RANGE / SHEP_CELL);
+    const pcx = Math.floor(px / SHEP_CELL);
+    const pcz = Math.floor(pz / SHEP_CELL);
+    for (let dz = -span; dz <= span; dz++) {
+      for (let dx = -span; dx <= span; dx++) {
+        const cx = pcx + dx;
+        const cz = pcz + dz;
+        if (Math.hypot((cx + 0.5) * SHEP_CELL - px, (cz + 0.5) * SHEP_CELL - pz) > RANGE + SHEP_CELL * 0.75) continue;
+        const key = (cx + 32768) * 65536 + (cz + 32768);
+        let g = this.shepCells.get(key);
+        if (g === undefined) {
+          g = this.buildShepherd(cx, cz, key);
+          this.shepCells.set(key, g);
+        }
+        if (g) this.live.push(g);
+      }
+    }
+    // forget the cells left far behind (they are worked out the same again on the way back)
+    if (this.shepCells.size > 300) {
+      for (const [key, g] of this.shepCells) {
+        const cx = Math.floor(key / 65536) - 32768;
+        const cz = (key % 65536) - 32768;
+        if (Math.hypot((cx + 0.5) * SHEP_CELL - px, (cz + 0.5) * SHEP_CELL - pz) > RANGE * 3 && !(g && g.active)) this.shepCells.delete(key);
+      }
+    }
   }
 
   private buildRouteCamp(r: TravelRoute, c: RouteCamp): { group: Group; spots: CampSpots } {
@@ -2230,6 +2500,15 @@ export class Caravans {
         const ls = this.landmarks(this.marks);
         for (let i = 0; i < ls.length; i++) {
           const l = ls[i];
+          if (l.kind === 'oasis' && Math.hypot(l.x - px, l.z - pz) < RANGE + 500) {
+            let os = this.oases.get(l.key);
+            if (!os) {
+              os = this.buildOasis(l);
+              this.oases.set(l.key, os);
+            }
+            for (let k = 0; k < os.length; k++) this.live.push(os[k]);
+            continue;
+          }
           if (!l.temple || Math.hypot(l.x - px, l.z - pz) > RANGE + 1500) continue;
           let gs = this.shrines.get(l.key);
           if (!gs) {
@@ -2239,6 +2518,7 @@ export class Caravans {
           for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
         }
       }
+      this.shepherdsNear(px, pz);
     }
     this.heldT -= dt;
     if (this.heldT <= 0) this.held = null;
@@ -2251,6 +2531,13 @@ export class Caravans {
     const walkOk = f.night < 0.6;
     for (let i = 0; i < this.live.length; i++) {
       const g = this.live[i];
+      // the extras a lesser tier leaves out
+      if (g.rank > 0 && g.rank >= this.density) {
+        g.active = false;
+        g.pres = 0;
+        if (g.shep) g.shep.herder.on = false;
+        continue;
+      }
       if (g.kind === 5) {
         this.stepParty(g, f, dt, px, pz);
         continue;
@@ -2261,6 +2548,7 @@ export class Caravans {
       g.pres = Math.min(1, Math.max(0, g.pres + (want ? 1 : -1) * dt * 0.4));
       if (g.pres <= 0 && !want) {
         g.active = false;
+        if (g.shep) g.shep.herder.on = false;
         continue;
       }
       if (!g.active) {
@@ -2270,6 +2558,7 @@ export class Caravans {
       if (g.kind === 2) this.stepWalkers(g, f, dt, px, pz);
       else if (g.kind === 3) this.stepPilgrims(g, f, dt, px, pz);
       else if (g.kind === 4) this.stepKeepers(g, f, dt, px, pz);
+      else if (g.kind === 6) this.stepShepherd(g, f, dt, px, pz);
       else this.stepCamp(g, f, dt, px, pz);
     }
 
@@ -2310,6 +2599,7 @@ export class Caravans {
         a.s = t > r.len ? 2 * r.len - t : t;
         a.dirSign = t > r.len ? -1 : 1;
         a.spd = a.vmax;
+        a.rest = 0;
         this.faceRoute(a, r);
       }
       return;
@@ -2338,9 +2628,19 @@ export class Caravans {
     tz /= tl;
     let mv: number;
     if (bounce) {
-      if (a.dirSign > 0 && a.s >= r.len) a.dirSign = -1;
-      else if (a.dirSign < 0 && a.s <= 0) a.dirSign = 1;
+      // (someone with a reason to stop at each end, a jar to fill or brush to gather, stays a while)
+      if (a.dirSign > 0 && a.s >= r.len) {
+        a.dirSign = -1;
+        if (a.pause > 0) a.rest = a.pause * (0.6 + 0.8 * Math.random());
+      } else if (a.dirSign < 0 && a.s <= 0) {
+        a.dirSign = 1;
+        if (a.pause > 0) a.rest = a.pause * (0.6 + 0.8 * Math.random());
+      }
       mv = a.dirSign;
+      if (a.rest > 0) {
+        a.rest -= dt;
+        mv = 0;
+      }
     } else {
       mv = dirWanted;
       if (mv > 0 && a.s >= a.hi) mv = 0;
@@ -2364,7 +2664,7 @@ export class Caravans {
     if (bounce) a.s = Math.min(r.len, Math.max(0, a.s));
     else a.s = Math.min(a.hi, Math.max(a.lo, a.s));
     a.ph += (a.spd * dt) / a.stride;
-    a.sitTarget = !bounce && !held && mv === 0 && a.spd < 0.15 ? 1 : 0;
+    a.sitTarget = !bounce && !held && mv === 0 && a.spd < 0.15 ? 1 : a.rest > 0 && !held && a.spd < 0.3 ? 0.55 : 0;
     const ds = a.sitTarget - a.sit;
     a.sit += Math.max(-dt * 0.7, Math.min(dt * 0.7, ds));
 
@@ -2396,6 +2696,93 @@ export class Caravans {
     const y = w.height(x, z);
     w.normal(x, z, this.nrm);
     this.put(a, x, y, z, this.nrm.x, this.nrm.y, this.nrm.z, g, dt, px, pz);
+  }
+
+  /**
+   * A shepherd: a slow walk to somewhere new within SHEP_ROAM of home, a long stand while the
+   * flock grazes, and sitting out the night. Anyone with them keeps a step behind.
+   */
+  private stepShepherd(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
+    const sh = g.shep as Shepherd;
+    const lead = g.agents[0];
+    const night = f.night > 0.6;
+    let held = false;
+    for (let i = 0; i < g.agents.length; i++) if (g.agents[i] === this.held) held = true;
+    let ty = lead.yaw;
+    let want = 0;
+    if (held) {
+      sh.walking = false;
+      if (lead === this.held) ty = Math.atan2(px - lead.x, pz - lead.z);
+    } else if (night) sh.walking = false;
+    else if (sh.walking) {
+      const ex = sh.tx - lead.x;
+      const ez = sh.tz - lead.z;
+      if (Math.hypot(ex, ez) < 1) {
+        sh.walking = false;
+        sh.t = 12 + Math.random() * 25;
+      } else {
+        ty = Math.atan2(ex, ez);
+        want = lead.vmax;
+      }
+    } else {
+      sh.t -= dt;
+      if (sh.t <= 0) {
+        const ang = Math.random() * TAU;
+        const rr = Math.sqrt(Math.random()) * SHEP_ROAM;
+        sh.tx = sh.hx + Math.cos(ang) * rr;
+        sh.tz = sh.hz + Math.sin(ang) * rr;
+        sh.walking = true;
+      }
+    }
+    for (let i = 0; i < g.agents.length; i++) {
+      const a = g.agents[i];
+      let aty = ty;
+      let aw = want;
+      if (i > 0) {
+        // a step behind and to the side of the shepherd
+        const c = Math.cos(lead.yaw);
+        const sn = Math.sin(lead.yaw);
+        const ox = lead.x - sn * 1.8 + c * 1.3 * (i % 2 ? 1 : -1);
+        const oz = lead.z - c * 1.8 - sn * 1.3 * (i % 2 ? 1 : -1);
+        const ed = Math.hypot(ox - a.x, oz - a.z);
+        aty = a === this.held ? Math.atan2(px - a.x, pz - a.z) : ed > 0.6 ? Math.atan2(ox - a.x, oz - a.z) : lead.yaw;
+        aw = a === this.held || night ? 0 : Math.min(1.25, ed * 0.8);
+        if (aw < 0.15) aw = 0;
+      }
+      const err = angDiff(aty, a.yaw);
+      a.yaw += Math.max(-1.8 * dt, Math.min(1.8 * dt, err));
+      const go = Math.abs(err) < 0.6 && a.sit < 0.3 ? 1 : 0;
+      a.spd += (aw * go - a.spd) * (1 - Math.exp(-dt * 2));
+      if (a.spd < 0.01) a.spd = 0;
+      a.ph += (a.spd * dt) / a.stride;
+      a.sitTarget = night && !held ? 1 : 0;
+      a.sit += Math.max(-dt * 0.7, Math.min(dt * 0.7, a.sitTarget - a.sit));
+      const mx = Math.sin(a.yaw) * a.spd * dt;
+      const mz = Math.cos(a.yaw) * a.spd * dt;
+      const d = Math.hypot(a.x - px, a.z - pz);
+      let x = a.x + mx;
+      let z = a.z + mz;
+      if (this.solid && d < AVOID_R && a.spd > 0) {
+        if (steer(this.solid, a.x, a.z, a.y, mx, mz, 0.3, sh.dodge)) {
+          sh.dodge = steered.side;
+          // boxed in: the shepherd gives up on that spot and stands a while
+          if (steered.turn === 0 && i === 0) {
+            sh.walking = false;
+            sh.t = 5 + Math.random() * 5;
+          }
+        }
+        x = steered.x;
+        z = steered.z;
+      }
+      const y = this.groundAt(a, x, z, d);
+      this.put(a, x, y, z, a.gnx, a.gny, a.gnz, g, dt, px, pz);
+    }
+    g.ax = lead.x;
+    g.az = lead.z;
+    sh.herder.x = lead.x;
+    sh.herder.z = lead.z;
+    sh.herder.rest = night;
+    sh.herder.on = g.pres > 0.3;
   }
 
   private stepCamp(g: Group, f: FrameState, dt: number, px: number, pz: number): void {

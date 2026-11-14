@@ -96,7 +96,7 @@ function mulberry32(seed: number): () => number {
 }
 
 /** Radius of a city's paved edge at a bearing (as cityPave draws it). */
-function edgeAt(s: CitySite, ang: number): number {
+export function edgeAt(s: CitySite, ang: number): number {
   return s.radius * (1 + 0.1 * Math.sin(3 * ang + s.phase1) + 0.06 * Math.sin(5 * ang + s.phase2));
 }
 

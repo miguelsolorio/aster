@@ -13,6 +13,7 @@ import { Wildlife } from '../world/wildlife';
 import { Fauna } from '../world/fauna';
 import { Props } from '../world/props';
 import { Cities } from '../city/cities';
+import { FootpathNet } from '../city/footpaths';
 import { Caravans, ROLE_KEEPER, ROLE_PILGRIM } from '../city/caravans';
 import { Waymarks } from '../city/waymarks';
 import { People } from '../city/people';
@@ -168,6 +169,7 @@ function start() {
   const cities = new Cities(world, u); // first: it creates the uniforms that tell the terrain where to flatten
   cities.setFocus(player.state.pos.x, player.state.pos.z);
   cavernUniforms(u); // likewise for the caverns, which the discoveries fill in
+  FootpathNet.uniforms(u); // and for the footpaths out to the finds
   const bake = new HeightBake(renderer, u);
   const trail = new TrailField(renderer, u);
   const clipmap = new Clipmap(u);
@@ -180,6 +182,9 @@ function start() {
   const setLift = () => (player.lift = 1 + 1.5 * (1 - Math.pow(0.9, discoveries.wokenCount)));
   setLift();
   discoveries.onGround = () => bake.invalidate();
+  // The faint footpaths from the towns and their routes out to the finds, laid to finds not built yet too.
+  const footpaths = new FootpathNet(world, cities.routes, (x, z, r, out) => discoveries.surfaceSitesNear(x, z, r, out));
+  footpaths.focus(u, player.state.pos.x, player.state.pos.z);
   // (testing) ?deep=<0-4> opens the nearest cavern over a deep of that kind, for this visit
   // only, and starts you in its antechamber a few steps short of the hole, facing it. With
   // ?x=&z= it is the nearest to that point.
@@ -197,6 +202,7 @@ function start() {
   caravans.landmarks = (out) => discoveries.landmarks(out);
   const fauna = new Fauna(world, u);
   fauna.landmarks = (out) => discoveries.landmarks(out);
+  fauna.herders = (out) => caravans.herders(out); // each shepherd's goats keep round them
   fauna.blocked = (x, z) => {
     const c = cities.nearest(x, z);
     return Math.hypot(c.cx - x, c.cz - z) < c.radius + 300 || discoveries.nearSolids(x, z, 12);
@@ -287,6 +293,8 @@ function start() {
   function applyTier() {
     applyQuality(QUALITY[auto.tier], { uniforms: u, clipmap, bake, dust });
     people.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
+    caravans.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
+    fauna.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     cities.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     splash.setDensity(auto.tier === 'mobile' ? 0.5 : auto.tier === 'low' ? 0.75 : 1);
     discoveries.tier = auto.tier === 'mobile' ? 2 : auto.tier === 'low' ? 1 : 0;
@@ -1380,6 +1388,7 @@ function start() {
     }
 
     cities.update(dt, st.pos);
+    footpaths.focus(u, st.pos.x, st.pos.z);
     collisionDebug.update(dt, st.pos.x, st.pos.y, st.pos.z);
     bake.update(st.pos);
     clipmap.update(camera.position);
