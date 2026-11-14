@@ -733,7 +733,7 @@ function start() {
   let camDist = 7.5;
   let dragging = false;
 
-  // ---- touch: a floating stick, drag to look, pinch to zoom, one button to leap and fly
+  // ---- touch: a floating stick, drag to look (pinch zooms in photo mode only), one button to leap and fly
   const touchHost = document.createElement('div');
   document.body.insertBefore(touchHost, uiHost);
   let lastTouch = -1e9;
