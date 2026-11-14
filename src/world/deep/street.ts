@@ -941,7 +941,7 @@ export function buildStreet(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   }
   if (!L.tower) {
     // nowhere on the lots: on a pad of its own (the twin houses' if need be)
-    const P = findPad(20, 14.4, uB1);
+    const P = findPad(20, 14.4, uB1) ?? findPad(20, 14.4, uR0) ?? findPad(20, 11, uR0);
     if (P) {
       P.level();
       compactTower(Math.min(P.vIn, P.vOut), (x: number): number => P.x + x, Yf);
@@ -1001,6 +1001,10 @@ export function buildStreet(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     if (!P) {
       P = findPad(18, 10, uR0);
       sv = 0.55;
+    }
+    if (!P) {
+      P = findPad(16, 8, uR0);
+      sv = 0.45;
     }
     if (!P && twinPad) {
       sv = 0.72;
@@ -1677,6 +1681,53 @@ export function buildStreet(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     b.box(u, F - sz * 0.15, v, sz * b.r(0.8, 1.4), sz * b.r(0.5, 0.9), sz, b.r(0, 3), { rx: b.r(-0.2, 0.2), rz: b.r(-0.2, 0.2), solid: sz > 1.2 });
   }
   // ---- what was left behind: by the ledge, the door, the alleys
+  // ---- the stair's foot: a waystation where the climb ends, so the floor there is not bare
+  {
+    const uA = uS1 + 3;
+    const open = (u: number, v: number, r: number): boolean => {
+      const F = ground(u, v);
+      if (!(F === F) || F > Yf + 0.6) return false;
+      if (pillars.some((q) => Math.hypot(q[0] - u, q[1] - v) < q[2] * 1.4 + r)) return false;
+      if (lots.some((l) => l.used && u > l.u - r && u < l.u + PU + r && v > l.v - r && v < l.v + PV + r)) return false;
+      if (pads.some((q) => u > q[0] - r && u < q[1] + r && v > q[2] - r && v < q[3] + r)) return false;
+      return true;
+    };
+    const vAt = (u: number, d: number): number => face(sA, u) - sA * (SW + d);
+    // a stack of crates and a heap of jars against the wall, a cloth hung between two posts, a lamp over all
+    const nC = Math.ceil(5 * few);
+    for (let q = 0; q < nC; q++) {
+      const u = uA + b.r(0, 9);
+      const v = vAt(u, b.r(1.2, 3.2));
+      if (!open(u, v, 1.2)) continue;
+      const k = b.r(0.75, 0.95);
+      b.color(0.7 * k, 0.5 * k, 0.32 * k, 2);
+      const sz = b.r(0.9, 1.3);
+      const ry = b.r(0, 3);
+      b.box(u, ground(u, v), v, sz, sz, sz, ry, { solid: true });
+      if (q % 2 === 0) b.box(u + b.r(-0.2, 0.2), ground(u, v) + sz, v + b.r(-0.2, 0.2), sz * 0.8, sz * 0.8, sz * 0.8, ry + 0.4);
+    }
+    for (const du of [4, 11]) {
+      const u = uA + du;
+      const v = vAt(u, 6);
+      if (open(u, v, 1)) jars(u, ground(u, v), v, Math.ceil(4 * few));
+    }
+    const uL = uA + 6;
+    const vL = vAt(uL, 2.2);
+    if (open(uL, vL, 1)) {
+      b.color(0.35, 0.3, 0.26, 0);
+      b.box(uL, ground(uL, vL), vL, 0.3, 3.2, 0.3, 0, { solid: true });
+      b.lamp(uL, ground(uL, vL) + 3.4, vL, { reach: 22, strength: 1.1 });
+    }
+    const uZ = uA + 1;
+    const vZ = vAt(uZ, 8);
+    if (tier < 2 && open(uZ, vZ, 2)) {
+      // a waymarker: a squat block with a pale cap, facing the stair
+      b.color(0.62, 0.58, 0.52, 0);
+      b.box(uZ, ground(uZ, vZ), vZ, 1.2, 1.4, 1.2, 0, { solid: true });
+      b.color(0.95, 0.9, 0.8, 1);
+      b.box(uZ, ground(uZ, vZ) + 1.4, vZ, 1.5, 0.25, 1.5, 0);
+    }
+  }
   jars(uH0 + 2, yL, vP + 4, Math.ceil(4 * few));
   jars(uF - 2, yD, vMid + (doorW / 2 + 6) * (b.rng() < 0.5 ? -1 : 1), Math.ceil(5 * few));
   for (const a of L.alleys) jars(a[0] + b.r(-3, 3), Yf, a[2], Math.ceil(3 * few));
