@@ -18,9 +18,9 @@ const RANGE = 2500;
 const FADE0 = 1200;
 // Raised for the shepherds, water carriers, foragers and traders' rests out in the open; the
 // quality tier thins those out (setDensity) well before the caps are reached.
-const CAP_A = 300;
-const CAP_P = 320;
-const CAP_PROP = 440;
+const CAP_A = 360;
+const CAP_P = 380;
+const CAP_PROP = 560;
 const CAP_FIRE = 500;
 /** Route parties and camps are kept for the routes this near the player (distance to the line between the cities). */
 const ROUTE_NEAR = RANGE + 1500;
