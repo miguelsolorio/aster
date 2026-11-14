@@ -4,6 +4,8 @@
 // Testing: ?tools=board,carpet,pick grants tools for this visit without saving them,
 // and ?reset clears the save and the saved spawn before the game starts.
 
+import { isFindKind, type FindKind } from './finds';
+
 export type Tool = 'board' | 'carpet' | 'pick';
 export const TOOLS: Tool[] = ['board', 'carpet', 'pick'];
 
@@ -29,6 +31,10 @@ export interface SaveData {
   taken: number[];
   /** Waking stones touched in their deeps (by site key). */
   woken: number[];
+  /** The first-run intro (controls and what to do) has been seen and put away. */
+  introSeen: boolean;
+  /** The kinds of discovery come upon so far, each once, in the order they were found. */
+  found: FindKind[];
 }
 
 const KEY = 'aster.save';
@@ -92,6 +98,8 @@ const fresh = (): SaveData => ({
   opened: [],
   taken: [],
   woken: [],
+  introSeen: false,
+  found: [],
 });
 
 const keys = (v: unknown): number[] => (Array.isArray(v) ? v.filter((k): k is number => typeof k === 'number' && Number.isFinite(k)).slice(0, 4096) : []);
@@ -119,6 +127,9 @@ export class Save {
         this.data.opened = keys(raw.opened);
         this.data.taken = keys(raw.taken);
         this.data.woken = keys(raw.woken);
+        // A save from before the intro existed belongs to someone who has already played.
+        this.data.introSeen = raw.introSeen === undefined ? true : raw.introSeen === true;
+        if (Array.isArray(raw.found)) this.data.found = [...new Set((raw.found as unknown[]).filter(isFindKind))];
       }
     } catch {
       /* unreadable save: start again */
@@ -175,6 +186,21 @@ export class Save {
     if (this.data.taken.includes(key)) return;
     this.data.taken.push(key);
     this.write();
+  }
+
+  /** The intro has been put away: it is not shown again. */
+  setIntroSeen(): void {
+    if (this.data.introSeen) return;
+    this.data.introSeen = true;
+    this.write();
+  }
+
+  /** A kind of discovery has been come upon. True the first time for each kind. */
+  find(kind: string): boolean {
+    if (!isFindKind(kind) || this.data.found.includes(kind)) return false;
+    this.data.found.push(kind);
+    this.write();
+    return true;
   }
 
   private write(): void {

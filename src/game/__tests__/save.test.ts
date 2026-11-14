@@ -29,6 +29,8 @@ describe('Save', () => {
     expect(s.data.talked).toBe(false);
     expect(s.data.roles.miner).toBe(0);
     expect(s.data.opened).toEqual([]);
+    expect(s.data.introSeen).toBe(false);
+    expect(s.data.found).toEqual([]);
   });
 
   it('round-trips everything', () => {
@@ -40,11 +42,43 @@ describe('Save', () => {
     a.open(5);
     a.take(6);
     a.wake(7);
+    a.setIntroSeen();
+    a.find('oasis');
+    a.find('temple');
     const b = new Save(qs());
     expect(b.data).toEqual(a.data);
     expect(b.has('board')).toBe(true);
     expect(b.has('pick')).toBe(false);
     expect(b.data.opened).toEqual([5]);
+    expect(b.data.introSeen).toBe(true);
+    expect(b.data.found).toEqual(['oasis', 'temple']);
+  });
+
+  it('counts each kind of find once, and ignores kinds it does not know', () => {
+    const a = new Save(qs());
+    expect(a.find('arch')).toBe(true);
+    expect(a.find('arch')).toBe(false);
+    expect(a.find('lamp')).toBe(false);
+    expect(a.find('nowhere')).toBe(false);
+    expect(new Save(qs()).data.found).toEqual(['arch']);
+  });
+
+  it('keeps the intro put away once it has been seen', () => {
+    const a = new Save(qs());
+    expect(a.data.introSeen).toBe(false);
+    a.setIntroSeen();
+    expect(new Save(qs()).data.introSeen).toBe(true);
+    // ?reset starts a new journey, intro and all
+    expect(new Save(qs('reset')).data.introSeen).toBe(false);
+  });
+
+  it('treats a save from before the intro as one that has seen it', () => {
+    store.setItem('aster.save', JSON.stringify({ v: 1, talked: true }));
+    expect(new Save(qs()).data.introSeen).toBe(true);
+    store.setItem('aster.save', JSON.stringify({ v: 1, introSeen: false }));
+    expect(new Save(qs()).data.introSeen).toBe(false);
+    store.setItem('aster.save', JSON.stringify({ v: 1, introSeen: 'yes' }));
+    expect(new Save(qs()).data.introSeen).toBe(false);
   });
 
   it('does not duplicate keys', () => {
@@ -78,6 +112,14 @@ describe('Save', () => {
     expect(d.roles.miner).toBe(0);
     expect(d.opened).toEqual([1, 2]);
     expect(d.taken).toEqual([]);
+    expect(d.found).toEqual([]);
+  });
+
+  it('sanitizes the found kinds: known ones only, each once, in order', () => {
+    store.setItem('aster.save', JSON.stringify({ v: 1, found: ['grove', 'lamp', 3, null, 'grove', 'summit'] }));
+    expect(new Save(qs()).data.found).toEqual(['grove', 'summit']);
+    store.setItem('aster.save', JSON.stringify({ v: 1, found: 'grove' }));
+    expect(new Save(qs()).data.found).toEqual([]);
   });
 
   it('lends tools from the URL without saving them', () => {

@@ -31,6 +31,7 @@ import { LOOKS, stylesUnlocked, type Look } from './looks';
 import { WORLD_SCALE } from '../world/scale';
 import { Massifs } from '../world/massifs';
 import { Save, loadSpawn, saveSpawn, clearSpawn, clearProgress } from './save';
+import { findName, isFindKind } from './finds';
 import { Talk, type Speaker } from './talk';
 import { KEEPER, MINER, PILGRIM, TOWNSFOLK, TRAVELLER, type Line } from './lines';
 
@@ -350,6 +351,7 @@ function start() {
       window.addEventListener('pointerdown', retry);
       window.addEventListener('keydown', retry);
     },
+    onIntroDone: () => save.setIntroSeen(),
     onResume() {
       audio.setPaused(false);
       lock();
@@ -420,7 +422,13 @@ function start() {
       window.location.replace(url.toString());
     },
     },
-    { quality: auto.tier, styles: unlocked ? LOOKS.map(({ id, name }) => ({ id, name })) : [], style: unlocked ? qs.get('style') : null },
+    {
+      quality: auto.tier,
+      styles: unlocked ? LOOKS.map(({ id, name }) => ({ id, name })) : [],
+      style: unlocked ? qs.get('style') : null,
+      intro: !save.data.introSeen,
+      finds: save.data.found.length,
+    },
   );
   applyTier();
   const syncKnown = () => {
@@ -620,7 +628,14 @@ function start() {
   });
   onLook = (l) => talk.setColours(l.ink, l.paper);
   onLook(look);
-  discoveries.onReach = () => audio.chime();
+  discoveries.onReach = (kind) => {
+    audio.chime();
+    // The first of each kind adds to the count in the corner.
+    if (isFindKind(kind) && save.find(kind)) {
+      ui.setFinds(save.data.found.length);
+      if (ui.state === 'playing') ui.toast(`${findName(kind)} found`, 3000);
+    }
+  };
   fauna.onCall = (_sp, dist) => audio.yip(dist);
   cities.onReach = () => audio.chime();
   // Roofs you can land on: buildings, and the rock over a cave once you are above its ceiling.
@@ -1300,7 +1315,7 @@ function start() {
     (u.uFigPos.value as THREE.Vector3).copy(st.pos);
 
     // Camera: orbit behind the figure, kept above the sand.
-    if (ui.state === 'title') camYaw += dt * 0.05;
+    if (ui.state === 'title' || ui.state === 'intro') camYaw += dt * 0.05;
     tmp.copy(st.pos);
     tmp.y += 1.5;
     camTarget.lerp(tmp, 1 - Math.exp(-dt * 12));
