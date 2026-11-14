@@ -1,21 +1,141 @@
-// The flooded hall: a domed natural chamber whose floor is a still lake. The stair from the
-// hole runs down a dark stepped passage and comes out on a balcony high in the dome's flank.
-// From it a stair tower zigzags down to a stone quay at the waterline (the quay passes behind
-// the tower, under the balcony); a long bridge on arches crosses the lake to a podium and a
-// carved door in the far wall, and daylight falls through a hole in the roof onto the water
-// before that door.
+// The flooded hall: a domed natural chamber whose floor is a still lake, with a half-drowned town
+// in it. The stair from the hole runs down a dark stepped passage and comes out on a balcony high
+// in the dome's flank. Three ways lead down: a stair tower that zigzags to a stone quay at the
+// waterline, a stair cut inside the rock behind the near wall that comes out on the town's shore,
+// and a gallery along the wall that ends on a rockfall worn into a walkable slope.
+// A quay runs right round the hall at the waterline and climbs broad steps onto the podium before
+// the door. A long bridge on arches crosses the lake to that podium; daylight falls through a hole
+// in the roof onto the water before it. On one side of the bridge a town stands half in the water:
+// houses on the dry shore, others drowned to their upper floors and reached by causeways and
+// planks, a seated figure, a tower to climb; out on the open water a beacon. Small rooms are cut
+// into the walls off the ring quay: a shrine, a store, a grotto, a seam.
 //
 // Laid out along u: hole, passage, the near wall with the balcony and the tower, the apron of
 // the quay, the bridge over the lake, the podium, the door, the chamber behind it.
 // Up and down: the roof's crown hangs just under the lid; the water lies H below it.
 //
-// The lake is never a trap: its bed shelves down in steps a walker can climb, and stairs run
-// into the water from the quay and from the podium.
+// The lake is never a trap: its bed shelves down in steps a walker can climb, and stairs and
+// beaches run into the water from the quay, the podium and the shore.
 
 import type { Uniforms } from '../../game/contract';
 import type { DeepSpec } from './types';
 import { DeepBuilder, TEAL, mulberry32, type BuiltDeep } from './builder';
 import type { Pt } from './spans';
+
+/** What was built where, local [u, y, v]: for checks. */
+export interface HallLayout {
+  ledge: Pt;
+  centre: Pt;
+  relic: Pt | null;
+  stone: Pt | null;
+  /** The water's level. */
+  water: number;
+  /** Foot of each route: stair tower, tunnel in the rock, rockfall. */
+  feet: Pt[];
+  /** Doorways of enterable buildings (outside, at their floor), and their roofs. */
+  doors: Pt[];
+  roofs: Pt[];
+  /** Points on rooftop planks. */
+  links: Pt[];
+  /** Points on causeways out to drowned houses. */
+  causeways: Pt[];
+  /** Landmarks one can walk to: the figure's feet, the tower's top, the beacon's platform. */
+  landmarks: Pt[];
+  tower: Pt | null;
+  figure: Pt | null;
+  /** Other spots at the foot of the figure's plinth, in case the first is cut off. */
+  figureNear: Pt[];
+  beacon: Pt | null;
+  /** Side scenes, and their entrances off the ring quay. */
+  scenes: Pt[];
+  sides: Pt[];
+  /** Points round the ring quay. */
+  ring: Pt[];
+  /** Dense points down each of the three routes. */
+  routes: Pt[][];
+  /** Houses built, how many stand in the water, how many can be entered. */
+  houses: number;
+  drowned: number;
+  entered: number;
+  /** Places built but found cut off by the walk check, and so not claimed above. */
+  dropped: number;
+}
+
+const layouts = new WeakMap<object, HallLayout>();
+
+/**
+ * Walk the finished place from the ledge (steps of half a metre, headroom, no deep water) and keep
+ * in the layout only the doors, roofs, planks and landmarks that can be reached on foot.
+ */
+function walkCheck(g: BuiltDeep['grid'], L: HallLayout): void {
+  const K = g.K;
+  const seen = new Uint8Array(g.nu * g.nv * K);
+  const deepW = (k: number, ci: number): boolean => {
+    const w = g.water;
+    if (!w) return false;
+    const lv = w[ci];
+    return lv === lv && g.f[k] < lv - 1.2 && g.c[k] >= lv;
+  };
+  const start = g.spanAt(L.ledge[0], L.ledge[2], L.ledge[1] + 0.2);
+  if (start < 0) return;
+  const stack = [start];
+  seen[start] = 1;
+  const DI = [1, -1, 0, 0];
+  const DJ = [0, 0, 1, -1];
+  while (stack.length) {
+    const k = stack.pop()!;
+    const ci = (k / K) | 0;
+    const i = ci % g.nu;
+    const j = (ci / g.nu) | 0;
+    for (let q = 0; q < 4; q++) {
+      const ni = i + DI[q];
+      const nj = j + DJ[q];
+      if (ni < 0 || nj < 0 || ni >= g.nu || nj >= g.nv) continue;
+      const nci = ni + nj * g.nu;
+      const eu = g.u0 + (i + 0.5 + DI[q] * 0.5) * g.cu;
+      const ev = g.v0 + (j + 0.5 + DJ[q] * 0.5) * g.cv;
+      const fa = g.floorOf(k, ci, eu, ev);
+      for (let t = 0; t < g.n[nci]; t++) {
+        const nk = nci * K + t;
+        if (seen[nk]) continue;
+        const fb = g.floorOf(nk, nci, eu, ev);
+        if (fb - fa > 0.5) continue;
+        if (Math.min(g.c[k], g.c[nk]) - Math.max(fa, fb) < 1) continue;
+        if (deepW(nk, nci)) continue;
+        seen[nk] = 1;
+        stack.push(nk);
+      }
+    }
+  }
+  const ok = (p: Pt): boolean => {
+    for (let du = -1.2; du <= 1.2; du += 0.6) {
+      for (let dv = -1.2; dv <= 1.2; dv += 0.6) {
+        const k = g.spanAt(p[0] + du, p[2] + dv, p[1] + 0.3);
+        if (k >= 0 && seen[k] && Math.abs(g.floorOf(k, (k / K) | 0, p[0] + du, p[2] + dv) - p[1]) < 1.5) return true;
+      }
+    }
+    return false;
+  };
+  const keep = (a: Pt[]): Pt[] => {
+    const r = a.filter(ok);
+    L.dropped += a.length - r.length;
+    return r;
+  };
+  L.doors = keep(L.doors);
+  L.roofs = keep(L.roofs);
+  L.links = keep(L.links);
+  L.causeways = keep(L.causeways);
+  L.landmarks = keep(L.landmarks);
+  if (L.tower && !ok(L.tower)) L.tower = null;
+  if (L.figure && !ok(L.figure)) {
+    L.figure = L.figureNear.find(ok) ?? null;
+    if (L.figure) L.landmarks.push(L.figure);
+  }
+  if (L.beacon && !ok(L.beacon)) L.beacon = null;
+}
+export function hallLayout(d: object): HallLayout | undefined {
+  return layouts.get(d);
+}
 
 function hash2(a: number, b: number): number {
   let h = Math.imul(a | 0, 0x27d4eb2d) ^ Math.imul(b | 0, 0x165667b1);
@@ -68,7 +188,7 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   const SHELF = 0.5; // and along its edges
   const LOW = Yw - BED - 2; // under everything
 
-  const b = new DeepBuilder(spec, uniforms, { cell: tier === 2 ? 2 : 1, yMin: LOW - 2, maxSpans: 5, wallStep: tier === 0 ? 3 : 6 });
+  const b = new DeepBuilder(spec, uniforms, { cell: tier === 2 ? 2 : 1, yMin: LOW - 2, maxSpans: 7, wallStep: tier === 0 ? 3 : 6 });
   const g = b.grid;
   const STONE = b.paint(0.94, 0.92, 0.88, 0); // worked stone: quay, stairs, bridge
   const MOSS = b.paint(0.7, 0.84, 0.68, 0); // rock that stands in the water
@@ -177,27 +297,42 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   const ub0 = uA1 + 8; // where the bridge's own stair tops out
   const doorW = rnd() < 0.5 ? 7.2 : 10.8;
   const doorH = R(16, 22);
-  const gs = rnd() < 0.5 ? -1 : 1; // the side of the bridge the light falls on, and the podium's water stair
+  // the side of the bridge the town stands on, and the tunnel goes down: the wider, if the tunnel fits there
+  const roomFor = (sd: number): number => Math.floor((sd * ((sd > 0 ? spec.v1 - 3 : spec.v0 + 3) - (vP + sd * 5.4)) - 4) / 1.8) * 1.8;
+  const tWof = (sd: number): number => Rv + sd * (vC - vBr);
+  const ts = tWof(-tdir) > tWof(tdir) + 8 && roomFor(-tdir) >= yL - Yq + 12 ? -tdir : tdir;
+  const gs = -ts; // the side the light falls on, over open water, and the podium's water stair
   const ws = rnd() < 0.5 ? -1 : 1; // the side of the bridge the quay's water stair is on
   const vG = vBr + gs * 5.4;
   const GL = 10; // the podium's water stair
   const vWs = vBr + ws * 7.2;
   const WL = 4; // the quay's
 
-  // ---- the quay beyond the apron: along the wall on one side, running out part-way round
-  const qs = rnd() < 0.5 ? -1 : 1;
-  const uQe = uC + R(-0.1, 0.45) * Ru;
-  const quayW = (u: number, v: number): number => ((v - aMid) * qs > 0 ? Wq * smooth((uQe - u) / 14) : 0);
-  // rock left standing at the water's edge elsewhere: what makes the lake's outline its own
+  // ---- the ring: a quay right round the hall at the waterline, wider and narrower as it goes
+  const qs = rnd() < 0.5 ? -1 : 1; // which way round the lamps are set
+  const quayW = (u: number, v: number): number => Wq * (0.8 + 0.3 * vnoise(u / 40 + 5.3, v / 40 + 1.9));
+  // rock shelves left standing at the water's edge beyond it: what makes the lake's outline its own
   const bk = R(9, 14);
   const bankW = (u: number, v: number): number => {
     if (u > uT0 - 16 && Math.abs(v - vBr) < TH + 10) return 0;
-    return Math.max(0, bk * vnoise(u / 36 + 7.3, v / 36 + 2.1) - bk * 0.45);
+    if ((v - vBr) * ts > 0) return 0;
+    return Math.max(0, 2.2 * bk * vnoise(u / 36 + 7.3, v / 36 + 2.1) - bk * 0.75);
   };
+  // ---- the town's dry ground: the outer part of the tower's side of the lake, from the near wall
+  // to short of the podium; between it and the bridge its houses stand in the water
+  const uTa = uH0 - 4;
+  const uTb = uT0 - 16;
+  const tW = Rv + ts * (vC - vBr); // from the bridge to the side wall
+  const vl0 = Math.max(26, tW * R(0.24, 0.3));
+  const vl1 = Math.max(8, tW * R(0.08, 0.16));
+  const vLand = (u: number): number => vl0 + vl1 * vnoise(u / 45 + 3.1, 0.7 + ns * 0.001);
+  /** How far into the town's dry ground a spot is (negative: out in the water). */
+  const landD = (u: number, v: number): number => Math.min(ts * (v - vBr) - vLand(u), u - uTa, uTb - u);
   /** How far out into the lake a spot is, from whatever is dry. */
   const offshore = (u: number, v: number, w: number): number =>
     Math.min(
       w - Math.max(quayW(u, v), bankW(u, v)),
+      -landD(u, v),
       outside(u, v, uA0, av0, uA1, av1),
       outside(u, v, uT0, vBr - TH, uF, vBr + TH),
       outside(u, v, uT0 - GL, vG - 3.6, uT0, vG + 3.6),
@@ -255,27 +390,47 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     const t = u - uW;
     return t >= 0 && t <= tE + 4 && Math.abs(v - vP) <= 7.2 + 0.5 * t ? yE : -Infinity;
   };
-  g.carveFn(uC - Ru - 1, vC - Rv - 1, uC + Ru + 1, vC + Rv + 1, (u, v, o) => {
+  const SAND = b.paint(0.9, 0.82, 0.68, 0); // the town's ground
+  /** What the floor of the hall is, before anything is built on it; `pk` says what it is made of. */
+  let pk = 0; // 0 lake bed, 1 worked stone, 2 rock shelf, 3 the town's ground
+  const planFloor = (u: number, v: number): number => {
     const d = dn(u, v);
-    if (d >= 1) return false;
+    if (d >= 1) return NaN;
     const w = (1 - d) * Rm;
-    o.ceil = Math.max(embr(u, v), bayRoof(u, v), roof(u, v, d));
-    g.paintF = STONE;
-    g.roughNow = 0.06;
-    if (u >= uT0 && Math.abs(v - vBr) <= TH) o.floor = Yd;
-    else if ((u >= uA0 && u <= uA1 && v >= av0 && v <= av1) || w < quayW(u, v)) o.floor = Yq;
-    else {
-      g.roughNow = tier === 2 ? 0.5 : 0.42;
-      const bw = bankW(u, v);
-      if (w < bw) {
-        g.paintF = MOSS;
-        o.floor = Yw + 0.2 + 0.45 * Math.floor(3 * vnoise(u / 11 + 3, v / 11 + 9)); // (never more than a step above the quay)
-      } else {
-        const s = offshore(u, v, w);
-        g.paintF = 0;
-        o.floor = bed(s);
-      }
+    const dv = Math.abs(v - vBr);
+    pk = 1;
+    if (u >= uT0 && dv <= TH) return Yd;
+    if (u >= uA0 && u <= uA1 && v >= av0 && v <= av1) return Yq;
+    if (w < quayW(u, v)) {
+      // where the ring meets the bay it climbs broad steps onto the podium
+      if (u > uT0 - 18 && dv < TH + 10) return Yq + Math.min(4, 0.4 * Math.ceil(Math.max(0, TH + 10 - dv)));
+      return Yq;
     }
+    const ld = landD(u, v);
+    if (ld > 0) {
+      pk = 3;
+      const lev = Math.min(Math.floor(3 * vnoise(u / 17 + 1.7, v / 17 + 4.2)), Math.floor(ld / 5));
+      return Yq + 0.4 * Math.max(0, lev);
+    }
+    if (ld > -3) {
+      pk = 3; // a beach, down in steps into the water
+      return Math.max(Yw - SHELF, Yq - 0.4 * Math.ceil(-ld));
+    }
+    const bw = bankW(u, v);
+    if (w < bw) {
+      pk = 2;
+      return Yw + 0.2 + 0.45 * Math.floor(3 * vnoise(u / 11 + 3, v / 11 + 9)); // (never more than a step above the quay)
+    }
+    pk = 0;
+    return bed(offshore(u, v, w));
+  };
+  g.carveFn(uC - Ru - 1, vC - Rv - 1, uC + Ru + 1, vC + Rv + 1, (u, v, o) => {
+    const F = planFloor(u, v);
+    if (F !== F) return false;
+    o.floor = F;
+    o.ceil = Math.max(embr(u, v), bayRoof(u, v), roof(u, v, dn(u, v)));
+    g.paintF = pk === 0 ? 0 : pk === 1 ? STONE : pk === 2 ? MOSS : SAND;
+    g.roughNow = pk === 1 ? 0.06 : tier === 2 ? 0.5 : 0.42;
     return true;
   });
 
@@ -323,6 +478,216 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   }
   const sr = R(7.5, 10.5);
 
+  const L: HallLayout = {
+    ledge: [uW + 1.5, yL, vP], centre: [uF + 1, Yd, vBr], relic: null, stone: null, water: Yw, feet: [], doors: [], roofs: [], links: [], causeways: [],
+    landmarks: [], tower: null, figure: null, figureNear: [], beacon: null, scenes: [], sides: [], ring: [], routes: [[], [], []], houses: 0, drowned: 0, entered: 0, dropped: 0,
+  };
+  const props: (() => void)[] = []; // dressing, done once the carving is over
+  const gd = -ts; // the far side from the town: the gallery and the rockfall
+  // the first way down, the tower: its flights, and its foot on the apron
+  for (const fl of flights) for (let q = 0; q <= 8; q++) L.routes[0].push([fl.u, fl.y0 + ((fl.y1 - fl.y0) * q) / 8, fl.va + ((fl.vb - fl.va) * q) / 8]);
+  const footV = flights[nF - 1].vb + flights[nF - 1].dir * 2.5;
+  L.feet.push([flights[nF - 1].u, Yq, footV]);
+
+  /** Somewhere to walk, whatever is there: rock under it to y, air over it. */
+  const shelf = (u0: number, v0: number, u1: number, v1: number, y: number, deep = 2): void => {
+    g.fillBox(Math.min(u0, u1), Math.min(v0, v1), Math.max(u0, u1), Math.max(v0, v1), y - deep, y);
+    g.carveBox(Math.min(u0, u1), Math.min(v0, v1), Math.max(u0, u1), Math.max(v0, v1), y, y + 3);
+  };
+
+  // ---- the second way down: a stair cut inside the rock behind the near wall, a flight along it,
+  // a turn and a flight back, then out through the wall onto the shore
+  let tunnelExit: [number, number] = [uH0, vP];
+  {
+    g.paintF = STONE;
+    g.roughNow = 0.05;
+    const uLA = uH0 - 3.6;
+    const uLB = uH0 - 7.6;
+    const D = yL - Yq;
+    const vA0 = vP + ts * 5.4;
+    const edge = ts > 0 ? spec.v1 - 3 : spec.v0 + 3;
+    const maxA = Math.floor((ts * (edge - vA0) - 4) / 1.8) * 1.8;
+    const hallA = ts * (vC + ts * 0.75 * Rv - vA0);
+    let FA = 2 * D;
+    let FB = 0;
+    if (FA > Math.min(maxA, hallA)) {
+      FB = Math.max(14, 2 * D - maxA);
+      FA = 2 * D - FB;
+    }
+    const vA1 = vA0 + ts * FA;
+    const yT = yL - FA / 2;
+    shelf(uLA - 2, vP + ts * 1.8, uW + 0.5, vA0, yL);
+    g.carveRun([uLA, yL, vA0], [uLA, yT, vA1], 4, 3, { steps: true });
+    for (let t = 4; t <= FA; t += 2) L.routes[1].push([uLA, yL - t / 2, vA0 + ts * t]);
+    let uLx = uLA;
+    let vEnd = vA1;
+    let dirE = ts;
+    if (FB > 0) {
+      g.carveBox(uLB - 2, Math.min(vA1, vA1 + ts * 3.6), uLA + 2, Math.max(vA1, vA1 + ts * 3.6), yT, yT + 3);
+      vEnd = vA1 - ts * FB;
+      g.carveRun([uLB, yT, vA1], [uLB, Yq, vEnd], 4, 3, { steps: true });
+      for (let t = 0; t <= FB; t += 2) L.routes[1].push([uLB, yT - t / 2, vA1 - ts * t]);
+      uLx = uLB;
+      dirE = -ts;
+    }
+    // out: a level way through the wall, on a jetty where it meets the water
+    const vX = vEnd + dirE * 1.8;
+    let uX = uH0;
+    for (let run = 0; uX < uH0 + 70 && run < 3; uX += 1) {
+      let dry = true;
+      for (const dv of [-1.2, 0, 1.2]) {
+        const F = planFloor(uX, vX + dv);
+        if (!(F >= Yq - 0.01 && F <= Yq + 0.01)) dry = false;
+      }
+      run = dry ? run + 1 : 0;
+    }
+    g.carveBox(uLx - 2, Math.min(vEnd, vEnd + dirE * 3.6), uX, Math.max(vEnd, vEnd + dirE * 3.6), Yq, Yq + 3);
+    g.fillBox(uH0 - 2, Math.min(vEnd, vEnd + dirE * 3.6), uX, Math.max(vEnd, vEnd + dirE * 3.6), LOW, Yq);
+    for (let u = uLx; u < uX; u += 2) L.routes[1].push([u, Yq, vX]);
+    L.feet.push([uX + 1, Yq, vX]);
+    tunnelExit = [uX, vX];
+    const lampsT: Pt[] = [[uLA, yL - 2 + 2.2, vA0 + ts * 4]];
+    if (FB > 0) lampsT.push([uLA + 1.4, yT + 2.2, vA1 + ts * 1.8]);
+    lampsT.push([uLx, Yq + 2.2, vEnd + dirE * 1.8]);
+    props.push(() => {
+      for (const p of lampsT) b.lamp(p[0], p[1], p[2], { reach: 13, strength: 0.75 });
+      for (let t = 18; t < FA - 6; t += tier === 2 ? 36 : 18) b.lamp(uLA - 1.6, yL - t / 2 + 2.2, vA0 + ts * t, { reach: 12, strength: 0.7 });
+      b.lamp(uX + 1, Yq + 2.4, vX - dirE * 2.4, { reach: 16 });
+    });
+  }
+
+  // ---- the third way down: a gallery behind the near wall, then a rockfall worn into a slope
+  // along the far side wall, down to the ring
+  const gr = 0.45;
+  const uB0 = uH0 - 1.8;
+  const uFoot = uB0 + (yL - Yq) / gr;
+  let vWall = vC + gd * Rv;
+  for (let t = 0; t < 1.3 * Rv; t += 1) {
+    if (dn(uFoot, vC + gd * t) >= 1) {
+      vWall = vC + gd * t;
+      break;
+    }
+  }
+  // clear of the ring where it is low, so the ring passes beside it there (and under it where it is high)
+  let vQ = vWall;
+  for (let u = uFoot - 16; u <= uFoot + 8; u += 2) {
+    for (let t = 0; t < 40; t += 0.5) {
+      const v = vWall - gd * t;
+      const d = dn(u, v);
+      if (d < 1 && (1 - d) * Rm >= quayW(u, v)) {
+        if ((vQ - v) * gd > 0) vQ = v;
+        break;
+      }
+    }
+  }
+  const vS = onV(vQ - gd * 8);
+  const surf = (u: number): number => (u <= uB0 ? yL : Math.max(Yq, yL - gr * (u - uB0)));
+  {
+    g.paintF = STONE;
+    g.roughNow = 0.1;
+    shelf(uH0 - 5.6, vP + gd * 1.8, uW + 0.5, vP + gd * 5.4, yL);
+    g.carveBox(uH0 - 5.6, Math.min(vP + gd * 5.4, vS + gd * 4), uH0 - 1.6, Math.max(vP + gd * 5.4, vS + gd * 4), yL, yL + 3);
+    for (let v = vP + gd * 9; (vS - v) * gd > 0; v += gd * 2) L.routes[2].push([uH0 - 3.6, yL, v]);
+    g.paintF = MOSS;
+    g.roughNow = tier === 2 ? 0.5 : 0.4;
+    g.fillFn(uH0 - 5.6, vS - 4, uFoot + 8, vS + 4, (u, v, o) => {
+      const y = surf(u);
+      const edge = 4 - Math.abs(v - vS);
+      o.hi = y;
+      o.lo = y > Yq + 6 ? y - 3 - 2 * vnoise(u / 4, v / 4) : LOW;
+      if (u > uB0 && y > Yq) o.su = -gr;
+      return edge > 0;
+    });
+    g.carveFn(uH0 - 5.6, vS - 4, uFoot + 8, vS + 4, (u, _v, o) => {
+      o.floor = surf(u);
+      o.ceil = o.floor + 4;
+      if (u > uB0 && o.floor > Yq) o.su = -gr;
+      return true;
+    });
+    // its foot spreads to the wall, onto the ring
+    g.fillBox(uFoot - 2, Math.min(vS, vWall + gd * 2), uFoot + 8, Math.max(vS, vWall + gd * 2), LOW, Yq);
+    for (let u = uB0; u < uFoot; u += 3) L.routes[2].push([u, surf(u), vS]);
+    L.feet.push([uFoot + 4, Yq, vS]);
+    // rubble heaped either side of it
+    g.fillFn(uB0, vS - 9, uFoot, vS + 9, (u, v, o) => {
+      const e = (vS - v) * gd - 4;
+      if (e <= 0) return false;
+      const y = surf(u) - 1.5 * e - 2 * vnoise(u / 5 + 3, v / 5);
+      if (y < Yw - 1) return false;
+      o.hi = y;
+      o.lo = y - 4;
+      return true;
+    });
+    props.push(() => {
+      for (let u = uB0 + 14; u < uFoot - 4; u += tier === 2 ? 60 : 34) b.lamp(u, surf(u) + 1.6, vS + ts * 3.2, { reach: 16, strength: 0.8 });
+      b.lamp(uH0 - 3.6, yL + 2.2, vS + gd * 2.4, { reach: 13, strength: 0.75 });
+      for (let v = vP + gd * 22; (vS - v) * gd > 10; v += gd * (tier === 2 ? 50 : 30)) b.lamp(uH0 - 2, yL + 2.2, v, { reach: 12, strength: 0.7 });
+      b.lamp(uFoot + 4, Yq + 1.8, vWall + gd * -3, { reach: 16 });
+    });
+  }
+
+  // ---- pillars: natural columns, lake bed to roof
+  const pillars: [number, number, number][] = [];
+  {
+    const nP = 3 + Math.floor(rnd() * 4);
+    for (let tries = 0; tries < 300 && pillars.length < nP; tries++) {
+      const u = R(uH0 + 34, uT0 - 20);
+      const v = vC + R(-0.8, 0.8) * Rv;
+      const r = R(3.5, 6.5);
+      if (dn(u, v) > 0.78) continue;
+      if (Math.abs(v - vBr) < r + 16) continue;
+      if (Math.abs(v - vP) < r + 14 && u < uW + 110) continue; // the view out from the balcony
+      if (outside(u, v, uA0, av0, uA1, av1) < r + 10) continue;
+      if (Math.hypot(u - su, v - sv) < sr + r + 8) continue;
+      if (Math.abs(v - vS) < r + 14 && u < uFoot + r + 12) continue;
+      if (Math.hypot(u - tunnelExit[0], v - tunnelExit[1]) < r + 16) continue;
+      if (pillars.some((p) => Math.hypot(p[0] - u, p[1] - v) < p[2] + r + 30)) continue;
+      pillars.push([u, v, r]);
+    }
+    g.roughNow = 0.5;
+    g.paintF = MOSS;
+    for (const [pu, pv, pr] of pillars) {
+      for (let q = 0; q < 3; q++) {
+        const y0 = q === 0 ? LOW : Yw + (H * q) / 3;
+        const y1 = q === 2 ? Yc + 1 : Yw + (H * (q + 1)) / 3;
+        g.fillCyl(pu, pv, pr * [1.3, 0.8, 1.2][q] * (0.9 + 0.2 * rnd()), y0, y1, 0.05);
+      }
+    }
+  }
+
+  // ---- a beacon out on the open water, reached by a stair off the bridge and a causeway
+  {
+    const cand = piers.slice(1, -1).filter((pu) => Math.abs(pu - su) > sr + 6 && pu < uT0 - 14);
+    const X0 = R(26, 38);
+    const hB = R(14, 20);
+    const tries: [number, number][] = [];
+    for (const X of [X0, 22, 46]) for (const pu of cand.sort((a2, c) => Math.abs(a2 - (ub0 + uT0) / 2) - Math.abs(c - (ub0 + uT0) / 2))) tries.push([X, pu]);
+    for (const [X, pu] of tries) {
+      const vB = onV(vBr + gd * X);
+      if (dn(pu, vB) > 0.8 || Math.abs(vB - vS) < 16 || Math.hypot(pu - su, vB - sv) < sr + 8) continue;
+      if (pillars.some((p) => Math.hypot(p[0] - pu, p[1] - vB) < p[2] * 1.4 + 9 || (Math.abs(p[0] - pu) < p[2] * 1.4 + 3 && (p[1] - vBr) * gd > 0 && (p[1] - vB) * gd < 0))) continue;
+      g.paintF = STONE;
+      g.roughNow = 0.08;
+      g.fillRun([pu, Yd, vBr + gd * 1.8], [pu, Yq, vBr + gd * 9.8], 2.4, Yd - LOW, { steps: true });
+      g.fillBox(pu - 1.2, Math.min(vBr + gd * 9.8, vB), pu + 1.2, Math.max(vBr + gd * 9.8, vB), LOW, Yq);
+      g.fillCyl(pu, vB, 5.5, LOW, Yq);
+      g.fillCyl(pu, vB, 2.4, Yq, Yq + hB);
+      for (let v = vBr + gd * 12; (vB - v) * gd > 6; v += gd * 3) L.causeways.push([pu, Yq, v]);
+      L.beacon = [pu + 4, Yq, vB];
+      L.landmarks.push(L.beacon);
+      props.push(() => {
+        b.color(0.95, 0.93, 0.88, 0);
+        b.cyl(pu, Yq + hB, vB, 3, 0.6, { sides });
+        b.cyl(pu, Yq + hB + 0.6, vB, 1.6, 1.4, { sides, top: 0.9 });
+        b.cone(pu, Yq + hB + 2, vB, 1.9, 2.2, { sides });
+        b.lamp(pu, Yq + hB + 1.3, vB, { reach: 40, strength: 1.4, size: 2, body: false });
+        b.lamp(pu + 3.6, Yq + 1.6, vB, { reach: 14, strength: 0.8 });
+        for (const s of [-1, 1]) post(pu + s * 1.6, Yq, vB - gd * 6);
+      });
+      break;
+    }
+  }
+
   // ---- rocks standing out of the lake
   {
     const nI = 2 + Math.floor(rnd() * 5);
@@ -335,6 +700,10 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
       const d = dn(u, v);
       if (d > 0.9 || offshore(u, v, (1 - d) * Rm) < r + 6 || Math.abs(v - vBr) < r + 7) continue;
       if (Math.hypot(su - u, sv - v) < r + sr + 5) continue;
+      if ((v - vBr) * gd < 0 || (Math.abs(v - vS) < r + 12 && u < uFoot + r + 10)) continue;
+      if (L.beacon && Math.hypot(u - L.beacon[0], v - L.beacon[2]) < r + 12) continue;
+      if (L.beacon && Math.abs(u - L.beacon[0]) < r + 4 && (v - vBr) * gd < (L.beacon[2] - vBr) * gd + r) continue;
+      if (pillars.some((p) => Math.hypot(p[0] - u, p[1] - v) < p[2] * 1.4 + r + 4)) continue;
       i++;
       g.paintF = MOSS;
       g.fillFn(u - r - 2, v - r - 2, u + r + 2, v + r + 2, (cu, cv, o) => {
@@ -346,6 +715,524 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
       });
     }
   }
+
+  // ================================================================ the half-drowned town
+  /** The dry floor of the town or the ring at a spot, or NaN where it is water, rock or worked stone. */
+  const ground = (u: number, v: number): number => {
+    const F = planFloor(u, v);
+    if (F !== F) return NaN;
+    if (pk === 3 && F >= Yq - 0.01) return F;
+    if (pk === 1 && Math.abs(F - Yq) < 0.01) return F;
+    return NaN;
+  };
+  const PU = 18;
+  const PV = 12.6;
+  const uL0 = even(uH0 + 6);
+  const nI = Math.max(0, Math.floor((uTb + 4 - uL0) / PU));
+  const nJ = Math.max(0, Math.floor((Rv + ts * (vC - vBr) - 18) / PV));
+  const vL0 = ts > 0 ? onV(vBr + 14) : onV(vBr - 14) - nJ * PV;
+  interface Lot { i: number; j: number; u: number; v: number; ok: boolean; wet: boolean; used: boolean; score: number }
+  const lots: Lot[] = [];
+  const lotAt = (i: number, j: number): Lot | undefined => (i < 0 || j < 0 || i >= nI || j >= nJ ? undefined : lots[i * nJ + j]);
+  const keepClear: [number, number, number][] = [[tunnelExit[0], tunnelExit[1], 12], [L.feet[0][0], L.feet[0][2], 10]];
+  const blocked: [number, number, number, number][] = []; // rectangles causeways must keep out of
+  for (let i = 0; i < nI; i++) {
+    for (let j = 0; j < nJ; j++) {
+      const u = uL0 + i * PU;
+      const v = vL0 + j * PV;
+      // dry ground all over, or water (or a beach) under some of it: then it is built up from the bed
+      let land = true;
+      let ok = true;
+      for (let q = 0; q < 9 && ok; q++) {
+        const su2 = u + 1 + (q % 3) * 8;
+        const sv2 = v + 0.5 + Math.floor(q / 3) * 6.2;
+        if (dn(su2, sv2) > 0.92) ok = false;
+        const F = ground(su2, sv2);
+        if (!(F <= Yq + 0.9)) {
+          land = false;
+          const W2 = planFloor(su2, sv2);
+          if (!(W2 < Yq && (pk === 0 || pk === 3))) ok = false;
+        }
+      }
+      const cx = u + PU / 2;
+      const cz = v + PV / 2;
+      if (outside(cx, cz, uA0, av0, uA1 + 8, av1) < 11) ok = false;
+      if (pillars.some((p) => Math.hypot(p[0] - cx, p[1] - cz) < p[2] * 1.4 + 6)) ok = false;
+      if (keepClear.some((p) => Math.hypot(p[0] - cx, p[1] - cz) < p[2] + 6)) ok = false;
+      if (Math.hypot(cx - su, cz - sv) < sr + 14) ok = false;
+      lots.push({ i, j, u, v, ok, wet: !land, used: false, score: 0.5 * (1 - (cx - uL0) / (uTb - uL0 + 1)) + 0.6 * rnd() });
+    }
+  }
+  const free = (): Lot[] => lots.filter((l) => l.ok && !l.used);
+  const mid = (l: Lot): [number, number] => [l.u + PU / 2, l.v + PV / 2];
+  const nearest = (u: number, v: number, among: Lot[]): Lot | undefined => {
+    let best: Lot | undefined;
+    let bd = Infinity;
+    for (const l of among) {
+      const [cx, cz] = mid(l);
+      const d = Math.hypot(cx - u, cz - v);
+      if (d < bd) {
+        bd = d;
+        best = l;
+      }
+    }
+    return best;
+  };
+  const groundMax = (u0: number, v0: number, u1: number, v1: number): number => {
+    let m = -Infinity;
+    for (let a2 = 0; a2 <= 3; a2++) for (let c = 0; c <= 3; c++) m = Math.max(m, ground(u0 + ((u1 - u0) * a2) / 3, v0 + ((v1 - v0) * c) / 3));
+    return m;
+  };
+  const roofP = b.paint(0.9, 0.8, 0.6, 2);
+  const lampsTown: (() => void)[] = [];
+  const rectHitsPillar = (u0: number, v0: number, u1: number, v1: number): boolean => pillars.some((p) => Math.hypot(Math.max(u0 - p[0], 0, p[0] - u1), Math.max(v0 - p[1], 0, p[1] - v1)) < p[2] * 1.45 + 4);
+
+  // the figure: a seated giant of blocks on a plinth at the shore, looking out over the water to the bridge
+  {
+    const cand = free().filter((l) => {
+      const n = lotAt(l.i, l.j + 1);
+      return !l.wet && n && n.ok && !n.wet && !n.used && !rectHitsPillar(l.u, l.v - 2, l.u + PU, l.v + PV * 2 + 2);
+    });
+    const fu = (uL0 + uTb) / 2 + R(-30, 30);
+    const fv = vBr + ts * (vLand((uL0 + uTb) / 2) + 20);
+    let lt = nearest(fu, fv, cand);
+    // no dry ground for it: it sits out in the water on a plinth, a causeway to its back
+    let wetF = false;
+    let cwF: [number, number, number] | null = null;
+    if (!lt) {
+      const c2 = free().filter((l) => {
+        const n = lotAt(l.i, l.j + 1);
+        return n && n.ok && !n.used && !rectHitsPillar(l.u, l.v - 2, l.u + PU, l.v + PV * 2 + 2);
+      });
+      for (const l of c2.sort((a2, c) => Math.hypot(mid(a2)[0] - fu, mid(a2)[1] - fv) - Math.hypot(mid(c)[0] - fu, mid(c)[1] - fv))) {
+        const cu2 = l.u + PU / 2;
+        const cv2 = l.v + PV;
+        const dir2 = vBr > cv2 ? 1 : -1;
+        let v = cv2 - dir2 * 8;
+        let okc = false;
+        for (let n = 0; n < 50; n++, v -= dir2 * 1.8) {
+          if ([-1.2, 0, 1.2].every((x) => landD(cu2 + x, v) > 2 && ground(cu2 + x, v) <= Yq + 0.9)) {
+            okc = true;
+            break;
+          }
+          if (dn(cu2, v) > 0.95 || blocked.some((r) => cu2 + 1.8 > r[0] && cu2 - 1.8 < r[2] && v > r[1] && v < r[3])) break;
+          if (pillars.some((p) => Math.hypot(p[0] - cu2, p[1] - v) < p[2] * 1.4 + 2) || outside(cu2, v, uA0, av0, uA1 + 8, av1) < 3) break;
+        }
+        if (!okc) continue;
+        lt = l;
+        wetF = true;
+        cwF = [cu2, cv2 - dir2 * 8, v];
+        break;
+      }
+    }
+    if (lt) {
+      const l2 = lotAt(lt.i, lt.j + 1)!;
+      lt.used = true;
+      l2.used = true;
+      const cuF = lt.u + PU / 2;
+      const cvF = lt.v + PV;
+      const dir = vBr > cvF ? 1 : -1;
+      const hF = R(17, 22) / 20.4;
+      const y0 = wetF ? Yq - 2 * hF : groundMax(cuF - 8, cvF - 9, cuF + 8, cvF + 9) + 0.2;
+      if (cwF) {
+        g.paintF = MOSS;
+        g.roughNow = 0.15;
+        const [cu2, va2, vb2] = cwF;
+        g.fillBox(cuF - 8, cvF - 9, cuF + 8, cvF + 9, LOW, Yq);
+        g.fillBox(cu2 - 1.6, Math.min(va2, vb2), cu2 + 1.6, Math.max(va2, vb2), LOW, Yq);
+        for (const l of lots) if (l.u <= cu2 + 2 && l.u + PU >= cu2 - 2 && l.v <= Math.max(va2, vb2) && l.v + PV >= Math.min(va2, vb2)) l.used = true;
+        blocked.push([cu2 - 2, Math.min(va2, vb2), cu2 + 2, Math.max(va2, vb2)]);
+        for (let v = Math.min(va2, vb2) + 2; v < Math.max(va2, vb2) - 1; v += 4) L.causeways.push([cu2, Yq, v]);
+      }
+      const fb = (a0: number, a1: number, f0: number, f1: number, ya: number, yb: number): void => {
+        const va = cvF + dir * f0;
+        const vb = cvF + dir * f1;
+        g.fillBox(cuF + a0, Math.min(va, vb), cuF + a1, Math.max(va, vb), y0 + ya * hF, y0 + yb * hF);
+      };
+      g.roughNow = 0.15;
+      g.paintF = roofP;
+      fb(-8, 8, -9, 9, -3, 2);
+      fb(-3.6, -0.9, 4.2, 6.6, 2, 7);
+      fb(0.9, 3.6, 4.2, 6.6, 2, 7);
+      fb(-3.6, 3.6, -4, 6.6, 7, 9);
+      fb(-3.2, 3.2, -3.6, 1.6, 9, 17);
+      fb(-4.5, 4.5, -3.2, 1.2, 14, 17);
+      fb(-1.8, 1.8, -2, 1, 17, 20.4);
+      fb(3.6, 5.4, -2.5, 0.5, 9.5, 15);
+      fb(-5.4, -3.6, -2.5, 0.5, 9.5, 15);
+      fb(3.6, 5.4, 0.5, 6, 9, 10.4);
+      fb(-5.4, -3.6, 0.5, 6, 9, 10.4);
+      g.paintF = 0;
+      blocked.push([cuF - 9, cvF - 10, cuF + 9, cvF + 10]);
+      if (wetF) {
+        L.figure = [cuF, Yq, cvF - dir * 6.8];
+        L.landmarks.push(L.figure);
+      }
+      for (const [sx, sz] of wetF ? [] : [[10, 6], [-10, 6], [10, -6], [-10, -6], [0, 11], [0, -11]]) {
+        const F = ground(cuF + sx, cvF + sz);
+        if (F === F) L.figureNear.push([cuF + sx, F, cvF + sz]);
+      }
+      for (const sx of wetF ? [] : [10, -10]) {
+        const F = ground(cuF + sx, cvF);
+        if (!(F === F) || pillars.some((p) => Math.hypot(p[0] - cuF - sx, p[1] - cvF) < p[2] * 1.45 + 3)) continue;
+        L.figure = [cuF + sx, F, cvF];
+        L.landmarks.push(L.figure);
+        break;
+      }
+      lampsTown.push(() => b.lamp(cuF + 9.5, y0 + 1.8, cvF + dir * 4, { reach: 20 }), () => b.lamp(cuF - 9.5, y0 + 1.8, cvF + dir * 4, { reach: 20 }));
+    }
+  }
+  // the tower you can climb: three flights round a void, a platform at the top
+  {
+    const fits = (l: Lot, west: boolean): boolean => {
+      const n = lotAt(l.i, l.j + 1);
+      const w = lotAt(l.i - 1, l.j);
+      return !l.wet && !!n && n.ok && !n.used && !n.wet && (!west || (!!w && w.ok && !w.wet)) && ground(l.u - 4, l.v + 1.8) <= Yq + 0.9 && ground(l.u - 4, l.v + 25) <= Yq + 0.9 && !rectHitsPillar(l.u - 6, l.v - 3, l.u + 18, l.v + 29);
+    };
+    const tv = vBr + ts * R(40, 80);
+    const lt = nearest(uL0 + R(30, 90), tv, free().filter((l) => fits(l, true))) ?? nearest(uL0 + 40, tv, free().filter((l) => fits(l, false)));
+    if (lt) {
+      lt.used = true;
+      lotAt(lt.i, lt.j + 1)!.used = true;
+      const ua = lt.u;
+      const va = lt.v;
+      const yB = Math.round(ground(ua - 1, va + 1.8) * 4) / 4;
+      g.roughNow = 0.1;
+      g.paintF = roofP;
+      g.fillRun([ua, yB, va + 1.8], [ua + 12, yB + 6, va + 1.8], 3.6, 10, { steps: true });
+      g.fillBox(ua + 12, va, ua + 16, va + 3.6, yB - 4, yB + 6);
+      g.fillRun([ua + 14, yB + 6, va + 3.6], [ua + 14, yB + 15, va + 21.6], 4, 20, { steps: true });
+      g.fillBox(ua + 12, va + 21.6, ua + 16, va + 25.2, LOW, yB + 15);
+      g.fillRun([ua + 12, yB + 15, va + 23.4], [ua + 4, yB + 19, va + 23.4], 3.6, 26, { steps: true });
+      g.fillBox(ua, va + 18, ua + 4, va + 25.2, LOW, yB + 19);
+      g.paintF = 0;
+      blocked.push([ua - 5, va - 1, ua + 17, va + 26]);
+      L.tower = [ua + 2, yB + 19, va + 23];
+      L.landmarks.push(L.tower);
+      L.doors.push([ua - 1.5, yB, va + 1.8]);
+      lampsTown.push(() => b.lamp(ua - 1, yB + 1.2, va + 1.8, { reach: 16 }), () => b.lamp(ua + 2, yB + 20, va + 23, { reach: 24, strength: 1.2 }));
+    }
+  }
+
+  // houses: on the shore, and out in the water to their upper floors
+  interface Bld {
+    lot: Lot; u0: number; u1: number; v0: number; v1: number; yB: number; h: number; enter: boolean; stair: boolean;
+    door: number; stairDir: number; stairSide: number; group: number; two: boolean; yS: number; wet: boolean;
+  }
+  const blds: Bld[] = [];
+  const causeways: [number, number, number][] = []; // u, v from, v to
+  {
+    const want = 18 + Math.floor(rnd() * 12);
+    const pool = free().sort((a2, c) => c.score - a2.score);
+    const mk = (lt: Lot): Bld | undefined => {
+      const bu = [12, 14, 14][Math.floor(rnd() * 3)];
+      const bv = [7.2, 9, 9][Math.floor(rnd() * 3)];
+      const door = Math.floor(rnd() * 3); // 0 -u, 1 +u, 2 -v
+      const h = Math.round(R(5, 15) * 2) / 2;
+      const sd = rnd() < 0.5 ? 1 : -1;
+      const two = bu >= 12 && rnd() < 0.5;
+      if (lt.wet) {
+        // drowned to its upper floor: built up from the bed, its door at the water's edge onto a causeway
+        const u0 = lt.u + 14 - bu;
+        const v0 = lt.v + (bv === 7.2 ? 1.8 * Math.floor(rnd() * 2) : 0);
+        if (rectHitsPillar(u0, v0, u0 + bu, v0 + bv)) return undefined;
+        lt.used = true;
+        const bd: Bld = { lot: lt, u0, u1: u0 + bu, v0, v1: v0 + bv, yB: Yq, h: Math.max(4, Math.min(h, 9)), enter: false, stair: false, door: 1, stairDir: sd, stairSide: 1, group: -1, two, yS: 0, wet: true };
+        blds.push(bd);
+        return bd;
+      }
+      const u0 = lt.u + (bu === 12 ? 2 * Math.floor(rnd() * 2) : 0);
+      const v0 = lt.v + (bv === 7.2 ? 1.8 * Math.floor(rnd() * 2) : 0);
+      const du = door === 0 ? u0 - 1.4 : door === 1 ? u0 + bu + 1.4 : u0 + bu / 2;
+      const dv = door === 2 ? v0 - 1.4 : v0 + bv / 2;
+      const yB = ground(du, dv);
+      if (!(yB === yB) || groundMax(u0, v0, u0 + bu, v0 + bv) > yB + 3 || Math.abs(yB - ground(u0 + bu / 2, v0 + bv / 2)) > 1.6) return undefined;
+      if (rectHitsPillar(u0, v0, u0 + bu, v0 + bv)) return undefined;
+      lt.used = true;
+      const bd: Bld = { lot: lt, u0, u1: u0 + bu, v0, v1: v0 + bv, yB: Math.round(yB * 4) / 4, h, enter: false, stair: false, door, stairDir: sd, stairSide: 1, group: -1, two, yS: 0, wet: false };
+      blds.push(bd);
+      return bd;
+    };
+    for (let guard = 0; blds.length < want && pool.length > 0 && guard < 200; guard++) {
+      let bi = 0;
+      let bs = -Infinity;
+      for (let q = 0; q < pool.length; q++) {
+        const l = pool[q];
+        let adj = 0;
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) adj += lotAt(l.i + di, l.j + dj)?.used ? 1 : 0;
+        const sc = l.score + 0.45 * Math.min(adj, 2) + (l.wet ? 0.25 : 0);
+        if (sc > bs) {
+          bs = sc;
+          bi = q;
+        }
+      }
+      const lt = pool.splice(bi, 1)[0];
+      if (!lt.used) mk(lt);
+    }
+    // a causeway out to a drowned house: along the lane on its +u side, toward the shore, stopping at dry ground
+    const causewayTo = (bd: Bld): boolean => {
+      const uc = bd.lot.u + 16;
+      const vm = onV((bd.v0 + bd.v1) / 2);
+      let v = vm;
+      for (let n = 0; n < 60; n++, v += ts * 1.8) {
+        const dryHere = [-1.2, 0, 1.2].every((x) => landD(uc + x, v) > 2 && ground(uc + x, v) <= Yq + 0.9);
+        if (dryHere) break;
+        if (dn(uc, v) > 0.95 || blocked.some((r) => uc + 1.8 > r[0] && uc - 1.8 < r[2] && v > r[1] && v < r[3])) return false;
+        if (pillars.some((p) => Math.hypot(p[0] - uc, p[1] - v) < p[2] * 1.4 + 2)) return false;
+        if (outside(uc, v, uA0, av0, uA1 + 8, av1) < 3) return false;
+        if (n === 59) return false;
+      }
+      causeways.push([uc, vm - ts * 2.4, v]);
+      return true;
+    };
+    // about a third can be entered; half of the dry ones have a stair to the roof
+    const nbc = (bd: Bld): number => blds.filter((o) => o !== bd && Math.abs(o.lot.i - bd.lot.i) + Math.abs(o.lot.j - bd.lot.j) === 1).length;
+    const order = blds.map((_, i) => i).sort((a2, c) => hash2(ns + a2, 77) - 0.7 * Math.min(2, nbc(blds[a2])) - (hash2(ns + c, 77) - 0.7 * Math.min(2, nbc(blds[c]))));
+    const nE = Math.max(6, Math.round(blds.length / 3));
+    const tryStair = (bd: Bld): void => {
+      if (bd.wet) return;
+      const hasN = (dj: number): boolean => blds.some((o) => o.lot.i === bd.lot.i && o.lot.j === bd.lot.j + dj);
+      bd.stairSide = !hasN(1) ? 1 : !hasN(-1) ? -1 : 1;
+      // never across a neighbour's door
+      if (bd.stairSide > 0 && blds.some((o) => o.lot.i === bd.lot.i && o.lot.j === bd.lot.j + 1 && o.door === 2)) {
+        if (hasN(-1)) return;
+        bd.stairSide = -1;
+      }
+      let yB = bd.yB;
+      let door = bd.door;
+      if (door === 2 && bd.stairSide < 0) {
+        door = 0;
+        const y2 = ground(bd.u0 - 1.4, (bd.v0 + bd.v1) / 2);
+        if (!(y2 === y2)) return;
+        yB = Math.round(y2 * 4) / 4;
+      }
+      const yS = ground(bd.stairDir > 0 ? bd.u0 + 2 : bd.u1 - 2, bd.stairSide > 0 ? bd.v1 + 0.9 : bd.v0 - 0.9);
+      if (!(yS === yS) || yS > yB + 1.5) return;
+      const h = Math.floor(Math.min(bd.h, (bd.u1 - bd.u0 - 3) / 2 + yS - yB, 7) * 2) / 2;
+      if (h < 5) return;
+      bd.door = door;
+      bd.yB = yB;
+      bd.h = h;
+      bd.yS = Math.round(yS * 4) / 4;
+      bd.stair = true;
+    };
+    let entered = 0;
+    for (let q = 0; q < order.length && entered < nE; q++) {
+      const bd = blds[order[q]];
+      if (bd.wet) {
+        if (causewayTo(bd)) {
+          bd.enter = true;
+          entered++;
+        }
+        continue;
+      }
+      bd.enter = true;
+      entered++;
+      if (q % 3 !== 2) tryStair(bd);
+    }
+    for (const bd of blds) if (bd.wet && !bd.enter && blds.filter((x) => x.wet && x.enter).length < 3 && causewayTo(bd)) bd.enter = true;
+    for (let q = 0; q < order.length && blds.filter((x) => x.stair).length < 4; q++) {
+      const bd = blds[order[q]];
+      if (bd.wet || bd.stair || nbc(bd) === 0) continue;
+      bd.enter = true;
+      tryStair(bd);
+    }
+    // rooftop links: from each stair house to a neighbour, and on from there
+    const nb = (a2: Bld): Bld[] => blds.filter((o) => o !== a2 && Math.abs(o.lot.i - a2.lot.i) + Math.abs(o.lot.j - a2.lot.j) === 1);
+    const links: [Bld, Bld, number][] = [];
+    let grp = 0;
+    const roofOf = (x: Bld): number => x.yB + x.h;
+    const tryLink = (a2: Bld, o: Bld): boolean => {
+      const ju = o.lot.i !== a2.lot.i;
+      const lo = ju ? (o.lot.i > a2.lot.i ? [a2, o] : [o, a2]) : o.lot.j > a2.lot.j ? [a2, o] : [o, a2];
+      const gapv = ju ? lo[1].u0 - lo[0].u1 : lo[1].v0 - lo[0].v1;
+      const ov = ju ? Math.min(a2.v1, o.v1) - Math.max(a2.v0, o.v0) : Math.min(a2.u1, o.u1) - Math.max(a2.u0, o.u0);
+      if (gapv < 3 || gapv > 9 || ov < 3) return false;
+      if (o.group >= 0 && o.group !== a2.group) return false;
+      let pos = 0;
+      if (ju) pos = onV((Math.max(a2.v0, o.v0) + Math.min(a2.v1, o.v1)) / 2);
+      else {
+        const [m0, m1] = o.lot.j > a2.lot.j ? [a2, o] : [o, a2];
+        const ry = roofOf(a2);
+        const ivs: [number, number][] = [];
+        for (const [m, face] of [[m0, 1], [m1, -1]] as [Bld, number][]) {
+          if (!m.stair || m.stairSide !== face) continue;
+          const sa = m.stairDir > 0 ? m.u0 + 2 : m.u1 - 2;
+          const sb = sa + m.stairDir * 2 * (ry - m.yS);
+          ivs.push([Math.min(sa, sb) - 2.5, Math.max(sa, sb) + 2.5]);
+        }
+        pos = NaN;
+        for (let c = even(Math.max(m0.u0, m1.u0) + 2); c <= Math.min(m0.u1, m1.u1) - 2; c += 2) {
+          if (!ivs.some(([i0, i1]) => c >= i0 && c <= i1)) {
+            pos = c;
+            break;
+          }
+        }
+        if (pos !== pos) return false;
+      }
+      // a plank over a lane a causeway runs down must clear a walker's head
+      if (ju && causeways.some((cw) => cw[0] > lo[0].u1 && cw[0] < lo[1].u0 && pos > Math.min(cw[1], cw[2]) - 2 && pos < Math.max(cw[1], cw[2]) + 2) && roofOf(a2) - 0.6 < Yq + 2.6) return false;
+      if (o.group < 0) {
+        const hh = roofOf(a2) - o.yB;
+        const hi = o.stair ? Math.min(7, (o.u1 - o.u0 - 3) / 2 + o.yS - o.yB) : 15;
+        if (hh < (o.wet ? 3.5 : 5) || hh > hi) return false;
+        o.h = hh;
+        o.group = a2.group;
+      } else if (Math.abs(roofOf(o) - roofOf(a2)) > 0.01) return false;
+      links.push([a2, o, pos]);
+      return true;
+    };
+    for (const s0 of blds.filter((x) => x.stair)) {
+      if (s0.group < 0) s0.group = grp++;
+      let cur = s0;
+      for (let step = 0; step < 3; step++) {
+        const cand = nb(cur).filter((o) => o.group < 0 || o.group === s0.group);
+        let done = false;
+        for (const o of cand.sort((a2, c) => (c.enter ? 1 : 0) - (a2.enter ? 1 : 0))) {
+          if (links.some(([p, q2]) => (p === cur && q2 === o) || (p === o && q2 === cur))) continue;
+          if (tryLink(cur, o)) {
+            cur = o;
+            done = true;
+            break;
+          }
+        }
+        if (!done) break;
+      }
+    }
+    for (const cur of [...blds.filter((x) => x.group >= 0), ...blds.filter((x) => x.group >= 0)]) {
+      if (links.length >= 9) break;
+      let made = 0;
+      for (const o of nb(cur)) if (made < 2 && (o.group < 0 || o.group === cur.group) && !links.some(([p, q2]) => (p === cur && q2 === o) || (p === o && q2 === cur)) && tryLink(cur, o)) made++;
+    }
+    // too few neighbours to cross: raise plain houses beside the stair houses
+    for (let pass = 0; pass < 2 && links.length < 3; pass++) {
+      for (const cur of blds.filter((x) => x.group >= 0)) {
+        if (links.length >= 5) break;
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const lt2 = lotAt(cur.lot.i + di, cur.lot.j + dj);
+          if (!lt2 || !lt2.ok || lt2.used) continue;
+          const nbd = mk(lt2);
+          if (!nbd) continue;
+          if (!tryLink(cur, nbd)) {
+            blds.pop();
+            lt2.used = false;
+            continue;
+          }
+          break;
+        }
+      }
+    }
+    // the causeways: blocks laid end to end, a little uneven, like stepping stones that have grown together
+    g.roughNow = 0.15;
+    g.paintF = MOSS;
+    for (const [uc, va, vb] of causeways) {
+      const v0 = Math.min(va, vb);
+      const v1 = Math.max(va, vb);
+      let k = 0;
+      for (let v = v0; v < v1; v += 2.4, k++) {
+        const wd = k % 2 === 0 ? 1.8 : 1.3;
+        g.fillBox(uc - wd, v, uc + wd, Math.min(v1, v + 2.4), LOW, Yq - (k % 3 === 1 ? 0.15 : 0));
+      }
+      for (let v = v0 + 3; v < v1 - 2; v += 4) L.causeways.push([uc, Yq, v]);
+      lampsTown.push(() => b.lamp(uc + 1.2, Yq + 1.2, (v0 + v1) / 2, { reach: 14, strength: 0.8 }));
+    }
+    g.roughNow = 0.12;
+    for (const bd of blds) {
+      const { u0, u1, v0, v1, yB } = bd;
+      const roofY = yB + bd.h;
+      const reach = bd.group >= 0;
+      g.paintF = roofP;
+      g.fillBox(u0, v0, u1, v1, LOW, roofY);
+      blocked.push([u0 - 1, v0 - 1, u1 + 1, v1 + 1]);
+      g.paintF = 0;
+      const vm = onV((v0 + v1) / 2);
+      const um = even((u0 + u1) / 2);
+      const doorBox = (hh: number): void => {
+        if (bd.door === 0) g.carveBox(u0, vm - 1.8, u0 + 2.5, vm + 1.8, yB, yB + hh);
+        else if (bd.door === 1) g.carveBox(u1 - 2.5, vm - 1.8, u1, vm + 1.8, yB, yB + hh);
+        else g.carveBox(um - 2, v0, um + 2, v0 + 2.7, yB, yB + hh);
+      };
+      const dp: [number, number, number] = bd.door === 0 ? [u0 - 1.2, yB, vm] : bd.door === 1 ? [u1 + 1.2, yB, vm] : [um, yB, v0 - 1.2];
+      if (bd.enter) {
+        const rh = Math.min(bd.h - 1.6, 5);
+        if (bd.two) {
+          g.carveBox(u0 + 2, v0 + 1.8, um - 1, v1 - 1.8, yB, yB + rh);
+          g.carveBox(um + 1, v0 + 1.8, u1 - 2, v1 - 1.8, yB, yB + rh);
+          g.carveBox(um - 1.5, vm - 1.8, um + 1.5, vm + 1.8, yB, yB + Math.min(rh, 3.2));
+        } else g.carveBox(u0 + 2, v0 + 1.8, u1 - 2, v1 - 1.8, yB, yB + rh);
+        doorBox(Math.min(rh, 3));
+        if (!bd.wet) g.carveBox(bd.door === 0 ? u1 - 2 : u0, vm - 0.9, bd.door === 0 ? u1 : u0 + 2, vm + 0.9, yB + 1.4, yB + 2.6);
+        L.doors.push(dp);
+        L.entered++;
+        if (reach) L.roofs.push([um, roofY, vm]);
+        const lampIn = rnd() < 0.3;
+        lampsTown.push(() => {
+          b.lamp(dp[0] + (bd.door === 0 ? -0.6 : bd.door === 1 ? 0.6 : 0), yB + 2.6, dp[2] + (bd.door === 2 ? 0 : 1.9), { reach: 15 });
+          if (lampIn) b.lamp(um, yB + rh - 0.4, vm, { reach: 12, strength: 0.8 });
+        });
+      } else {
+        // a recessed dark doorway, and windows
+        const dh = 2.8;
+        if (bd.door === 0) g.carveBox(u0, vm - 0.9, u0 + 1, vm + 0.9, yB, yB + dh);
+        else if (bd.door === 1) g.carveBox(u1 - 1, vm - 0.9, u1, vm + 0.9, yB, yB + dh);
+        else g.carveBox(um - 1, v0, um + 1, v0 + 0.9, yB, yB + dh);
+        if (tier === 0 && (bd.lot.i + bd.lot.j) % 2 === 0) for (const s0 of [-1, 1]) g.carveBox(u0 + 3, s0 < 0 ? v0 : v1 - 0.9, u0 + 5, s0 < 0 ? v0 + 0.9 : v1, yB + bd.h - 3.2, yB + bd.h - 1.8);
+      }
+      if (bd.wet && !bd.enter && reach) L.roofs.push([um, roofY, vm]);
+      if (bd.stair) {
+        // an outside stair up a long wall to the roof's edge
+        const len = 2 * (roofY - bd.yS);
+        const sa = bd.stairDir > 0 ? u0 + 2 : u1 - 2;
+        const sv2 = bd.stairSide > 0 ? v1 + 0.9 : v0 - 0.9;
+        const sb = sa + bd.stairDir * len;
+        g.paintF = roofP;
+        g.fillRun([sa, bd.yS, sv2], [sb, roofY, sv2], 1.8, bd.h + 3, { steps: true, cap0: tier === 2 ? 1 : 0, cap1: tier === 2 ? 2 : 0 });
+        g.paintF = 0;
+        L.roofs.push([sb - bd.stairDir * 0.5, roofY, bd.stairSide > 0 ? v1 - 0.9 : v0 + 0.9]);
+        if (rnd() < 0.5) lampsTown.push(() => b.lamp(sa - bd.stairDir * 0.5, bd.yS + 1.6, sv2 + bd.stairSide * 1.8, { reach: 12, strength: 0.8 }));
+      }
+    }
+    for (const [a2, o, pos] of links) {
+      const ju = o.lot.i !== a2.lot.i;
+      const ry = a2.yB + a2.h;
+      g.roughNow = 0.05;
+      g.paintF = roofP;
+      if (ju) {
+        const [l0, l1] = o.lot.i > a2.lot.i ? [a2, o] : [o, a2];
+        g.fillBox(l0.u1 - 2, pos - 0.9, l1.u0 + 2, pos + 0.9, ry - 0.6, ry);
+        L.links.push([(l0.u1 + l1.u0) / 2, ry, pos]);
+      } else {
+        const [l0, l1] = o.lot.j > a2.lot.j ? [a2, o] : [o, a2];
+        g.fillBox(pos - 1, l0.v1 - 1.8, pos + 1, l1.v0 + 1.8, ry - 0.6, ry);
+        L.links.push([pos, ry, (l0.v1 + l1.v0) / 2]);
+      }
+      g.paintF = 0;
+    }
+    // courtyards: free dry lots with houses on three sides
+    let courts = 0;
+    for (const lt of lots) {
+      if (!lt.ok || lt.used || lt.wet || courts >= 3) continue;
+      const nbs = [lotAt(lt.i + 1, lt.j), lotAt(lt.i - 1, lt.j), lotAt(lt.i, lt.j + 1), lotAt(lt.i, lt.j - 1)].filter((n) => n && n.used).length;
+      if (nbs < 3) continue;
+      courts++;
+      const [cx, cz] = mid(lt);
+      props.push(() => {
+        const y = ground(cx, cz);
+        if (!(y === y)) return;
+        b.color(0.6, 0.5, 0.38, 2);
+        b.box(cx + 2, y, cz - 1.8, 2, 1, 1.8, 0.3, { solid: true });
+        if (tier < 2) b.box(cx - 2, y, cz + 1.8, 1.6, 0.8, 1.6, 0.8, { solid: true });
+        jars(cx, y, cz, Math.ceil(3 * few));
+        b.lamp(cx, y + 2.4, cz, { reach: 18 });
+      });
+    }
+    L.houses = blds.length;
+    L.drowned = blds.filter((x) => x.wet).length;
+  }
+  props.push(() => {
+    let li = 0;
+    for (const f of lampsTown) if (tier < 2 || li++ % 2 === 0) f();
+  });
 
   // ---- the water
   g.pool(uC - Ru - 1, vC - Rv - 1, uC + Ru + 1, vC + Rv + 1, Yw);
@@ -366,6 +1253,159 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
       if (c > Yw + 6 && want > c + 0.1) g.carveCell(ci, c - 0.5, want);
     });
     b.skyShaft(su, sv, sr, 1);
+  }
+
+  // ---- side scenes: small rooms cut into the wall at the end of short passages off the ring
+  let relic: Pt | null = null;
+  {
+    const relicHere = spec.relic && hash2(ns, 99) < 0.5;
+    const picks: [number, number, number, number, number, number][] = []; // entrance u v, room u v, ray cs sn
+    const phi0 = rnd() * Math.PI * 2;
+    for (const gapA of [0.5, 0.36, 0.26]) {
+      picks.length = 0;
+      for (let i = 0; i < 90 && picks.length < 5; i++) {
+        const phi = phi0 + (i / 90) * Math.PI * 2;
+        const cs = Math.cos(phi);
+        const sn = Math.sin(phi);
+        if (picks.some((p) => Math.abs(Math.atan2(Math.sin(phi - Math.atan2(p[5], p[4])), Math.cos(phi - Math.atan2(p[5], p[4])))) < gapA)) continue;
+        let lo = 0;
+        let hi = Ru + Rv;
+        for (let q = 0; q < 14; q++) {
+          const t = (lo + hi) / 2;
+          if (dn(uC + t * cs, vC + t * sn) < 1) lo = t;
+          else hi = t;
+        }
+        const ue = uC + (lo - 3) * cs;
+        const ve = vC + (lo - 3) * sn;
+        const uw = uC + lo * cs;
+        const vw = vC + lo * sn;
+        const F = planFloor(ue, ve);
+        if (pk !== 1 || Math.abs(F - Yq) > 0.01) continue;
+        if (uw < uH0 + 30 || (uw > uT0 - 24 && Math.abs(vw - vBr) < TH + 24)) continue;
+        if (Math.abs(vw - vS) < 22 && uw < uFoot + 16) continue;
+        if (Math.hypot(uw - tunnelExit[0], vw - tunnelExit[1]) < 20) continue;
+        if (blocked.some((r) => ue > r[0] - 4 && ue < r[2] + 4 && ve > r[1] - 4 && ve < r[3] + 4)) continue;
+        if (pillars.some((p) => Math.hypot(p[0] - ue, p[1] - ve) < p[2] * 1.4 + 5)) continue;
+        if (L.beacon && Math.hypot(L.beacon[0] - ue, L.beacon[2] - ve) < 12) continue;
+        const ru = uw + cs * 13;
+        const rv = vw + sn * 13;
+        if (ru - 9.5 < uH0 || ru + 9.5 > spec.u1 - 1.5 || rv - 9.5 < spec.v0 + 1.5 || rv + 9.5 > spec.v1 - 1.5) continue;
+        if (outside(ru, rv, uT0 - 6, vBr - TH - 6, uF + 28, vBr + TH + 6) < 6) continue;
+        let rock = true;
+        for (const [a2, c] of [[-6, -6], [6, -6], [-6, 6], [6, 6], [0, 0]]) if (dn(ru + a2, rv + c) < 1.04) rock = false;
+        if (!rock) continue;
+        picks.push([ue, ve, ru, rv, cs, sn]);
+      }
+      if (picks.length >= 4) break;
+    }
+    const relicScene = Math.floor(hash2(ns, 98) * 2) % Math.max(1, picks.length);
+    picks.forEach(([ue, ve, ru, rv, cs, sn], idx) => {
+      const kind = idx % 4;
+      g.paintF = 0;
+      g.roughNow = 0.15;
+      g.carveRun([ue, Yq, ve], [ru - cs * 4, Yq, rv - sn * 4], 3, 3);
+      g.carveBox(ru - 5, rv - 5, ru + 5, rv + 5, Yq, Yq + 4.2);
+      const ax = Math.abs(cs) > Math.abs(sn); // the room's long way in, along u or along v
+      const dI = ax ? Math.sign(cs) : Math.sign(sn); // inward
+      const at = (a2: number, c: number): [number, number] => (ax ? [ru + dI * a2, rv + c] : [ru + c, rv + dI * a2]);
+      const [bu, bv] = at(4.4, 0); // the back wall
+      let sp = at(-1.5, 0);
+      if (kind === 2) {
+        // a grotto: a still pool in the back of the room, a trickle into it
+        const [p0u, p0v] = at(0.6, -4);
+        const [p1u, p1v] = at(5, 4);
+        const pu0 = Math.min(p0u, p1u);
+        const pu1 = Math.max(p0u, p1u);
+        const pv0 = Math.min(p0v, p1v);
+        const pv1 = Math.max(p0v, p1v);
+        g.carveBox(pu0, pv0, pu1, pv1, Yq - 0.45, Yq + 4.2);
+        g.pool(pu0, pv0, pu1, pv1, Yq - 0.12);
+        sp = at(-2.5, 0);
+      }
+      if (kind === 3) {
+        // fallen roof over a seam: the back of the room broken out further
+        const [k0u, k0v] = at(4, -5);
+        const [k1u, k1v] = at(8, 5);
+        g.carveBox(Math.min(k0u, k1u), Math.min(k0v, k1v), Math.max(k0u, k1u), Math.max(k0v, k1v), Yq, Yq + 3.6);
+      }
+      L.scenes.push([sp[0], Yq, sp[1]]);
+      L.sides.push([ue, Yq, ve]);
+      if (relicHere && idx === relicScene) {
+        const [cu2, cv2] = at(0.5, 0);
+        relic = [cu2, Yq + 1.6, cv2];
+        props.push(() => {
+          b.color(0.9, 0.88, 0.84, 0);
+          b.box(cu2, Yq, cv2, 2.2, 0.4, 2.2, 0, { solid: true });
+          b.cyl(cu2, Yq + 0.4, cv2, 0.62, 0.75, { solid: true });
+          b.cyl(cu2, Yq + 1.15, cv2, 0.48, 0.14);
+        });
+      }
+      props.push(() => {
+        const [lu, lv] = at(-4, 3.6);
+        b.lamp(lu, Yq + 2.6, lv, { reach: 13, strength: 0.9 });
+        if (kind === 0) {
+          // a shrine: carved slabs along the back wall, their marks holding a little light
+          const nS = spec.carvings ? 5 : 3;
+          for (let i = 0; i < nS; i++) {
+            const [u, v] = at(4.1, -4 + (8 * (i + 0.5)) / nS);
+            const h = b.r(2.4, 3.2);
+            const k = b.r(0.85, 1);
+            b.color(k, k * 0.98, k * 0.94, 0);
+            b.box(u, Yq, v, ax ? 0.5 : 1.5, h, ax ? 1.5 : 0.5, b.r(-0.05, 0.05), { solid: true });
+            b.color(0.42, 0.42, 0.42, 4);
+            for (let row = 0; row < 5; row++) {
+              const y = Yq + 0.5 + row * 0.42;
+              if (y > Yq + h - 0.8) break;
+              for (let q = -1; q <= 1; q++) {
+                if (b.rng() < 0.3) continue;
+                const tall = b.rng() < 0.3;
+                const [mu, mv] = at(3.83, -4 + (8 * (i + 0.5)) / nS + q * 0.36);
+                b.box(mu, y, mv, ax ? 0.06 : tall ? 0.07 : 0.2, tall ? 0.3 : 0.07, ax ? (tall ? 0.07 : 0.2) : 0.06);
+              }
+            }
+          }
+          b.lamp(ru, Yq + 3.4, rv, { reach: 12, strength: 0.8 });
+        } else if (kind === 1) {
+          // a store: crates and jars
+          for (let i = 0; i < 6 * [1, 0.7, 0.4][tier]; i++) {
+            const [u, v] = at(b.r(0.5, 3.6), b.r(-4, 4));
+            const sz = b.r(0.9, 1.5);
+            b.color(0.55, 0.4, 0.26, 2);
+            b.box(u, Yq, v, sz, sz * 0.8, sz, b.r(0, 3), { solid: true });
+            if (b.rng() < 0.4) b.box(u, Yq + sz * 0.8, v, sz * 0.7, sz * 0.6, sz * 0.7, b.r(0, 3), { solid: true });
+          }
+          for (let i = 0; i < 6; i++) {
+            const [u, v] = at(b.r(-3, -1), b.r(-4.2, 4.2));
+            jar(u, Yq, v);
+          }
+          coil(bu - (ax ? dI * 1.2 : 0), Yq, bv - (ax ? 0 : dI * 1.2));
+        } else if (kind === 2) {
+          const [tu, tv] = at(4.6, 0);
+          b.color(0.6, 0.78, 0.86, 1);
+          b.cyl(tu, Yq + 0.2, tv, 0.1, 3.8, { sides: 4 });
+          b.light(tu, Yq + 1.2, tv, 10, 0.5, TEAL);
+        } else {
+          // a seam of glowing mineral in the broken end
+          const n = (spec.vein ? 1 : 0.55) * [18, 14, 9][tier];
+          for (let i = 0; i < n; i++) {
+            const t = (i + b.rng() * 0.6) / n;
+            const [u, v] = at(8.2, -4.5 + 9 * t);
+            const k = b.r(0.65, 1.1);
+            b.color(k, k, k, 4);
+            b.cone(u, Yq + 0.4 + 1.8 * Math.sin(t * Math.PI) * b.r(0.6, 1), v, b.r(0.25, 0.55), b.r(0.8, 2.2), { rx: b.r(-0.6, 0.6), rz: b.r(-0.5, 0.5), sides: 4 });
+          }
+          for (let i = 0; i < 3; i++) {
+            const [u, v] = at(b.r(4.5, 7), b.r(-4, 4));
+            b.color(0.8, 0.8, 0.8, 0);
+            const sz = b.r(1, 2);
+            b.box(u, Yq, v, sz * 1.3, sz * 0.7, sz, b.r(0, 3), { solid: true });
+          }
+          const [gu, gv] = at(8, 0);
+          b.light(gu, Yq + 2, gv, spec.vein ? 26 : 18, 0.9, TEAL);
+          b.glow(gu, Yq + 2, gv, spec.vein ? 7 : 4, [0.22, 0.7, 0.6]);
+        }
+      });
+    });
   }
 
   // ================================================================ what stands in it
@@ -498,7 +1538,6 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   b.lamp(uW + 3.2, Yq + 0.5, vP + tdir * (FL / 2), { reach: 13, strength: 0.7 });
 
   // the apron: the foot of the stair, the head of the bridge, the great pier at the water's edge
-  const footV = flights[nF - 1].vb + flights[nF - 1].dir * 2.5;
   b.lamp(uTf + 0.6, Yq + 0.5, footV, { reach: 20 });
   for (const s of [-1, 1]) {
     // gate posts at the bridge's stair, a lamp on each
@@ -670,9 +1709,8 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     }
   }
 
-  // ---- the relic, on a stone of its own in the chamber
-  let relic: Pt | null = null;
-  if (spec.relic) {
+  // ---- the relic, on a stone of its own in the chamber (or in one of the side rooms)
+  if (spec.relic && !relic) {
     const ru = uF + 13.5;
     b.color(0.9, 0.88, 0.84, 0);
     b.box(ru, Yd, vBr, 2.2, 0.4, 2.2, 0, { solid: true });
@@ -681,5 +1719,32 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     relic = [ru, Yd + 1.6, vBr];
   }
 
-  return b.finish({ ledge: [uW + 1.5, yL, vP], centre: [uF + 1, Yd, vBr], relic });
+  // the ring, sampled round the wall
+  for (let i = 0; i < 64; i++) {
+    const phi = (i / 64) * Math.PI * 2;
+    const cs = Math.cos(phi);
+    const sn = Math.sin(phi);
+    let lo = 0;
+    let hi = Ru + Rv;
+    for (let q = 0; q < 14; q++) {
+      const t = (lo + hi) / 2;
+      if (dn(uC + t * cs, vC + t * sn) < 1) lo = t;
+      else hi = t;
+    }
+    const u = uC + (lo - 3) * cs;
+    const v = vC + (lo - 3) * sn;
+    const F = planFloor(u, v);
+    if (pk !== 1 || !(F >= Yq - 0.01)) continue;
+    if (outside(u, v, uW - 2, tv0 - 6, uTf + 1, tv1 + 6) < 1) continue; // behind the tower: the apron's own
+    if (Math.abs(v - vS) < 6 && u < uFoot + 10) continue;
+    if (pillars.some((p) => Math.hypot(p[0] - u, p[1] - v) < p[2] * 1.4 + 3)) continue;
+    L.ring.push([u, F, v]);
+  }
+  for (const f of props) f();
+  L.stone = [uF + 20, Yd + 1.6, vBr];
+  L.relic = relic;
+  const built = b.finish({ ledge: L.ledge, centre: L.centre, relic });
+  walkCheck(built.grid, L);
+  layouts.set(built, L);
+  return built;
 }
