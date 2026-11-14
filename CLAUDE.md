@@ -21,6 +21,7 @@ The main session runs on Fable and acts as the orchestrator. You plan, split the
 | Work | Model | Agent |
 | --- | --- | --- |
 | Planning, architecture, ambiguous debugging, judging results, final answer | Fable | you, in the main session |
+| Any visual design or generation of anything visual (layout, styling, art, shaders, textures, sprites, scene looks, color, UI polish) | Fable | you, in the main session |
 | Hard implementation, subtle bugs, cross-file refactors, independent review of a risky change | Opus | `expert` |
 | Well-specified implementation, tests, docs, copy, routine fixes | Sonnet | `builder` |
 | Searching, reading and summarizing files or logs, mechanical renames, running a command and reporting | Haiku | `scout` |
@@ -31,6 +32,7 @@ The agents live in `.claude/agents/`. For a built-in agent (`Explore`, `general-
 - Pick the tier from the difficulty of the piece, not of the whole task. A hard feature still has easy parts.
 - When unsure between two tiers, take the lower one and review the result. Escalate only on evidence that it fell short.
 - Fable never goes to a subagent. If a piece needs Fable, do it yourself.
+- Fable is the visuals king. Always use Fable for any visual design and for generating anything visual. Do not hand it down a tier to save budget, and do not delegate it, even when the surrounding task is routine. Subagents may do the non-visual plumbing around it (wiring, tests, mechanical edits), but the look itself comes from you.
 
 ## Usage budget
 
