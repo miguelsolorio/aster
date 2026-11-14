@@ -30,6 +30,19 @@ const SIDESTEP = [0.7, 1.4, 2.1, 2.8, 3.6, 4.5, 5.5];
 // walk far (SHEP_ROAM round home), so they need no path: a long way is always walked on a route.
 const SHEP_CELL = 1200;
 const SHEP_ROAM = 70;
+// Riding a pack animal (a camel): slower and steadier than an oryx, and wider in the turn.
+/** How far a rider may be from a camel and still climb on (m): a little more than for an oryx, a camel being long. */
+const CAMEL_REACH = 3.6;
+/** The top of the back over the ground at scale 1, standing (m: the body tube in animalGeometry), and how far it drops kneeling (the shader's). */
+const CAMEL_BACK = 2.88;
+const CAMEL_KNEEL = 1.5;
+const CAMEL_WALK = 1.7; // m/s
+const CAMEL_RUN = 5.5;
+const CAMEL_RUN_STRIDE = 4.4; // metres per gait cycle at a run (a walk is the agent's own stride)
+const CAMEL_TURN = 1.1; // rad/s
+const CAMEL_BODY = 0.8; // kept this far (m) from anything standing in the way
+/** A camel left loose kneels down to wait after this long (s). */
+const CAMEL_WAIT = 40;
 
 type V3 = [number, number, number];
 
@@ -1082,6 +1095,29 @@ interface Agent {
   gnx: number;
   gny: number;
   gnz: number;
+  /** A camel out of its party: 0 with it, 1 ridden, 2 left loose where the rider got off. */
+  free: number;
+  /** 0..1, grown back to 1 as a camel fades in again at its place in the party. */
+  shown: number;
+}
+
+/** A camel taken out of its party: ridden, or standing loose where the rider got off it. */
+interface Mount {
+  a: Agent;
+  g: Group;
+  /** Where it knelt in a camp (a camp keeps no schedule to put it back there). */
+  hx: number;
+  hy: number;
+  hz: number;
+  hnx: number;
+  hny: number;
+  hnz: number;
+  hyaw: number;
+  hsit: number;
+  /** Seconds since it was left loose. */
+  t: number;
+  /** The side a way round something is taken on. */
+  dodge: number;
 }
 
 interface Route {
@@ -1261,6 +1297,8 @@ function newAgent(animal: boolean, rng: () => number): Agent {
     gnx: 0,
     gny: 1,
     gnz: 0,
+    free: 0,
+    shown: 1,
   };
 }
 
@@ -1503,6 +1541,229 @@ export class Caravans {
   hold(ref: unknown): void {
     this.held = ref as Agent;
     this.heldT = 0.3;
+  }
+
+  // ---------------------------------------------------------------- riding
+
+  private ridden: Mount | null = null;
+  /** Camels got off and left standing where they were, till the player is well away. */
+  private readonly loose: Mount[] = [];
+  private turnRate = 0;
+
+  /** Whether someone is on a camel now. */
+  get mounted(): boolean {
+    return this.ridden !== null;
+  }
+
+  /** The nearest camel within `reach` of (x, z), kneeling in a camp, walking in a caravan or left loose; or null. */
+  nearestRideable(x: number, z: number, reach = CAMEL_REACH): unknown {
+    if (this.ridden) return null;
+    let best: Agent | null = null;
+    let bd = reach;
+    for (let i = 0; i < this.loose.length; i++) {
+      const a = this.loose[i].a;
+      const d = Math.hypot(a.x - x, a.z - z);
+      if (d < bd) {
+        bd = d;
+        best = a;
+      }
+    }
+    for (let i = 0; i < this.live.length; i++) {
+      const g = this.live[i];
+      if ((g.kind !== 1 && g.kind !== 5) || !g.active || g.pres < 0.5 || Math.hypot(g.ax - x, g.az - z) > g.reach + 80) continue;
+      for (let k = 0; k < g.agents.length; k++) {
+        const a = g.agents[k];
+        if (!a.animal || a.free !== 0) continue;
+        const d = Math.hypot(a.x - x, a.z - z);
+        if (d < bd) {
+          bd = d;
+          best = a;
+        }
+      }
+    }
+    return best;
+  }
+
+  /** Climb on a camel got from nearestRideable. It is taken out of its party; its load comes off and stays off. */
+  mount(ref: unknown): boolean {
+    const a = ref as Agent | null;
+    if (!a?.animal || this.ridden) return false;
+    let m: Mount | null = null;
+    const li = this.loose.findIndex((l) => l.a === a);
+    if (li >= 0) m = this.loose.splice(li, 1)[0];
+    else {
+      for (let i = 0; i < this.live.length && !m; i++) {
+        const g = this.live[i];
+        if (!g.agents.includes(a)) continue;
+        m = { a, g, hx: a.x, hy: a.y, hz: a.z, hnx: a.nx, hny: a.ny, hnz: a.nz, hyaw: a.yaw, hsit: a.sit, t: 0, dodge: 1 };
+      }
+    }
+    if (!m) return false;
+    this.ridden = m;
+    a.free = 1;
+    a.variant = 0;
+    a.spd = 0;
+    a.sitTarget = 0;
+    a.shown = 1;
+    this.turnRate = 0;
+    return true;
+  }
+
+  /** Get off: the camel stays where it stands, calm, and goes back to its party once the player is well away. */
+  dismount(): void {
+    const m = this.ridden;
+    if (!m) return;
+    this.ridden = null;
+    m.a.free = 2;
+    m.a.spd = 0;
+    m.t = 0;
+    this.loose.push(m);
+  }
+
+  /** Where the ridden camel stands and faces, and how fast it goes (valid while mounted). back follows it up off its knees. */
+  get seat(): { x: number; z: number; y: number; yaw: number; spd: number; back: number; turn: number } | null {
+    const m = this.ridden;
+    if (!m) return null;
+    const a = m.a;
+    const back = (CAMEL_BACK - CAMEL_KNEEL * ss(0, 1, a.sit)) * a.scale;
+    return { x: a.x, z: a.z, y: a.y, yaw: a.yaw, spd: a.spd, back, turn: this.turnRate };
+  }
+
+  /**
+   * Steer the ridden camel. (wx, wz) is the way to go in the world (length 0..1, 0 to stand); run
+   * trots it on. A kneeling one gets up first. It turns slowly and wide, takes its time to speed
+   * up, and goes round what is in its way.
+   */
+  ride(dt: number, wx: number, wz: number, run: boolean): void {
+    const m = this.ridden;
+    if (!m || dt <= 0) return;
+    const a = m.a;
+    const k = (rate: number) => 1 - Math.exp(-dt * rate);
+    // up off its knees in about a second, and nowhere till it is nearly standing
+    if (a.sit > 0) {
+      a.sit = Math.max(0, a.sit - dt);
+      if (a.sit > 0.2) {
+        this.turnRate += (0 - this.turnRate) * k(6);
+        return;
+      }
+    }
+    const want = Math.hypot(wx, wz);
+    let targetSpd = 0;
+    if (want > 0.1) {
+      const err = angDiff(Math.atan2(wx, wz), a.yaw);
+      const tr = CAMEL_TURN * dt;
+      const step = Math.max(-tr, Math.min(tr, err));
+      a.yaw += step;
+      this.turnRate += (step / dt - this.turnRate) * k(6);
+      // (easing off into a turn, and only ambling round one it is far from making)
+      targetSpd = (run ? CAMEL_RUN : CAMEL_WALK) * Math.min(1, want) * (Math.abs(err) < 1.2 ? 1 - 0.3 * (Math.abs(err) / 1.2) : 0.3);
+    } else this.turnRate += (0 - this.turnRate) * k(6);
+    a.spd += (targetSpd - a.spd) * k(targetSpd > a.spd ? 1.2 : 2.5);
+    if (a.spd < 0.02) a.spd = 0;
+    a.ph += (a.spd * dt) / (a.spd > CAMEL_WALK * 1.4 ? CAMEL_RUN_STRIDE : a.stride);
+    if (a.spd === 0) return;
+    // too steep a face and it will not climb; a stone or a wall and it goes round
+    const mx = Math.sin(a.yaw) * a.spd * dt;
+    const mz = Math.cos(a.yaw) * a.spd * dt;
+    let nx = a.x + mx;
+    let nz = a.z + mz;
+    if (this.solid && steer(this.solid, a.x, a.z, a.y, mx, mz, CAMEL_BODY, m.dodge)) {
+      m.dodge = steered.side;
+      nx = steered.x;
+      nz = steered.z;
+    }
+    const run2 = Math.hypot(nx - a.x, nz - a.z);
+    if (run2 > 1e-4 && (this.world.height(nx, nz) - a.y) / run2 > 1.1) {
+      a.spd *= 0.3;
+      return;
+    }
+    a.x = nx;
+    a.z = nz;
+  }
+
+  /**
+   * Whether a camp's things stand at (x, z): a lean-to, the fire, the gear piled by it, or a camel.
+   * None of them stops the wanderer, but nobody steps down off a camel into them.
+   */
+  crowded(x: number, z: number): boolean {
+    for (let i = 0; i < this.live.length; i++) {
+      const g = this.live[i];
+      if (!g.active || Math.hypot(g.ax - x, g.az - z) > g.reach + 80) continue;
+      for (let k = 0; k < g.props.length; k++) {
+        const p = g.props[k];
+        const r = p.type === 5 ? 1.7 : p.type === 4 || p.type === 10 ? 1.0 : p.type === 1 || p.type === 2 || p.type === 9 ? 0.7 : 0;
+        if (r > 0 && Math.hypot(p.x - x, p.z - z) < r * p.scale) return true;
+      }
+      for (let k = 0; k < g.agents.length; k++) {
+        const a = g.agents[k];
+        if (a.animal && a.free === 0 && this.under(a, x, z)) return true;
+      }
+    }
+    for (let i = 0; i < this.loose.length; i++) if (this.under(this.loose[i].a, x, z)) return true;
+    return false;
+  }
+
+  /** (x, z) is under a camel's body: in its own frame, a box as long as it is and half that wide either side. */
+  private under(a: Agent, x: number, z: number): boolean {
+    const dx = x - a.x;
+    const dz = z - a.z;
+    const c = Math.cos(a.yaw);
+    const s = Math.sin(a.yaw);
+    return Math.abs(dx * s + dz * c) < 1.7 * a.scale && Math.abs(dx * c - dz * s) < 0.7 * a.scale;
+  }
+
+  /**
+   * The ridden camel and the loose ones, drawn before everyone else (so they always get a slot).
+   * A loose one stands where it was left, in time kneels, and quietly goes back to its party once
+   * the player is far from it (and from the party, unless it is out of sight altogether).
+   */
+  private stepMounts(dt: number, px: number, pz: number): void {
+    const r = this.ridden;
+    if (r) this.putMount(r, dt, px, pz);
+    for (let i = this.loose.length - 1; i >= 0; i--) {
+      const m = this.loose[i];
+      const a = m.a;
+      const d = Math.hypot(a.x - px, a.z - pz);
+      if (d > RANGE || (d > FADE0 && Math.hypot(m.g.ax - px, m.g.az - pz) > FADE0)) {
+        this.rejoin(m);
+        this.loose[i] = this.loose[this.loose.length - 1];
+        this.loose.pop();
+        continue;
+      }
+      m.t += dt;
+      a.sitTarget = m.t > CAMEL_WAIT ? 1 : 0;
+      a.sit += Math.max(-dt * 0.7, Math.min(dt * 0.7, a.sitTarget - a.sit));
+      this.putMount(m, dt, px, pz);
+    }
+  }
+
+  private putMount(m: Mount, dt: number, px: number, pz: number): void {
+    const a = m.a;
+    const w = this.world;
+    a.y = w.height(a.x, a.z);
+    w.normal(a.x, a.z, this.nrm);
+    // only partly tipped to the slope, so the rider's seat stays over the feet
+    const tilt = 0.35;
+    this.put(a, a.x, a.y, a.z, this.nrm.x * tilt, this.nrm.y * tilt + (1 - tilt), this.nrm.z * tilt, m.g, dt, px, pz);
+  }
+
+  /** A loose camel back to its party: to its place in camp, or wherever the party's schedule has it now, fading in. */
+  private rejoin(m: Mount): void {
+    const a = m.a;
+    a.free = 0;
+    a.shown = 0;
+    a.spd = 0;
+    a.look = 0;
+    if (m.g.kind === 1) {
+      a.x = m.hx;
+      a.y = m.hy;
+      a.z = m.hz;
+      a.nx = m.hnx;
+      a.ny = m.hny;
+      a.nz = m.hnz;
+      a.yaw = m.hyaw;
+      a.sit = a.sitTarget = m.hsit;
+    } else a.gx = NaN; // the ground is sampled again where the party has it
   }
 
   // ---------------------------------------------------------------- generation
@@ -2115,7 +2376,7 @@ export class Caravans {
     const away = L.camp === -2;
     if (away || Math.hypot(g.ax - px, g.az - pz) > RANGE + g.reach) {
       g.active = false;
-      for (const a of g.agents) a.x = a.z = 1e9;
+      for (const a of g.agents) if (a.free === 0) a.x = a.z = 1e9;
       return;
     }
     const snap = !g.active;
@@ -2178,18 +2439,22 @@ export class Caravans {
           ty = kIn < kOut ? Math.atan2(dx, dz) : Math.atan2(-dx, -dz);
         } else moving = false;
       }
+      // a camel someone is riding, or has left loose, is not the party's to place (its pen slot stays counted)
+      if (a.free !== 0) continue;
       if (a === this.held) {
         moving = false;
         ty = Math.atan2(px - a.x, pz - a.z);
       }
+      // (one back with the party again is put straight where it belongs, as it fades in)
+      const sn = snap || a.shown <= 0;
       const err = angDiff(ty, a.yaw);
-      if (snap) a.yaw = ty;
+      if (sn) a.yaw = ty;
       else {
         const tr = (a.animal ? 1.0 : 1.8) * dt;
         a.yaw += Math.max(-tr, Math.min(tr, err));
       }
       a.dirSign = dir;
-      if (snap) {
+      if (sn) {
         a.spd = moving ? g.v : 0;
         a.sit = sitT;
       }
@@ -2527,6 +2792,7 @@ export class Caravans {
     this.nP = 0;
     this.nR = 0;
     this.nF = 0;
+    this.stepMounts(dt, px, pz);
 
     const walkOk = f.night < 0.6;
     for (let i = 0; i < this.live.length; i++) {
@@ -2788,6 +3054,7 @@ export class Caravans {
   private stepCamp(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
     for (let i = 0; i < g.agents.length; i++) {
       const a = g.agents[i];
+      if (a.free !== 0) continue; // ridden off, or left loose somewhere
       // Someone standing by the fire turns to whoever speaks to them.
       if (a === this.held && a.sit < 0.5) a.yaw += angDiff(Math.atan2(px - a.x, pz - a.z), a.yaw) * (1 - Math.exp(-dt * 4));
       this.put(a, a.x, a.y, a.z, a.nx, a.ny, a.nz, g, dt, px, pz);
@@ -2840,9 +3107,11 @@ export class Caravans {
     a.x = x;
     a.y = y;
     a.z = z;
+    if (a.shown < 1) a.shown = Math.min(1, a.shown + dt / 3);
     if (d > RANGE) return;
-    const pr = g.pres * g.pres * (3 - 2 * g.pres);
-    const sc = a.scale * pr * vis * (1 - ss(FADE0, RANGE, d));
+    // (a camel out of its party goes with the rider, not with how far off its camp is)
+    const pr = a.free !== 0 ? 1 : g.pres * g.pres * (3 - 2 * g.pres);
+    const sc = a.scale * pr * vis * a.shown * (1 - ss(FADE0, RANGE, d));
     if (sc < 0.02) return;
     {
       // the head turns toward a player within 12 m (an animal's whole neck; a person's hood)

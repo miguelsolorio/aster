@@ -12,6 +12,7 @@ import { Discoveries } from '../world/discoveries';
 import { Wildlife } from '../world/wildlife';
 import { Fauna } from '../world/fauna';
 import { Props } from '../world/props';
+import { blockedAt } from '../world/avoid';
 import { Cities } from '../city/cities';
 import { FootpathNet } from '../city/footpaths';
 import { Caravans, ROLE_KEEPER, ROLE_PILGRIM } from '../city/caravans';
@@ -781,12 +782,19 @@ function start() {
   const SWING_HIT = 0.45; // the fraction of it at which the point lands
   let swingT = -1; // seconds into a swing, or -1 at rest
   let swingHit = false;
-  // ---- riding: a wild ass or an oryx, walked up to and climbed onto. The board and carpet are stowed meanwhile.
+  // ---- riding: a wild ass, an oryx or a caravan's camel, walked up to and climbed onto. The board and carpet are stowed meanwhile.
+  // Both kinds are ridden the same way; only one at a time.
+  type Steeds = Pick<Fauna, 'mounted' | 'nearestRideable' | 'mount' | 'dismount' | 'ride' | 'seat'>;
+  let steed: Steeds | null = null;
   const tryMount = () => {
     const p = player.state.pos;
-    if (!player.state.grounded || discoveries.deepIn || cities.inside || ui.state !== 'playing') return false;
+    if (steed || !player.state.grounded || discoveries.deepIn || cities.inside || ui.state !== 'playing') return false;
+    // (a wild one in reach first, then a camel)
     const a = fauna.nearestRideable(p.x, p.z);
-    if (!a || !fauna.mount(a)) return false;
+    const c = a ? null : caravans.nearestRideable(p.x, p.z);
+    if (a && fauna.mount(a)) steed = fauna;
+    else if (c && caravans.mount(c)) steed = caravans;
+    else return false;
     player.board = false;
     figure.boardOn = false;
     figure.seated = true;
@@ -798,19 +806,30 @@ function start() {
     if (!touch.used) ui.toast('E to get off', 4000);
     return true;
   };
+  /** Somewhere clear to step down onto: no stone, wall or prop there, and nothing of a camp. */
+  const clearFoot = (x: number, z: number) => !blockedAt(obstacle, x, z, world.height(x, z)) && !caravans.crowded(x, z);
   const dismount = () => {
-    if (!fauna.mounted) return;
-    const s = fauna.seat;
-    fauna.dismount();
+    const sd = steed;
+    if (!sd) return;
+    const s = sd.seat;
+    sd.dismount();
+    steed = null;
     figure.seated = false;
     player.board = boardOn;
     figure.boardOn = boardOn;
     touch.setBoard(save.has('board'), boardOn);
     if (s) {
-      // step down onto the ground beside it
-      const side = s.yaw + Math.PI / 2;
-      const x = s.x + Math.sin(side) * 1.1;
-      const z = s.z + Math.cos(side) * 1.1;
+      // step down onto the ground beside it: the right, else the left, else out in front (about a
+      // back's height ahead, clear of the head), else the right after all
+      let x = 0;
+      let z = 0;
+      for (let i = 0; i < 4; i++) {
+        const a = i === 1 ? s.yaw - Math.PI / 2 : i === 2 ? s.yaw : s.yaw + Math.PI / 2;
+        const r = i === 2 ? s.back + 0.3 : 1.1;
+        x = s.x + Math.sin(a) * r;
+        z = s.z + Math.cos(a) * r;
+        if (i === 3 || clearFoot(x, z)) break;
+      }
       const st = player.state;
       st.pos.set(x, world.height(x, z), z);
       st.vel.set(0, 0, 0);
@@ -824,7 +843,7 @@ function start() {
     const p = player.state.pos;
     if (!talk.talking && discoveries.stoneNear(p.x, p.y, p.z)) discoveries.wakeStone(p.x, p.y, p.z);
     else if (talk.available) talk.interact();
-    else if (fauna.mounted) dismount();
+    else if (steed) dismount();
     else if (tryMount()) return;
     else if (canDig() && swingT < 0) {
       swingT = 0;
@@ -897,7 +916,7 @@ function start() {
 
   // Step on or off the board. Off, it rides on your back and you walk.
   const toggleBoard = () => {
-    if (fauna.mounted) return dismount();
+    if (steed) return dismount();
     if (!save.has('board')) return;
     boardOn = !boardOn;
     player.board = boardOn;
@@ -1143,16 +1162,17 @@ function start() {
     // Near the things found in the desert a fast move is taken in short steps, so a rib a
     // hand's width across is not stepped clean over between two frames.
     {
-      if (fauna.mounted && (deepIn || cities.inside)) dismount();
-    if (fauna.mounted) {
+      if (steed && (deepIn || cities.inside)) dismount();
+    const sd = steed;
+    if (sd) {
       // On an animal's back: it is steered and the rider goes where it goes. No leaping, gliding or flying.
       jumpQueued = false;
       const fx = -Math.sin(camYaw);
       const fz = -Math.cos(camYaw);
       const wx = fx * input.z - fz * input.x;
       const wz = fz * input.z + fx * input.x;
-      fauna.ride(dt, wx, wz, input.run);
-      const m = fauna.seat;
+      sd.ride(dt, wx, wz, input.run);
+      const m = sd.seat;
       if (m) {
         st.pos.set(m.x, world.height(m.x, m.z) + m.back - 0.58, m.z);
         st.vel.set(Math.sin(m.yaw) * m.spd, 0, Math.cos(m.yaw) * m.spd);
