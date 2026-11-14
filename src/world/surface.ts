@@ -24,6 +24,8 @@ export const TERRAIN = {
   mtnMax: 450, // peak height of the strongest ranges (m)
   ridgeKm: 1.5, // base wavelength of the ridged multifractal
   ridgeOctaves: 6,
+  rangeKm: 7 * WORLD_SCALE, // wavelength of the noise that gives each range its character:
+  //   low: jagged and taller, high: stepped mesas and buttes, between: the usual ridges
   terraceStep: 32, // mesa step height (m)
   terraceLo: 0.15, // dune-region noise value where mesas start replacing ridges
   terraceHi: 0.45,
@@ -57,10 +59,18 @@ export const TERRAIN = {
   // 1.8 km from every line between edge-adjacent cities, so keep radius + jitter under that.
   massifP: 0.7, // chance a corner has one
   massifJitter: 140, // centre offset from the corner, each axis (m)
-  massifRMin: 1400, // base radius (m); height grows with it so the slope stays the same
-  massifRMax: 1600,
-  massifHMin: 830, // cone height (m); the rounded summit ends up about 6% lower
-  massifHMax: 960,
+  // Every massif is one of four kinds (picked by its hash). Radius and cone height (m) are drawn
+  // between the min and max; the rounded summit ends up about 6% lower. jag: how much ridged
+  // noise lifts and drops the crest (several summits); rough: 0 broad lobes .. 1 serrated
+  // crests; sharp: exponent that pinches summits to points; mesa: 1 caps it into a flat-topped
+  // butte with a cliff band; strata: how strongly rock benches step up its whole flank.
+  // Kinds: 0 snow cone, 1 rocky alpine range, 2 red mesa, 3 pyramid peaks.
+  massifKinds: [
+    { rMin: 1400, rMax: 1600, hMin: 830, hMax: 960, jag: 0, rough: 0, sharp: 1, mesa: 0, strata: 0 },
+    { rMin: 1450, rMax: 1600, hMin: 780, hMax: 1080, jag: 0.4, rough: 0.35, sharp: 1.05, mesa: 0, strata: 0 },
+    { rMin: 1100, rMax: 1450, hMin: 760, hMax: 1000, jag: 0, rough: 0, sharp: 1, mesa: 1, strata: 0.6 },
+    { rMin: 1000, rMax: 1300, hMin: 700, hMax: 980, jag: 0.45, rough: 0.1, sharp: 1.35, mesa: 0, strata: 0 },
+  ],
   massifPow: 1.35, // flank profile: above 1 is concave, like a volcano
   massifGully: 30, // depth of the erosion gullies (m)
   massifLedge: 18, // bench height (m)
@@ -173,7 +183,7 @@ export interface Cavern {
 }
 
 /** Tallest ground the terrain can produce (m); shadows stop marching above it. */
-export const MAX_TERRAIN_H = 1000;
+export const MAX_TERRAIN_H = 1300;
 
 /** A cave: the middle of its mouth, and the unit direction it runs into the mountain. */
 export interface Cave {
@@ -183,12 +193,13 @@ export interface Cave {
   dz: number;
 }
 
-/** A lone peak: centre, base radius and cone height in metres. */
+/** A lone peak: centre, base radius and cone height in metres, and its kind (see TERRAIN.massifKinds). */
 export interface Massif {
   x: number;
   z: number;
   r: number;
   h: number;
+  kind: number;
 }
 
 // ---------------------------------------------------------------- shared hash
@@ -214,12 +225,17 @@ const K_CITY = 20; // buttes around canyon cities
 const K_MASSIF = 30; // .. 32
 const MASSIF_SALT = 0x3a55;
 const K_RIVER = 40; // .. 41
+const K_RANGE = 50;
 const SPIRE_SALT = 0x7c1d;
 const SPIRE_P = Math.round(TERRAIN.spireP * 256);
 /** Height of the ideal cone at the cave mouth, as a fraction of the massif's height. */
 const CAVE_C0 = Math.pow(1 - Math.sqrt(0.25 + 0.002), TERRAIN.massifPow);
 /** How far from a river the ground can be reshaped (m). */
 const RIVER_REACH = TERRAIN.riverFloor + 520;
+const KINDS = TERRAIN.massifKinds;
+/** GLSL expression picking a per-kind number from the massif kind `kd`. */
+const pickKind = (get: (k: (typeof KINDS)[number]) => number): string =>
+  `(kd == 0u ? ${F(get(KINDS[0]))} : kd == 1u ? ${F(get(KINDS[1]))} : kd == 2u ? ${F(get(KINDS[2]))} : ${F(get(KINDS[3]))})`;
 const MASSIF_P = Math.round(TERRAIN.massifP * 1024);
 const SEED_SALT = 0x5bd1e995;
 
@@ -404,7 +420,8 @@ float sfRiver(vec2 p, uint sk) {
   if ((mh & 1023u) < ${MASSIF_P}u) {
     uint mh2 = sfCell(mh, 7u, 0x51edu);
     vec2 jj = vec2(float((mh >> 10u) & 1023u), float((mh >> 20u) & 1023u)) / 1023.0;
-    float mR = ${F(T.massifRMin)} + ${F(T.massifRMax - T.massifRMin)} * (float(mh2 & 1023u) / 1023.0);
+    uint kd = (sfCell(mh2, 11u, 0x2f1bu) >> 16u) & 3u;
+    float mR = ${pickKind((k) => k.rMin)} + ${pickKind((k) => k.rMax - k.rMin)} * (float(mh2 & 1023u) / 1023.0);
     vec2 md = p - (gcf * ${F(CITY_CELL)} + (jj - 0.5) * ${F(2 * T.massifJitter)});
     float mr = max(length(md), 1.0);
     float rc = mR * ${F(T.riverRadial)};
@@ -473,6 +490,7 @@ vec4 surfaceBase(vec2 p) {
   float rM = sfNoise(q * vec2(${F(1 / T.mtnRegionKmX)}, ${F(1 / T.mtnRegionKmZ)}) + vec2(31.7, -12.3), sk + ${KOFF(K_MTN)}u);
   float rD = sfNoise(q * ${F(1 / T.duneRegionKm)} + vec2(-8.9, 17.2), sk + ${KOFF(K_DUNE)}u);
   float rS = sfNoise(q * ${F(1 / T.saltRegionKm)} + vec2(4.4, 9.6), sk + ${KOFF(K_SALT)}u);
+  float rT = sfNoise(q * ${F(1 / T.rangeKm)} + vec2(9.1, -4.7), sk + ${KOFF(K_RANGE)}u);
 
   // dunes: domain-warped ridged noise
   float wnx = sfNoise(q * ${F(1 / T.warpKm)} + vec2(11.0, 0.0), sk + ${KOFF(K_WX)}u);
@@ -503,12 +521,16 @@ vec4 surfaceBase(vec2 p) {
       a *= 0.48;
       r = vec2(1.6 * r.x - 1.2 * r.y, 1.2 * r.x + 1.6 * r.y) + vec2(5.3, -2.9);
     }
-    float amp = ${F(T.mtnMin)} + ${F(T.mtnMax - T.mtnMin)} * smoothstep(${F(T.mtnHi)}, 0.8, rM);
+    float jgR = 1.0 - smoothstep(-0.3, -0.05, rT); // jagged ranges
+    float btR = smoothstep(0.05, 0.3, rT); // mesa and butte ranges
+    sum = mix(sum, pow(sum, 1.7) * 1.6, jgR);
+    float amp = (${F(T.mtnMin)} + ${F(T.mtnMax - T.mtnMin)} * smoothstep(${F(T.mtnHi)}, 0.8, rM)) * (1.0 + 0.4 * jgR + 0.25 * btR);
     mt = amp * m * (0.15 * m + 0.62 * sum);
-    float tm = smoothstep(${F(T.terraceLo)}, ${F(T.terraceHi)}, rD) * m;
-    float tk = mt / ${F(T.terraceStep)};
+    float tm = max(smoothstep(${F(T.terraceLo)}, ${F(T.terraceHi)}, rD), btR) * m;
+    float tsp = ${F(T.terraceStep)} * (1.0 + 0.75 * btR);
+    float tk = mt / tsp;
     float tf = floor(tk);
-    float tt = (tf + smoothstep(0.68, 1.0, tk - tf)) * ${F(T.terraceStep)};
+    float tt = (tf + smoothstep(mix(0.68, 0.9, btR), 1.0, tk - tf)) * tsp;
     mt += (tt - mt) * tm;
     // rock ledges everywhere: short cliffs between walkable benches
     float lk = mt / 14.0;
@@ -528,9 +550,10 @@ vec4 surfaceBase(vec2 p) {
     uint mh2 = sfCell(mh, 7u, 0x51edu);
     vec2 jj = vec2(float((mh >> 10u) & 1023u), float((mh >> 20u) & 1023u)) / 1023.0;
     float js = float(mh2 & 1023u) / 1023.0;
+    uint kd = (sfCell(mh2, 11u, 0x2f1bu) >> 16u) & 3u;
     vec2 ju = vec2(float((mh2 >> 10u) & 1023u), float((mh2 >> 20u) & 1023u)) / 1023.0 - 0.5;
     vec2 mc = gcf * ${F(CITY_CELL)} + (jj - 0.5) * ${F(2 * T.massifJitter)};
-    float mR = ${F(T.massifRMin)} + ${F(T.massifRMax - T.massifRMin)} * js;
+    float mR = ${pickKind((k) => k.rMin)} + ${pickKind((k) => k.rMax - k.rMin)} * js;
     vec2 d = p - mc;
     float dl = length(d);
     if (dl < mR * 1.25) {
@@ -546,7 +569,8 @@ vec4 surfaceBase(vec2 p) {
       float clt = dot(cv, vec2(-ce.y, ce.x)); // metres to the side
       // Where a river runs in, the outline is left round too, so the headwall faces the river
       // squarely instead of bulging across it.
-      float ck = smoothstep(70.0, 150.0, length(cv)) * smoothstep(${F(T.riverSmoothNear)}, ${F(T.riverSmoothFar)}, abs(rsd));
+      float ckc = smoothstep(70.0, 150.0, length(cv));
+      float ck = ckc * smoothstep(${F(T.riverSmoothNear)}, ${F(T.riverSmoothFar)}, abs(rsd));
       n1 *= ck;
       n2 *= ck;
       gn *= ck;
@@ -554,14 +578,23 @@ vec4 surfaceBase(vec2 p) {
       float mf = pow(max(0.0, 1.0 - sqrt(t * t + 0.002)), ${F(T.massifPow)});
       float c = dot(d, ju) / (length(ju) * max(dl, 1.0));
       float lg = smoothstep(-0.45, 0.1, c * (4.0 * c * c - 3.0)) * ck;
-      float mH = ${F(T.massifHMin)} + ${F(T.massifHMax - T.massifHMin)} * js;
+      float mH = ${pickKind((k) => k.hMin)} + ${pickKind((k) => k.hMax - k.hMin)} * js;
+      // the kind's own shape: crests lifted and dropped by ridged noise, summits pinched, or the
+      // cone capped into a butte. Crests are left out near the cave and rivers (ck), where the cone is
+      // plain; the butte cap is left out only at the cave (ckc).
+      float rj1 = 1.0 - min(1.0, abs(sfNoise(lq * 2.4 + vec2(7.7, 1.9), sk + ${KOFF(K_MASSIF + 3)}u)));
+      float rj2 = 1.0 - min(1.0, abs(sfNoise(lq * 4.0 + vec2(-2.3, 4.6), sk + ${KOFF(K_MASSIF + 4)}u)));
+      float rjn = mix(rj1, rj2, ${pickKind((k) => k.rough)});
+      float mfj = pow(max(mf * (1.0 + ${pickKind((k) => k.jag)} * (rjn - 0.68) * 2.0), 0.0), ${pickKind((k) => k.sharp)});
+      float mfm = max(0.5 * smoothstep(0.4, 0.8, mf * 2.0), mf * (1.0 - smoothstep(0.1, 0.25, mf)));
+      float mfs = mix(mix(mf, mfj, ck), mfm, ${pickKind((k) => k.mesa)} * ckc);
       // the ridgelines meet at the summit, so gullies and benches fade out below it
       float su = 1.0 - smoothstep(0.72, 0.88, mf);
-      float mz = mH * mf + ${F(T.massifGully)} * gn * gn * 4.0 * mf * (1.0 - mf) * (0.35 + 0.65 * lg * su);
+      float mz = mH * mfs + ${F(T.massifGully)} * gn * gn * 4.0 * mf * (1.0 - mf) * (0.35 + 0.65 * lg * su);
       float zk = mz / ${F(T.massifLedge)};
       float zf = floor(zk);
       float zt = (zf + smoothstep(0.55, 1.0, zk - zf)) * ${F(T.massifLedge)};
-      mz += (zt - mz) * 0.5 * lg * su * smoothstep(0.02, 0.1, mf);
+      mz += (zt - mz) * min(1.0, 0.5 * lg * su + ${pickKind((k) => k.strata)} * ck) * smoothstep(0.02, 0.1, mf);
       float sl = (1.0 - smoothstep(${F(T.caveHalf)}, ${F(T.caveHalf + 1.5)}, abs(clt))) * smoothstep(-1.0, 1.5, cal) * (1.0 - smoothstep(${F(T.caveLen)}, ${F(T.caveLen + 2)}, cal));
       mz = mix(mz, min(mz, mH * ${F(CAVE_C0)}), sl);
       sfCave = sl * smoothstep(${F(T.caveRoofFrom - 3)}, ${F(T.caveRoofFrom + 1)}, cal);
@@ -792,6 +825,10 @@ export function createWorld(seed: number): DesertWorld {
   const kMa = key(K_MASSIF);
   const kMb = key(K_MASSIF + 1);
   const kMc = key(K_MASSIF + 2);
+  const kMd = key(K_MASSIF + 3);
+  const kMe = key(K_MASSIF + 4);
+  const kT = key(K_RANGE);
+  const fT = Math.fround(1 / T.rangeKm);
   const kRa = key(K_RIVER);
   const kRb = key(K_RIVER + 1);
   const fRv = Math.fround(1 / T.riverKm);
@@ -897,8 +934,8 @@ export function createWorld(seed: number): DesertWorld {
     }
     return pk;
   }
-  const mScratch = { x: 0, z: 0, r: 0, h: 0, jx: 0, jz: 0, ux: 0, uz: 0 };
-  const mRiver = { x: 0, z: 0, r: 0, h: 0, jx: 0, jz: 0, ux: 0, uz: 0 };
+  const mScratch = { x: 0, z: 0, r: 0, h: 0, k: 0, jx: 0, jz: 0, ux: 0, uz: 0 };
+  const mRiver = { x: 0, z: 0, r: 0, h: 0, k: 0, jx: 0, jz: 0, ux: 0, uz: 0 };
   let caveOn = true; // false while sampling the mountain with no cave or spring notch cut into it
   const cvS = { x: 0, z: 0, along: 0, lat: 0, ex: 0, ez: 0 };
   /** Where a point (dx, dz from the massif's centre) lies in the frame of its cave. Mirrors the GLSL. */
@@ -928,8 +965,10 @@ export function createWorld(seed: number): DesertWorld {
     out.uz = f(f(((mh2 >>> 20) & 1023) / 1023) - 0.5);
     out.x = f(f(gi * CITY_CELL) + f(f(out.jx - 0.5) * (2 * T.massifJitter)));
     out.z = f(f(gj * CITY_CELL) + f(f(out.jz - 0.5) * (2 * T.massifJitter)));
-    out.r = f(T.massifRMin + f((T.massifRMax - T.massifRMin) * js));
-    out.h = f(T.massifHMin + f((T.massifHMax - T.massifHMin) * js));
+    out.k = (cellHash(mh2, 11, 0x2f1b) >>> 16) & 3;
+    const kd = KINDS[out.k];
+    out.r = f(kd.rMin + f((kd.rMax - kd.rMin) * js));
+    out.h = f(kd.hMin + f((kd.hMax - kd.hMin) * js));
     return true;
   }
 
@@ -940,6 +979,7 @@ export function createWorld(seed: number): DesertWorld {
     const rM = noise(qx * fM[0] + 31.7, qz * fM[1] - 12.3, kM);
     const rD = noise(qx * fD - 8.9, qz * fD + 17.2, kD);
     const rS = noise(qx * fS + 4.4, qz * fS + 9.6, kS);
+    const rT = noise(qx * fT + 9.1, qz * fT - 4.7, kT);
 
     const wnx = noise(qx * fW + 11, qz * fW, kWX);
     const wnz = noise(qx * fW, qz * fW + 7, kWZ);
@@ -975,12 +1015,16 @@ export function createWorld(seed: number): DesertWorld {
         rx = Math.fround(nx);
         rz = Math.fround(nz);
       }
-      const amp = T.mtnMin + (T.mtnMax - T.mtnMin) * smoothstep(T.mtnHi, 0.8, rM);
+      const jgR = 1 - smoothstep(-0.3, -0.05, rT);
+      const btR = smoothstep(0.05, 0.3, rT);
+      sum = sum + (Math.pow(sum, 1.7) * 1.6 - sum) * jgR;
+      const amp = (T.mtnMin + (T.mtnMax - T.mtnMin) * smoothstep(T.mtnHi, 0.8, rM)) * (1 + 0.4 * jgR + 0.25 * btR);
       mt = amp * m * (0.15 * m + 0.62 * sum);
-      const tm = smoothstep(T.terraceLo, T.terraceHi, rD) * m;
-      const tk = mt / T.terraceStep;
+      const tm = Math.max(smoothstep(T.terraceLo, T.terraceHi, rD), btR) * m;
+      const tsp = T.terraceStep * (1 + 0.75 * btR);
+      const tk = mt / tsp;
       const tf = Math.floor(tk);
-      const tt = (tf + smoothstep(0.68, 1, tk - tf)) * T.terraceStep;
+      const tt = (tf + smoothstep(0.68 + 0.22 * btR, 1, tk - tf)) * tsp;
       mt += (tt - mt) * tm;
       // rock ledges everywhere (mirrors the GLSL)
       const lk = mt / 14;
@@ -1005,7 +1049,8 @@ export function createWorld(seed: number): DesertWorld {
         let gn = 1 - Math.min(1, Math.abs(noise(lx * 5 + 1.3, lz * 5 + 8.8, kMc)));
         // the cave (mirrors the GLSL)
         caveFrame(ms, dx, dz);
-        const ck = smoothstep(70, 150, Math.hypot(cvS.x, cvS.z)) * smoothstep(T.riverSmoothNear, T.riverSmoothFar, rd);
+        const ckc = smoothstep(70, 150, Math.hypot(cvS.x, cvS.z));
+        const ck = ckc * smoothstep(T.riverSmoothNear, T.riverSmoothFar, rd);
         n1 *= ck;
         n2 *= ck;
         gn *= ck;
@@ -1014,11 +1059,18 @@ export function createWorld(seed: number): DesertWorld {
         const c = (dx * ms.ux + dz * ms.uz) / (Math.hypot(ms.ux, ms.uz) * Math.max(dl, 1));
         const lg = smoothstep(-0.45, 0.1, c * (4 * c * c - 3)) * ck;
         const su = 1 - smoothstep(0.72, 0.88, mf);
-        let mz = ms.h * mf + T.massifGully * gn * gn * 4 * mf * (1 - mf) * (0.35 + 0.65 * lg * su);
+        const kk = KINDS[ms.k];
+        const rj1 = 1 - Math.min(1, Math.abs(noise(lx * 2.4 + 7.7, lz * 2.4 + 1.9, kMd)));
+        const rj2 = 1 - Math.min(1, Math.abs(noise(lx * 4 - 2.3, lz * 4 + 4.6, kMe)));
+        const rjn = rj1 + (rj2 - rj1) * kk.rough;
+        const mfj = Math.pow(Math.max(mf * (1 + kk.jag * (rjn - 0.68) * 2), 0), kk.sharp);
+        const mfm = Math.max(0.5 * smoothstep(0.4, 0.8, mf * 2), mf * (1 - smoothstep(0.1, 0.25, mf)));
+        const mfs = mf + (mfj - mf) * ck + (mfm - (mf + (mfj - mf) * ck)) * kk.mesa * ckc;
+        let mz = ms.h * mfs + T.massifGully * gn * gn * 4 * mf * (1 - mf) * (0.35 + 0.65 * lg * su);
         const zk = mz / T.massifLedge;
         const zf = Math.floor(zk);
         const zt = (zf + smoothstep(0.55, 1, zk - zf)) * T.massifLedge;
-        mz += (zt - mz) * 0.5 * lg * su * smoothstep(0.02, 0.1, mf);
+        mz += (zt - mz) * Math.min(1, 0.5 * lg * su + kk.strata * ck) * smoothstep(0.02, 0.1, mf);
         if (caveOn) {
           const sl = (1 - smoothstep(T.caveHalf, T.caveHalf + 1.5, Math.abs(cvS.lat))) * smoothstep(-1, 1.5, cvS.along) * (1 - smoothstep(T.caveLen, T.caveLen + 2, cvS.along));
           mz = mz + (Math.min(mz, ms.h * CAVE_C0) - mz) * sl;
@@ -1198,7 +1250,7 @@ export function createWorld(seed: number): DesertWorld {
       return out;
     },
     massif(gi: number, gj: number): Massif | null {
-      return massifAt(gi, gj, mScratch) ? { x: mScratch.x, z: mScratch.z, r: mScratch.r, h: mScratch.h } : null;
+      return massifAt(gi, gj, mScratch) ? { x: mScratch.x, z: mScratch.z, r: mScratch.r, h: mScratch.h, kind: mScratch.k } : null;
     },
     setCaverns(list: readonly Cavern[]): void {
       cavN = Math.min(MAX_CAVERNS, list.length);
