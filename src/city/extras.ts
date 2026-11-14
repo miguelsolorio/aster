@@ -140,7 +140,7 @@ export function createExtraCtx(plan: CityPlan, uniforms: Uniforms, density: numb
     return plan.grid[j * plan.gridSize + i];
   };
 
-  return {
+  const ctx: ExtraCtx = {
     plan,
     site,
     uniforms,
@@ -197,6 +197,9 @@ export function createExtraCtx(plan: CityPlan, uniforms: Uniforms, density: numb
       l.push(x, z, r);
     },
   };
+  // Keep the way in to every walk-in door clear, so no tree, stall or heap ends up in front of it.
+  for (const r of plan.rooms ?? []) ctx.claim(r.door.x + r.door.nx * 1.7, r.door.z + r.door.nz * 1.7, 1.7);
+  return ctx;
 }
 
 /** Looks up which solids stand over a point. Built once per city from all its extras. */
