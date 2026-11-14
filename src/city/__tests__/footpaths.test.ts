@@ -108,3 +108,18 @@ describe('footpaths between the towns and the finds', () => {
     }
   });
 });
+
+describe('hamlets in the empty desert', () => {
+  it('are spread about the open ground and most have a path out', () => {
+    for (const seed of SEEDS) {
+      const { disc, net, town } = setup(seed);
+      const sites = disc.surfaceSitesNear(town.cx, town.cz, 9000, []).slice();
+      const hamlets = sites.filter((s) => s.kind === 'hamlet');
+      expect(hamlets.length).toBeGreaterThan(8);
+      expect(hamlets.length).toBeGreaterThan(sites.length * 0.25);
+      for (const a of hamlets) for (const b of hamlets) if (a.key < b.key) expect(Math.hypot(a.x - b.x, a.z - b.z)).toBeGreaterThan(200);
+      const linked = hamlets.filter((h) => net.link(h)).length;
+      expect(linked).toBeGreaterThan(hamlets.length * 0.4);
+    }
+  });
+});

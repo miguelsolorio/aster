@@ -19,7 +19,7 @@ import { edgeAt, routePos, type RouteNet, type TravelRoute } from './routes';
 import type { CitySite } from './types';
 
 /** How many footpaths the terrain paints at once (the nearest to the camera). */
-export const MAX_FOOTPATHS = 16;
+export const MAX_FOOTPATHS = 24;
 /** Furthest a footpath runs from one find to the next, or out to a route or a town (m). */
 export const FOOT_REACH = 1500;
 /** Metres over which a path thins out to nothing short of a find or a town's edge. */
@@ -48,6 +48,7 @@ const f32 = Math.fround;
 /** How far a path stops short of the middle of a find of each kind: clear of its stones (m). */
 const CLEAR: Record<string, number> = {
   temple: 58,
+  hamlet: 46,
   ruins: 42,
   oasis: 48,
   grove: 36,
@@ -367,7 +368,7 @@ export class FootpathNet {
 
 /**
  * The footpaths, for the terrain fragment shader. Needs vnoise (terrainShaders COMMON) first.
- * footPaths(p, fw, camDist) returns the path mask 0..1 at world xz p: a narrow, faint trodden line,
+ * footPaths(p, fw, camDist) returns the path mask 0..1 at world xz p: a narrow, trodden line,
  * thinning out at the ends that stop short of a find or a town. fw = pixel footprint in metres.
  */
 export const FOOT_GLSL = /* glsl */ `
@@ -399,11 +400,11 @@ float footPaths(vec2 p, float fw, float camDist) {
     float code = floor(b.w / 8.0);
     float ph = b.w - 8.0 * code;
     float dv = v - footLat(b, ph, u);
-    if (abs(dv) > 5.0) continue;
+    if (abs(dv) > 7.0) continue;
     float sl = (footLat(b, ph, u + 1.5) - footLat(b, ph, u - 1.5)) / 3.0;
     float lat = abs(dv) * inversesqrt(1.0 + sl * sl);
-    // half width: wanders between about 0.6 and 1.2 m
-    float hw = 0.9 + 0.2 * sin(u * 0.021 + ph * 3.0) + 0.1 * sin(u * 0.083 + ph);
+    // half width: wanders between about 1.1 and 2 m
+    float hw = 1.5 + 0.3 * sin(u * 0.021 + ph * 3.0) + 0.15 * sin(u * 0.083 + ph);
     lat += (vnoise(p * 0.8 + float(i) * 5.1) - 0.5) * 0.6 * (1.0 - footSS(1.0, 3.0, fw));
     float hwe = max(hw, fw * 1.2);
     float soft = 0.4 + 0.5 * fw;
@@ -415,7 +416,7 @@ float footPaths(vec2 p, float fw, float camDist) {
     m *= mix(1.0, footSS(0.0, ${FOOT_FADE}.0, u), f0) * mix(1.0, footSS(0.0, ${FOOT_FADE}.0, b.x - u), f1);
     best = max(best, m);
   }
-  // fainter than the routes between towns: fewer feet have passed this way
-  return 0.55 * best * (1.0 - footSS(1800.0, 3000.0, camDist));
+  // a little fainter than the routes between towns: fewer feet have passed this way
+  return 0.85 * best * (1.0 - footSS(1800.0, 3000.0, camDist));
 }
 `;
