@@ -1544,6 +1544,23 @@ export class Fauna {
     return this.ridden !== null;
   }
 
+  /** A rideable beast (the big ones) stands at (x, z): a box as long as it is, half that wide. The one ridden is not counted. */
+  beastAt(x: number, z: number): boolean {
+    for (const h of this.herds.values()) {
+      if (!RIDEABLE[h.sp] || h.pres < 0.5 || Math.hypot(h.hx - x, h.hz - z) > 400) continue;
+      for (const a of h.animals) {
+        if (a === this.ridden) continue;
+        const dx = x - a.x;
+        const dz = z - a.z;
+        if (Math.abs(dx) > 2.2 * a.scale || Math.abs(dz) > 2.2 * a.scale) continue;
+        const c = Math.cos(a.yaw);
+        const sn = Math.sin(a.yaw);
+        if (Math.abs(dx * sn + dz * c) < 1.1 * a.scale && Math.abs(dx * c - dz * sn) < 0.5 * a.scale) return true;
+      }
+    }
+    return false;
+  }
+
   /** The nearest animal within `reach` of (x, z) that can be ridden, or null. */
   nearestRideable(x: number, z: number, reach = MOUNT_REACH): unknown {
     if (this.ridden) return null;

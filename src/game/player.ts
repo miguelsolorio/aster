@@ -114,6 +114,11 @@ export class Player {
   /** Optional: whether feet at (x, z, y) stand on sand whatever the ground far below them is: the roof left over a cavern. */
   soft: ((x: number, z: number, y: number) => boolean) | null = null;
 
+  /** Optional: whether an animal stands at (x, z). It is a wall on foot, never a floor. */
+  beast: ((x: number, z: number) => boolean) | null = null;
+  /** Standing inside one already (it walked onto you): let the feet out rather than stick. */
+  private inBeast = false;
+
   constructor(private world: World) {}
 
   /** Optional: how far the ground is sunk below the terrain at (x, z), e.g. the bed of a pool. */
@@ -150,6 +155,7 @@ export class Player {
    * what catches a thing thinner than the reach, which the far point alone would look past.
    */
   private walled(x: number, z: number, dx: number, dz: number, step: number): boolean {
+    if (this.beast && !this.inBeast && (this.beast(x, z) || this.beast(x + dx * 0.5, z + dz * 0.5) || this.beast(x + dx, z + dz))) return true;
     return wallAhead((px, pz) => this.top(px, pz), x, z, dx, dz, step);
   }
 
@@ -317,6 +323,7 @@ export class Player {
         const ox = spd > 1e-3 ? (vel.x / spd) * REACH : 0;
         const oz = spd > 1e-3 ? (vel.z / spd) * REACH : 0;
         const step = pos.y + STEP;
+        this.inBeast = !!this.beast && this.beast(pos.x, pos.z);
         if (this.walled(nx, nz, ox, oz, step)) {
           if (!this.walled(nx, pos.z, ox, 0, step) && this.top(nx + ox, pos.z + oz) <= step) {
             nz = pos.z;
