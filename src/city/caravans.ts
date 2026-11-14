@@ -1,8 +1,8 @@
 // Travellers and caravans on the open desert: parties walking the worn paths between cities and
 // resting at the camps along them, people round the fires outside each city, and the pilgrims and
-// keepers of the temples out in the wilderness. Four draw calls: pack animals, people, ground
-// props, fire/smoke.
-// Everything is instanced; all animation (walk, sit, sway, head turn) is in the vertex shaders.
+// keepers of the temples out in the wilderness, and the beasts kept in the pens outside each city.
+// Four draw calls: pack animals, people, ground props, fire/smoke.
+// Everything is instanced; all animation (walk, sit, sway, head turn and bow) is in the vertex shaders.
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import type { CitySite } from './types';
@@ -11,6 +11,7 @@ import { STYLE_GLSL } from '../render/styleGlsl';
 import { blockedAt, clearAt, CREATURE_STEP, steer, steered, type SolidQuery } from '../world/avoid';
 import { routePos, routeSAtU, routeSlope, routeUAtS, type RouteCamp, type RouteNet, type TravelRoute } from './routes';
 import type { Herder } from '../world/fauna';
+import { inPen, PEN_MARGIN, penSpot, type PenSpot } from './pens';
 
 const RANGE = 2500;
 const FADE0 = 1200;
@@ -43,6 +44,16 @@ const CAMEL_TURN = 1.1; // rad/s
 const CAMEL_BODY = 0.8; // kept this far (m) from anything standing in the way
 /** A camel left loose kneels down to wait after this long (s). */
 const CAMEL_WAIT = 40;
+// The beasts in a city's pens: only kept up this near the player (they were never seen further),
+// fading out from PEN_FADE0. They amble, and turn slowly in the space a pen gives them.
+const PEN_R = 700;
+const PEN_FADE0 = 450;
+const PEN_WALK = 0.6; // m/s
+const PEN_TURN = 0.7; // rad/s
+/** How far a beast bows its neck (rad) to the ground, to the trough and to the heap of fodder. */
+const BOW_GROUND = 1.4;
+const BOW_TROUGH = 1.25;
+const BOW_HEAP = 1.1;
 
 type V3 = [number, number, number];
 
@@ -614,6 +625,7 @@ attribute vec4 iUp;
 attribute vec4 iMot;
 attribute vec4 iCoat;
 attribute vec4 iLoad;
+attribute vec4 iAux;  // x: the neck's bow (rad, + down: grazing, at the trough; - up)
 uniform float uTime;
 varying vec3 vW;
 varying vec3 vN;
@@ -661,7 +673,7 @@ void main() {
   }
   if (neck) {
     float w = kind < 3.0 ? aRig.z : aRig.w;
-    float pitch = (0.11 * g * sin(TAU * ph + 0.8) + 0.04 * sin(T * 0.9 + seed * 40.0) - 0.5 * sit) * w;
+    float pitch = (0.11 * g * sin(TAU * ph + 0.8) + 0.04 * sin(T * 0.9 + seed * 40.0) - 0.5 * sit + iAux.x) * w;
     float b = iUp.w * w + 0.05 * sin(T * 0.6 + seed * 30.0) * w;
     float c = cos(b);
     float s = sin(b);
@@ -1065,6 +1077,14 @@ interface Agent {
   sitTarget: number;
   yaw: number;
   look: number;
+  /** The neck's bow now (rad, + down; animals only), eased toward what it is doing. */
+  pitch: number;
+  /** Standing or sitting still with nobody near: where the head is turned to look, how far it bows, and for how long (s). */
+  lookTo: number;
+  pitchTo: number;
+  idleT: number;
+  /** Bowed this far to eat (rad), a beast at its fodder or grazing; 0 otherwise. */
+  bow: number;
   dirSign: number;
   /** Stepped this far aside of the line (m, along the route's side) to pass something standing on it. */
   avoid: number;
@@ -1188,7 +1208,8 @@ interface Trip {
   index: number;
 }
 
-// kind: 1 camp, 2 lone walkers, 3 pilgrims, 4 temple keepers, 5 a party on a route between cities
+// kind: 1 camp, 2 lone walkers, 3 pilgrims, 4 temple keepers, 5 a party on a route between cities,
+// 6 a shepherd, 7 the beasts in a pen outside a city
 interface Group {
   kind: number;
   /** Pilgrims walk together: where they are along the route, which way, how fast, and how long they stay put. */
@@ -1219,6 +1240,35 @@ interface Group {
   rank: number;
   /** A shepherd: where the flock is kept, and where they are wandering to. */
   shep?: Shepherd;
+  /** A pen's beasts: the pen, and what each of them is about. */
+  pen?: PenLife;
+}
+
+/** The beasts of one pen (a Group of kind 7). The pen's own frame turns by co, si of its rot. */
+interface PenLife {
+  spot: PenSpot;
+  co: number;
+  si: number;
+  /** One per agent, in the same order. */
+  beasts: PenBeast[];
+  /** The refresh it was last on the live list in. */
+  seen: number;
+}
+
+/** What a beast in a pen is about. */
+interface PenBeast {
+  /** 0 lying down, 1 standing, 2 walking (or turning on the spot) to somewhere else in the pen. */
+  mode: number;
+  /** Seconds left lying or standing. */
+  t: number;
+  /** Walking to here (world), to face this way on arrival (NaN: whichever way it came). */
+  tx: number;
+  tz: number;
+  tyaw: number;
+  /** Standing at the trough (1) or the heap (2) to eat, or (0) nowhere in particular. */
+  eat: number;
+  /** Nibbling at the ground while it stands. */
+  graze: boolean;
 }
 
 /** A shepherd out in the open with a flock (the goats themselves are fauna, following `herder`). */
@@ -1255,7 +1305,7 @@ function newAgent(animal: boolean, rng: () => number): Agent {
   const j = 0.9 + rng() * 0.2;
   const ld = LOADS[Math.floor(rng() * LOADS.length)];
   const vars = animal ? ANIMAL_LOADS : PERSON_LOADS;
-  return {
+  const a: Agent = {
     animal,
     role: ROLE_TRAVELLER,
     yaw0: 0,
@@ -1273,6 +1323,11 @@ function newAgent(animal: boolean, rng: () => number): Agent {
     sitTarget: 0,
     yaw: 0,
     look: 0,
+    pitch: 0,
+    lookTo: 0,
+    pitchTo: 0,
+    idleT: 0,
+    bow: 0,
     dirSign: 1,
     avoid: 0,
     avV: 0,
@@ -1300,6 +1355,9 @@ function newAgent(animal: boolean, rng: () => number): Agent {
     free: 0,
     shown: 1,
   };
+  // (so that a camp's people do not all glance round at once when it comes into view)
+  a.idleT = 1 + a.seed * 9;
+  return a;
 }
 
 /** Someone out on the sand, as the talking needs them. role is ROLE_TRAVELLER, ROLE_PILGRIM or ROLE_KEEPER. */
@@ -1344,6 +1402,7 @@ export class Caravans {
   private readonly aMot = new Inst(CAP_A);
   private readonly aCoat = new Inst(CAP_A);
   private readonly aLoad = new Inst(CAP_A);
+  private readonly aAux = new Inst(CAP_A);
   private readonly pPos = new Inst(CAP_P);
   private readonly pUp = new Inst(CAP_P);
   private readonly pMot = new Inst(CAP_P);
@@ -1369,6 +1428,15 @@ export class Caravans {
   private readonly marks: Landmark[] = [];
   /** The places built now in the open desert (temples among them). Set by the game. */
   landmarks: ((out: Landmark[]) => Landmark[]) | null = null;
+  /** The animal pens outside the cities whose outskirts are built now (world space). Set by the game. */
+  pens: ((out: PenSpot[]) => PenSpot[]) | null = null;
+  /** The beasts of each pen, by its key, and how many refreshes there have been (to forget the pens left behind). */
+  private readonly penLife = new Map<number, Group>();
+  private readonly penList: PenSpot[] = [];
+  private penStamp = 0;
+  /** Pen-local places of the other beasts in a pen, while choosing where one goes. */
+  private readonly penOthers: number[] = [];
+  private readonly penOut = { u: 0, v: 0, yaw: 0 };
   /** What stands in a walker's way: the top over (x, z) for feet at y, or -Infinity (as the wanderer's roof). Set by the game. */
   solid: SolidQuery | null = null;
   private readonly live: Group[] = [];
@@ -1408,7 +1476,7 @@ export class Caravans {
     const attach = (g: THREE.InstancedBufferGeometry, names: string[], insts: Inst[]) => {
       names.forEach((nm, i) => g.setAttribute(nm, insts[i].attr));
     };
-    attach(this.animalGeo, ['iPos', 'iUp', 'iMot', 'iCoat', 'iLoad'], [this.aPos, this.aUp, this.aMot, this.aCoat, this.aLoad]);
+    attach(this.animalGeo, ['iPos', 'iUp', 'iMot', 'iCoat', 'iLoad', 'iAux'], [this.aPos, this.aUp, this.aMot, this.aCoat, this.aLoad, this.aAux]);
     attach(this.personGeo, ['iPos', 'iUp', 'iMot', 'iCoat', 'iLoad'], [this.pPos, this.pUp, this.pMot, this.pCoat, this.pLoad]);
     attach(this.propGeo, ['iPos', 'iProp', 'iCol'], [this.rPos, this.rProp, this.rCol]);
 
@@ -1555,7 +1623,7 @@ export class Caravans {
     return this.ridden !== null;
   }
 
-  /** The nearest camel within `reach` of (x, z), kneeling in a camp, walking in a caravan or left loose; or null. */
+  /** The nearest camel within `reach` of (x, z), kneeling in a camp, walking in a caravan, in a pen or left loose; or null. */
   nearestRideable(x: number, z: number, reach = CAMEL_REACH): unknown {
     if (this.ridden) return null;
     let best: Agent | null = null;
@@ -1570,7 +1638,7 @@ export class Caravans {
     }
     for (let i = 0; i < this.live.length; i++) {
       const g = this.live[i];
-      if ((g.kind !== 1 && g.kind !== 5) || !g.active || g.pres < 0.5 || Math.hypot(g.ax - x, g.az - z) > g.reach + 80) continue;
+      if ((g.kind !== 1 && g.kind !== 5 && g.kind !== 7) || !g.active || g.pres < 0.5 || Math.hypot(g.ax - x, g.az - z) > g.reach + 80) continue;
       for (let k = 0; k < g.agents.length; k++) {
         const a = g.agents[k];
         if (!a.animal || a.free !== 0) continue;
@@ -1724,8 +1792,10 @@ export class Caravans {
       const m = this.loose[i];
       const a = m.a;
       const d = Math.hypot(a.x - px, a.z - pz);
-      if (d > RANGE || (d > FADE0 && Math.hypot(m.g.ax - px, m.g.az - pz) > FADE0)) {
-        this.rejoin(m);
+      // (one got off inside its own pen is simply back among the others)
+      const home = m.g.pen !== undefined && this.inOwnPen(a, m.g.pen);
+      if (home || d > RANGE || (d > FADE0 && Math.hypot(m.g.ax - px, m.g.az - pz) > FADE0)) {
+        this.rejoin(m, home);
         this.loose[i] = this.loose[this.loose.length - 1];
         this.loose.pop();
         continue;
@@ -1740,19 +1810,29 @@ export class Caravans {
   private putMount(m: Mount, dt: number, px: number, pz: number): void {
     const a = m.a;
     const w = this.world;
-    a.y = w.height(a.x, a.z);
+    // up on whatever low thing it walked onto, a step or a pen's platform; else the ground
+    const h = w.height(a.x, a.z);
+    const top = this.solid ? this.solid(a.x, a.z, a.y + CREATURE_STEP) : -Infinity;
+    a.y = top > h && top <= a.y + CREATURE_STEP ? top : h;
     w.normal(a.x, a.z, this.nrm);
     // only partly tipped to the slope, so the rider's seat stays over the feet
     const tilt = 0.35;
     this.put(a, a.x, a.y, a.z, this.nrm.x * tilt, this.nrm.y * tilt + (1 - tilt), this.nrm.z * tilt, m.g, dt, px, pz);
   }
 
-  /** A loose camel back to its party: to its place in camp, or wherever the party's schedule has it now, fading in. */
-  private rejoin(m: Mount): void {
+  /**
+   * A loose camel back to its party: to its place in camp, or wherever the party's schedule has it
+   * now, fading in. One from a pen goes back to somewhere free in it, or (inPlace) is already there.
+   */
+  private rejoin(m: Mount, inPlace = false): void {
     const a = m.a;
     a.free = 0;
-    a.shown = 0;
     a.spd = 0;
+    if (m.g.pen) {
+      this.rejoinPen(m, inPlace);
+      return;
+    }
+    a.shown = 0;
     a.look = 0;
     if (m.g.kind === 1) {
       a.x = m.hx;
@@ -2761,6 +2841,7 @@ export class Caravans {
         for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
       }
       for (let k = 0; k < this.placed.length; k++) this.live.push(this.placed[k]);
+      if (this.pens) this.pensNear(px, pz);
       if (this.landmarks) {
         const ls = this.landmarks(this.marks);
         for (let i = 0; i < ls.length; i++) {
@@ -2825,6 +2906,7 @@ export class Caravans {
       else if (g.kind === 3) this.stepPilgrims(g, f, dt, px, pz);
       else if (g.kind === 4) this.stepKeepers(g, f, dt, px, pz);
       else if (g.kind === 6) this.stepShepherd(g, f, dt, px, pz);
+      else if (g.kind === 7) this.stepPen(g, f, dt, px, pz);
       else this.stepCamp(g, f, dt, px, pz);
     }
 
@@ -2833,7 +2915,7 @@ export class Caravans {
     this.propGeo.instanceCount = this.nR;
     this.fireGeo.instanceCount = this.nF;
     this.aPos.attr.needsUpdate = this.aUp.attr.needsUpdate = this.aMot.attr.needsUpdate = true;
-    this.aCoat.attr.needsUpdate = this.aLoad.attr.needsUpdate = true;
+    this.aCoat.attr.needsUpdate = this.aLoad.attr.needsUpdate = this.aAux.attr.needsUpdate = true;
     this.pPos.attr.needsUpdate = this.pUp.attr.needsUpdate = this.pMot.attr.needsUpdate = true;
     this.pCoat.attr.needsUpdate = this.pLoad.attr.needsUpdate = true;
     this.rPos.attr.needsUpdate = this.rProp.attr.needsUpdate = this.rCol.attr.needsUpdate = true;
@@ -3051,6 +3133,283 @@ export class Caravans {
     sh.herder.on = g.pres > 0.3;
   }
 
+  // ---------------------------------------------------------------- pens
+
+  /** Puts the pens near (px, pz) on the live list, building the beasts of any not met before. */
+  private pensNear(px: number, pz: number): void {
+    const ps = (this.pens as (out: PenSpot[]) => PenSpot[])(this.penList);
+    this.penStamp++;
+    for (let i = 0; i < ps.length; i++) {
+      const p = ps[i];
+      if (Math.hypot(p.x - px, p.z - pz) > PEN_R + 60) continue;
+      let g = this.penLife.get(p.key);
+      // (a city's outskirts built again, as when the tier changes, are a new pen under the same key)
+      if (!g || g.pen?.spot !== p) {
+        g = this.buildPen(p);
+        this.penLife.set(p.key, g);
+        this.adopt(g);
+      }
+      (g.pen as PenLife).seen = this.penStamp;
+      this.live.push(g);
+    }
+    // forget the pens left behind (they are built the same again on the way back)
+    if (this.penLife.size > 48) for (const [key, g] of this.penLife) if ((g.pen as PenLife).seen !== this.penStamp) this.penLife.delete(key);
+  }
+
+  /** A pen's beasts, where the outskirts laid them out: mostly of one coat, some still in a blanket. */
+  private buildPen(p: PenSpot): Group {
+    const rng = mulberry32((this.world.seed ^ Math.imul(p.key | 0, 0x2f6b4a1d) ^ 0x1b873593) >>> 0);
+    const g = this.emptyGroup(7, p.x, p.z, Math.hypot(p.hw, p.hd) + 5);
+    const co = Math.cos(p.rot);
+    const si = Math.sin(p.rot);
+    const beasts: PenBeast[] = [];
+    const herd = COATS[Math.floor(rng() * COATS.length)];
+    for (const b of p.beasts) {
+      const a = newAgent(true, rng);
+      if (rng() < 0.7) {
+        const j = 0.9 + rng() * 0.2;
+        a.coat = [herd[0] * j, herd[1] * j, herd[2] * j];
+      }
+      a.variant = rng() < 0.45 ? 4 : 0;
+      a.x = p.x + co * b.u - si * b.v;
+      a.z = p.z + si * b.u + co * b.v;
+      a.y = Number.isNaN(p.y) ? this.world.height(a.x, a.z) : p.y;
+      a.yaw = b.yaw - p.rot;
+      a.sit = a.sitTarget = b.lying ? 1 : 0;
+      g.agents.push(a);
+      // (the first to stir do so within a minute or so, the rest later)
+      beasts.push({ mode: b.lying ? 0 : 1, t: b.lying ? 10 + rng() * 80 : 3 + rng() * 15, tx: a.x, tz: a.z, tyaw: NaN, eat: 0, graze: rng() < 0.5 });
+    }
+    g.pen = { spot: p, co, si, beasts, seen: 0 };
+    return g;
+  }
+
+  /** A pen built anew while one of its beasts is out (ridden, or loose): that beast stands in for its copy. */
+  private adopt(g: Group): void {
+    const life = g.pen as PenLife;
+    const take = (m: Mount) => {
+      if (!m.g.pen || m.g === g || m.g.pen.spot.key !== life.spot.key) return;
+      const i = m.g.agents.indexOf(m.a);
+      if (i >= 0 && i < g.agents.length) g.agents[i] = m.a;
+      else {
+        g.agents.push(m.a);
+        life.beasts.push({ mode: 1, t: 5, tx: m.a.x, tz: m.a.z, tyaw: NaN, eat: 0, graze: false });
+      }
+      m.g = g;
+    };
+    if (this.ridden) take(this.ridden);
+    for (let i = 0; i < this.loose.length; i++) take(this.loose[i]);
+  }
+
+  /** Pen-local (u, v) of a world point, into penOut. */
+  private penLocal(life: PenLife, x: number, z: number): void {
+    const dx = x - life.spot.x;
+    const dz = z - life.spot.z;
+    this.penOut.u = life.co * dx + life.si * dz;
+    this.penOut.v = -life.si * dx + life.co * dz;
+  }
+
+  private inOwnPen(a: Agent, life: PenLife): boolean {
+    this.penLocal(life, a.x, a.z);
+    return inPen(life.spot, this.penOut.u, this.penOut.v, 0.6);
+  }
+
+  /** The other beasts of a pen (where they stand, and where any are walking to), pen-local, for penSpot. */
+  private penOthersOf(g: Group, skip: Agent): number[] {
+    const life = g.pen as PenLife;
+    const o = this.penOthers;
+    o.length = 0;
+    for (let j = 0; j < g.agents.length; j++) {
+      const b = g.agents[j];
+      if (b === skip || b.free !== 0) continue;
+      this.penLocal(life, b.x, b.z);
+      o.push(this.penOut.u, this.penOut.v);
+      if (life.beasts[j].mode === 2) {
+        this.penLocal(life, life.beasts[j].tx, life.beasts[j].tz);
+        o.push(this.penOut.u, this.penOut.v);
+      }
+    }
+    return o;
+  }
+
+  /** Back in its pen after a ride: where it stands (inPlace), or faded in somewhere free in it. */
+  private rejoinPen(m: Mount, inPlace: boolean): void {
+    const a = m.a;
+    const g = m.g;
+    const life = g.pen as PenLife;
+    const P = life.spot;
+    if (!inPlace) {
+      a.shown = 0;
+      a.look = a.pitch = 0;
+      let u: number;
+      let v: number;
+      if (penSpot(P, Math.random, this.penOthersOf(g, a), 0, this.penOut)) {
+        u = this.penOut.u;
+        v = this.penOut.v;
+      } else {
+        this.penLocal(life, m.hx, m.hz);
+        u = this.penOut.u;
+        v = this.penOut.v;
+      }
+      a.x = P.x + life.co * u - life.si * v;
+      a.z = P.z + life.si * u + life.co * v;
+      a.y = Number.isNaN(P.y) ? this.world.height(a.x, a.z) : P.y;
+      a.gx = NaN;
+      a.yaw = m.hyaw;
+      a.sit = a.sitTarget = m.hsit;
+    }
+    const b = life.beasts[g.agents.indexOf(a)];
+    if (b) {
+      b.mode = a.sit > 0.5 ? 0 : 1;
+      b.t = 4 + Math.random() * 8;
+      b.eat = 0;
+      b.graze = false;
+    }
+  }
+
+  /** A beast that has stood long enough decides what next: lie down, walk somewhere, or shift round where it is. */
+  private penNext(g: Group, i: number, night: boolean): void {
+    const life = g.pen as PenLife;
+    const a = g.agents[i];
+    const b = life.beasts[i];
+    const r = Math.random();
+    if (r < (night ? 0.45 : 0.14)) {
+      b.mode = 0;
+      b.t = 50 + Math.random() * 120;
+      return;
+    }
+    b.mode = 2;
+    b.eat = 0;
+    b.tyaw = NaN;
+    if (r < (night ? 0.6 : 0.75)) {
+      // now and then to the trough or the heap, otherwise anywhere with room
+      const eat = r < 0.3 ? 1 : r < 0.42 ? 2 : 0;
+      if (penSpot(life.spot, Math.random, this.penOthersOf(g, a), eat, this.penOut)) {
+        const u = this.penOut.u;
+        const v = this.penOut.v;
+        b.tx = life.spot.x + life.co * u - life.si * v;
+        b.tz = life.spot.z + life.si * u + life.co * v;
+        if (!Number.isNaN(this.penOut.yaw)) b.tyaw = this.penOut.yaw - life.spot.rot;
+        b.eat = eat;
+        return;
+      }
+    }
+    // stays, and shifts round a little
+    b.tx = a.x;
+    b.tz = a.z;
+    b.tyaw = a.yaw + (Math.random() < 0.5 ? -1 : 1) * (0.3 + Math.random() * 0.6);
+  }
+
+  /** Something stands in a pen beast's way, close ahead of it: another beast, the ridden camel or the player. */
+  private penBlocked(g: Group, a: Agent, px: number, pz: number): boolean {
+    const fx = Math.sin(a.yaw);
+    const fz = Math.cos(a.yaw);
+    const ahead = (x: number, z: number, r: number) => {
+      const dx = x - a.x;
+      const dz = z - a.z;
+      const d = Math.hypot(dx, dz);
+      return d < r && dx * fx + dz * fz > 0.2 * d;
+    };
+    for (let j = 0; j < g.agents.length; j++) {
+      const b = g.agents[j];
+      if (b !== a && b.free === 0 && ahead(b.x, b.z, 2.9)) return true;
+    }
+    if (this.ridden && this.ridden.a !== a && ahead(this.ridden.a.x, this.ridden.a.z, 3.2)) return true;
+    return ahead(px, pz, 2.4);
+  }
+
+  /**
+   * The beasts in a pen. Lying ones rest a long while, looking about now and then (see idle), and
+   * in time get up; standing ones graze, eat at the trough or the heap, shift round, and now and
+   * then amble a few metres to somewhere with room, or lie down again (more often after dark).
+   * They keep inside the rails and out of each other's way, and stop for whoever is in front.
+   */
+  private stepPen(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
+    const life = g.pen as PenLife;
+    const P = life.spot;
+    const night = f.night > 0.6;
+    const k = (rate: number) => 1 - Math.exp(-dt * rate);
+    for (let i = 0; i < g.agents.length; i++) {
+      const a = g.agents[i];
+      if (a.free !== 0) continue; // ridden off, or left loose somewhere
+      const b = life.beasts[i];
+      a.bow = 0;
+      let ty = a.yaw;
+      let want = 0;
+      if (b.mode === 0) {
+        a.sitTarget = 1;
+        b.t -= dt;
+        if (b.t <= 0) {
+          if (Math.random() < (night ? 0.2 : 0.55)) {
+            b.mode = 1;
+            b.t = 8 + Math.random() * 16;
+            b.eat = 0;
+            b.graze = Math.random() < 0.5;
+          } else b.t = 25 + Math.random() * 70;
+        }
+      } else {
+        a.sitTarget = 0;
+        if (a.sit > 0.05) {
+          // still getting up
+        } else if (b.mode === 1) {
+          if (b.eat !== 0) a.bow = b.eat === 1 ? BOW_TROUGH : BOW_HEAP;
+          else if (b.graze && Math.sin(f.time * 0.23 + a.seed * 40) > -0.35) a.bow = BOW_GROUND;
+          b.t -= dt;
+          if (b.t <= 0) this.penNext(g, i, night);
+        } else {
+          const ex = b.tx - a.x;
+          const ez = b.tz - a.z;
+          const dist = Math.hypot(ex, ez);
+          if (dist > 0.3) {
+            ty = Math.atan2(ex, ez);
+            want = PEN_WALK * Math.min(1, 0.35 + dist / 1.5);
+          } else if (!Number.isNaN(b.tyaw) && Math.abs(angDiff(b.tyaw, a.yaw)) > 0.06) ty = b.tyaw;
+          else {
+            b.mode = 1;
+            b.t = b.eat !== 0 ? 15 + Math.random() * 30 : 6 + Math.random() * 16;
+            b.graze = b.eat === 0 && Math.random() < 0.55;
+          }
+        }
+      }
+      // turn slowly; walk on once facing about the right way (creeping round meanwhile, so the
+      // feet step through the turn), and stop short for anything close in front
+      const err = angDiff(ty, a.yaw);
+      const tr = PEN_TURN * dt;
+      a.yaw += Math.max(-tr, Math.min(tr, err));
+      let fwd = want > 0 ? want * Math.max(0.25, 1 - Math.abs(err) / 0.9) : b.mode === 2 && Math.abs(err) > 0.06 ? 0.15 : 0;
+      if (fwd > 0 && this.penBlocked(g, a, px, pz)) {
+        fwd = 0;
+        b.mode = 1;
+        b.t = 2 + Math.random() * 4;
+        b.graze = false;
+      }
+      a.spd += (fwd - a.spd) * k(1.5);
+      if (a.spd < 0.01) a.spd = 0;
+      a.ph += (a.spd * dt) / a.stride;
+      a.sit += Math.max(-dt * 0.45, Math.min(dt * 0.45, a.sitTarget - a.sit));
+      let x = a.x;
+      let z = a.z;
+      if (a.spd > 0) {
+        // never out past the margin: no step that takes it further out there
+        this.penLocal(life, a.x, a.z);
+        const u0 = this.penOut.u;
+        const v0 = this.penOut.v;
+        let u = u0 + (life.co * Math.sin(a.yaw) + life.si * Math.cos(a.yaw)) * a.spd * dt;
+        let v = v0 + (-life.si * Math.sin(a.yaw) + life.co * Math.cos(a.yaw)) * a.spd * dt;
+        const lu = P.hw - PEN_MARGIN + 0.3;
+        const lv = P.hd - PEN_MARGIN + 0.3;
+        if (Math.abs(u) > lu && Math.abs(u) > Math.abs(u0)) u = u0;
+        if (Math.abs(v) > lv && Math.abs(v) > Math.abs(v0)) v = v0;
+        x = P.x + life.co * u - life.si * v;
+        z = P.z + life.si * u + life.co * v;
+      }
+      const d = Math.hypot(x - px, z - pz);
+      const flat = !Number.isNaN(P.y);
+      const y = flat ? P.y : this.groundAt(a, x, z, d);
+      this.put(a, x, y, z, flat ? 0 : a.gnx, flat ? 1 : a.gny, flat ? 0 : a.gnz, g, dt, px, pz, 1 - ss(PEN_FADE0, PEN_R, d));
+    }
+  }
+
   private stepCamp(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
     for (let i = 0; i < g.agents.length; i++) {
       const a = g.agents[i];
@@ -3099,6 +3458,25 @@ export class Caravans {
     void f;
   }
 
+  /**
+   * Someone standing or sitting still picks where to look next: a glance aside for a few seconds
+   * (a beast's whole neck, now and then up at the sky or down a little), then ahead again a while.
+   */
+  private idle(a: Agent): void {
+    const r = Math.random();
+    if (a.lookTo !== 0 && r < 0.65) {
+      a.lookTo = 0;
+      a.pitchTo = a.animal ? (Math.random() - 0.5) * 0.16 : 0;
+      a.idleT = 4 + Math.random() * 10;
+      return;
+    }
+    const side = Math.random() < 0.5 ? -1 : 1;
+    a.lookTo = side * (a.animal ? 0.35 + Math.random() * 0.75 : 0.25 + Math.random() * 0.5);
+    // (kneeling, the neck is already lifted: it only tips a little either way)
+    a.pitchTo = !a.animal ? 0 : a.sit > 0.5 ? -0.12 + Math.random() * 0.3 : -0.3 + Math.random() * 0.45;
+    a.idleT = 2 + Math.random() * 4;
+  }
+
   private put(a: Agent, x: number, y: number, z: number, nx: number, ny: number, nz: number, g: Group, dt: number, px: number, pz: number, vis = 1): void {
     const dx = x - px;
     const dz = z - pz;
@@ -3114,8 +3492,11 @@ export class Caravans {
     const sc = a.scale * pr * vis * a.shown * (1 - ss(FADE0, RANGE, d));
     if (sc < 0.02) return;
     {
-      // the head turns toward a player within 12 m (an animal's whole neck; a person's hood)
+      // The head turns toward a player within 12 m (an animal's whole neck; a person's hood).
+      // Otherwise someone still looks about now and then, and a beast eating keeps its head down.
       let target = 0;
+      let bow = 0;
+      let rate = 3;
       if (d < 12 && a !== this.held) {
         const c = Math.cos(a.yaw);
         const s = Math.sin(a.yaw);
@@ -3123,8 +3504,16 @@ export class Caravans {
         const lz = -dx * s - dz * c;
         const ang = Math.atan2(lx, lz);
         target = a.animal ? Math.max(-1.1, Math.min(1.1, ang)) : Math.abs(ang) < 1.6 ? Math.max(-0.9, Math.min(0.9, ang)) : 0;
+      } else if (a.spd < 0.05 && a !== this.held) {
+        a.idleT -= dt;
+        if (a.idleT <= 0) this.idle(a);
+        const eating = a.bow > 0.5;
+        target = eating ? a.lookTo * 0.3 : a.lookTo;
+        bow = eating ? a.bow : a.pitchTo;
+        rate = 1.1;
       }
-      a.look += (target - a.look) * (1 - Math.exp(-dt * 3));
+      a.look += (target - a.look) * (1 - Math.exp(-dt * rate));
+      a.pitch += (bow - a.pitch) * (1 - Math.exp(-dt * 0.9));
     }
     const amp = Math.min(1.25, a.spd / 1.3);
     const n = a.animal ? this.nA : this.nP;
@@ -3155,6 +3544,7 @@ export class Caravans {
     L.arr[o + 1] = a.load[1];
     L.arr[o + 2] = a.load[2];
     L.arr[o + 3] = a.variant + (a.lamp ? 8 : 0);
+    if (a.animal) this.aAux.arr[o] = a.pitch;
     if (a.animal) this.nA++;
     else this.nP++;
     if (a.lamp && this.nF < CAP_FIRE) {
