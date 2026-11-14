@@ -279,6 +279,9 @@ export class Figure {
   /** Standing on it, rather than carrying it on the back. */
   boardOn = true;
   private boardTilt = 0;
+  /** Sitting astride an animal: the legs hang either side and the walk stops. */
+  seated = false;
+  private seat = 0;
   private backU = { value: 0 };
   /** Has a carpet: rolled on the back, it unrolls under the feet whenever the figure flies. */
   carpet = false;
@@ -430,7 +433,8 @@ export class Figure {
     m: { turn: number; slopeAlong: number; gliding: boolean; lifting: boolean; alt: number },
   ) {
     const k = (rate: number) => 1 - Math.exp(-dt * rate);
-    const walking = st.grounded && !st.sliding;
+    this.seat += ((this.seated ? 1 : 0) - this.seat) * k(8);
+    const walking = st.grounded && !st.sliding && !this.seated;
     const strideLen = strideLength(st.speed, st.running);
     if (walking) this.cycle += (st.speed * dt) / (2 * strideLen);
     const a = this.cycle * Math.PI * 2;
@@ -487,7 +491,11 @@ export class Figure {
       const loose = (this.board && this.boardOn) || this.rugOut > 0.5 ? 0.12 : 1;
       thigh += ((fThigh - thigh) * (1 - loose) + (aThigh - thigh) * loose) * air;
       knee += ((fKnee + 0.18 * rise - knee) * (1 - loose) + (aKnee - knee) * loose) * air;
+      // astride: thighs forward and out, knees bent, the lower legs hanging down the animal's flanks
+      thigh += (-1.05 - thigh) * this.seat;
+      knee += (1.25 - knee) * this.seat;
       this.hips[i].rotation.x = thigh;
+      this.hips[i].rotation.z = sg * 0.28 * this.seat;
       this.knees[i].rotation.x = knee;
 
     }
