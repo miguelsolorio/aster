@@ -415,7 +415,7 @@ export class UI {
     this.resumeBtn.type = 'button';
     const photoBtn = el('button', 'aster-btn', 'Photo mode');
     photoBtn.type = 'button';
-    actions.append(this.resumeBtn, photoBtn);
+    actions.append(photoBtn, this.resumeBtn);
     panel.appendChild(actions);
     menu.appendChild(panel);
     this.menu = menu;

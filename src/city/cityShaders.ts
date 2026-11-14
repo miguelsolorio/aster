@@ -197,11 +197,11 @@ void main() {
   vec3 toCam = cameraPosition - vW;
   float dist = length(toCam);
   vec3 V = toCam / max(dist, 1e-4);
-  vec3 n = normalize(vN);
+  vec3 ng = normalize(vN);
 #ifdef TWO_SIDED
-  if (!gl_FrontFacing) n = -n;
+  if (!gl_FrontFacing) ng = -ng;
 #endif
-  n = styleFacet(n, vW);
+  vec3 n = styleFacet(ng, vW);
   float ndl = dot(n, uSunDir);
   float l = smoothstep(-0.12, 0.5, ndl); // soft wrap
 #ifdef TWO_SIDED
@@ -274,7 +274,22 @@ void main() {
   if (masonry > 0.0) {
     // dust and splash line at the foot of the walls
     float band = 1.0 - smoothstep(0.05, 0.55 + 0.5 * m, vH);
-    col *= 1.0 - 0.17 * band * wall;
+    col *= 1.0 - 0.12 * band * wall;
+  }
+  // Contact shade where an upright face meets the floor it stands on: the street, or the roof
+  // in front of a parapet or a tower (read from the roof map just in front of the face).
+  float above = vH;
+#ifdef CITY_SHADOW
+  above = vH - cityRoof(cityLocal(vW.xz + ng.xz * 0.75));
+#endif
+  float foot = 1.0 - smoothstep(0.0, 2.2, max(above, 0.0));
+  float solid = (mat > 3.5 && mat < 4.5) || (mat > 6.5 && mat < 7.5) ? 0.0 : 1.0;
+  col *= 1.0 - 0.3 * foot * foot * wall * solid;
+  // walls darken a little toward the street, where less of the sky reaches them
+  col *= 1.0 - 0.07 * (1.0 - smoothstep(0.0, 9.0, vH)) * wall * solid;
+  if (mat > 5.5 && mat < 6.5) {
+    // the undersides of the leaves, inside the crown, take less light
+    col *= 1.0 - 0.22 * max(-n.y, 0.0);
   }
   // sky bounce on upward faces, warm ground bounce low on the walls
   col += uTop * 0.06 * max(n.y, 0.0) * (1.0 - 0.6 * l);
