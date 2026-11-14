@@ -15,6 +15,7 @@ import { ceilOf, storeyAt } from './furnish';
 import { depthIn, roomAt, shellCeil, shellSolid, shellTop } from './rooms';
 import type { Room } from './types';
 import { contactShade } from './contactShade';
+import type { PenLocal, PenSpot } from './pens';
 
 const KIND_ID: Record<CityKind, number> = { hill: 1, canyon: 2, oasis: 3, trade: 4 };
 
@@ -39,6 +40,8 @@ interface Loaded {
   solids: SolidIndex;
   /** The insides of the rooms near the wanderer: only while this is the city they are in. */
   interiors: Interiors | null;
+  /** The animal pens of its outskirts, in world space (for the caravans to keep beasts in). */
+  pens: PenSpot[];
 }
 
 /** Seconds for the roof of the room you are in to fade away (and back). */
@@ -302,6 +305,14 @@ export class Cities {
     c.extras = [];
     c.ctx = null;
     c.solids = new SolidIndex();
+    c.pens = [];
+  }
+
+  /** The animal pens of every city whose outskirts are built now, in world space. Fills and returns out. */
+  pens(out: PenSpot[]): PenSpot[] {
+    out.length = 0;
+    for (const c of this.loaded.values()) for (const p of c.pens) out.push(p);
+    return out;
   }
 
   /** Builds the next missing extra of a city. Returns true if it did some work. */
@@ -320,6 +331,23 @@ export class Cities {
       c.map?.dispose();
       c.map = null;
     }
+    const pens = e.near.userData.pens as PenLocal[] | undefined;
+    if (pens) {
+      const s = c.site;
+      const co = Math.cos(s.rot);
+      const si = Math.sin(s.rot);
+      for (const p of pens) {
+        // (the holder turns the city by -rot about y: local (x, z) is world (co x - si z, si x + co z) from the centre)
+        c.pens.push({
+          ...p,
+          key: s.id * 64 + c.pens.length,
+          x: s.cx + co * p.x - si * p.z,
+          z: s.cz + si * p.x + co * p.z,
+          y: Number.isNaN(p.floor) ? NaN : s.groundY + p.floor,
+          rot: s.rot,
+        });
+      }
+    }
     return true;
   }
 
@@ -332,7 +360,7 @@ export class Cities {
     holder.add(meshes.near, meshes.far);
     meshes.near.visible = false;
     this.group.add(holder);
-    const entry: Loaded = { site, plan, meshes, holder, map: null, crowns: [], reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex(), interiors: null };
+    const entry: Loaded = { site, plan, meshes, holder, map: null, crowns: [], reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex(), interiors: null, pens: [] };
     this.loaded.set(site.id, entry);
     return entry;
   }

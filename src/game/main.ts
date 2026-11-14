@@ -214,6 +214,7 @@ function start() {
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, cities.routes, u);
   caravans.landmarks = (out) => discoveries.landmarks(out);
+  caravans.pens = (out) => cities.pens(out); // the beasts in the pens outside each city
   const fauna = new Fauna(world, u);
   fauna.landmarks = (out) => discoveries.landmarks(out);
   fauna.herders = (out) => caravans.herders(out); // each shepherd's goats keep round them

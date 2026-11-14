@@ -4,13 +4,14 @@ import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, trackViewport } f
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
 import type { CityKind } from '../types';
 import { reeds, shrub, tree } from './plants';
+import type { PenBeastSpot, PenLocal } from '../pens';
 
 // The worked land around a city, in a ring from the paved edge out to a few hundred metres:
 // walled gardens and orchards with low field walls between them, tent camps for travellers
-// round a fire, pens of resting pack animals, windmills with turning cloth sails, watchtowers
-// on the nearby crests with a beacon that reads for kilometres at night, a burial ground of
-// standing stelae set apart from the rest and, against the rock of a canyon, tomb fronts cut
-// into the cliff.
+// round a fire, pens for pack animals, windmills with turning cloth sails, watchtowers on the
+// nearby crests with a beacon that reads for kilometres at night, a burial ground of standing
+// stelae set apart from the rest and, against the rock of a canyon, tomb fronts cut into the
+// cliff. (The beasts in the pens live with the caravans, which move and draw them: see pens.ts.)
 //
 // Outside the paved area the ground is not flat, so everything is placed by measured slope:
 // a lazily sampled 4 m height grid answers "how far does the ground fall over this footprint
@@ -328,61 +329,6 @@ function ftri(w: Writer, F: Frame, a: number[], b: number[], c: number[], hx: nu
   );
 }
 
-/** A tube through rings (x, y, z, half width, half height), in a frame; the rings run roughly along the frame's z. */
-function ftube(w: Writer, F: Frame, rings: number[][], sides: number, capEnd: boolean): void {
-  const n = rings.length;
-  const pts: number[][] = [];
-  for (let i = 0; i < n; i++) {
-    const a = rings[Math.max(0, i - 1)], b = rings[Math.min(n - 1, i + 1)];
-    let tx = b[0] - a[0], ty = b[1] - a[1], tz = b[2] - a[2];
-    const tl = Math.hypot(tx, ty, tz) || 1;
-    tx /= tl;
-    ty /= tl;
-    tz /= tl;
-    // u = up x t (across), v = t x u
-    let ux = tz, uz = -tx;
-    const ul = Math.hypot(ux, uz) || 1;
-    ux /= ul;
-    uz /= ul;
-    const vx = ty * uz, vy = tz * ux - tx * uz, vz = -ty * ux;
-    const r = rings[i];
-    const row: number[] = [];
-    for (let j = 0; j < sides; j++) {
-      const an = (j / sides) * TAU;
-      const cs = Math.cos(an) * r[3], sn = Math.sin(an) * r[4];
-      const lx = r[0] + ux * cs + vx * sn, ly = r[1] + vy * sn, lz = r[2] + uz * cs + vz * sn;
-      row.push(F.X(lx, lz), F.y + ly, F.Z(lx, lz));
-    }
-    pts.push(row);
-  }
-  for (let i = 0; i < n - 1; i++) {
-    const ci = rings[i], cj = rings[i + 1];
-    const cx = F.X((ci[0] + cj[0]) / 2, (ci[2] + cj[2]) / 2), cy = F.y + (ci[1] + cj[1]) / 2, cz = F.Z((ci[0] + cj[0]) / 2, (ci[2] + cj[2]) / 2);
-    for (let j = 0; j < sides; j++) {
-      const j2 = (j + 1) % sides;
-      const A = pts[i], B = pts[i + 1];
-      const mx = (A[j * 3] + A[j2 * 3] + B[j * 3] + B[j2 * 3]) / 4;
-      const my = (A[j * 3 + 1] + A[j2 * 3 + 1] + B[j * 3 + 1] + B[j2 * 3 + 1]) / 4;
-      const mz = (A[j * 3 + 2] + A[j2 * 3 + 2] + B[j * 3 + 2] + B[j2 * 3 + 2]) / 4;
-      w.quadAuto(
-        A[j * 3], A[j * 3 + 1], A[j * 3 + 2], A[j2 * 3], A[j2 * 3 + 1], A[j2 * 3 + 2],
-        B[j2 * 3], B[j2 * 3 + 1], B[j2 * 3 + 2], B[j * 3], B[j * 3 + 1], B[j * 3 + 2],
-        mx - cx, my - cy, mz - cz,
-      );
-    }
-  }
-  if (capEnd) {
-    const r = rings[n - 1], p = rings[n - 2];
-    const ex = F.X(r[0], r[2]), ey = F.y + r[1], ez = F.Z(r[0], r[2]);
-    const hx = F.X(r[0] - p[0], r[2] - p[2]) - F.x, hy = r[1] - p[1], hz = F.Z(r[0] - p[0], r[2] - p[2]) - F.z;
-    const A = pts[n - 1];
-    for (let j = 0; j < sides; j++) {
-      const j2 = (j + 1) % sides;
-      w.triAuto(ex, ey, ez, A[j * 3], A[j * 3 + 1], A[j * 3 + 2], A[j2 * 3], A[j2 * 3 + 1], A[j2 * 3 + 2], hx, hy, hz);
-    }
-  }
-}
-
 // ------------------------------------------------------------------ plants for the fields
 
 /** A crop tuft: a small leaning three-sided spike of leaves. */
@@ -444,78 +390,6 @@ function fruitTree(w: Writer, x: number, y: number, z: number, s: number, blosso
   return th;
 }
 
-// ------------------------------------------------------------------ animals
-
-/** A pack animal (the long-necked, fringed beast of the caravans), resting folded on the ground or standing grazing. */
-function animal(w: Writer, F: Frame, lying: boolean, coat: number, rng: () => number): void {
-  const setCoat = (k: number, dark: boolean) => {
-    if (k === 0) {
-      w.mat = MAT.cloth;
-      w.tint = dark ? 150 : 20; // ochre, or rust for the darker parts
-    } else if (k === 1) {
-      w.mat = MAT.wood;
-      w.tint = dark ? 60 : 200;
-    } else {
-      w.mat = MAT.soil;
-      w.tint = 128;
-      if (dark) {
-        w.mat = MAT.wood;
-        w.tint = 90;
-      }
-    }
-  };
-  w.extra = 0;
-  setCoat(coat, false);
-  const y0 = lying ? -0.12 : 1.55;
-  ftube(w, F, [
-    [0, y0 + 0.76, -1.36, 0.06, 0.06],
-    [0, y0 + 0.78, -1.2, 0.2, 0.24],
-    [0, y0 + 0.86, -0.75, 0.4, 0.46],
-    [0, y0 + 0.88, 0, 0.45, 0.5],
-    [0, y0 + 0.9, 0.7, 0.42, 0.48],
-    [0, y0 + 0.98, 1.15, 0.27, 0.34],
-    [0, y0 + 1.0, 1.3, 0.1, 0.12],
-  ], 7, false);
-  if (lying) {
-    ftube(w, F, [[0, 1.05, 1.0, 0.26, 0.26], [0, 1.45, 1.35, 0.19, 0.19], [0, 1.85, 1.6, 0.15, 0.15], [0, 2.05, 1.78, 0.13, 0.13]], 5, false);
-    ftube(w, F, [[0, 2.06, 1.72, 0.15, 0.14], [0, 2.03, 2.02, 0.13, 0.12], [0, 1.96, 2.3, 0.09, 0.08]], 5, true);
-    // folded legs: shins tucked under the chest, haunches under the hips
-    for (const sx of [-1, 1]) {
-      fbar(w, F, sx * 0.3, 0.16, 1.3, sx * 0.3, 0.16, 0.5, 0.2);
-      fbar(w, F, sx * 0.46, 0.24, -1.0, sx * 0.4, 0.18, -0.25, 0.22);
-    }
-  } else {
-    const hz = rng() < 0.5 ? 2.2 : 2.05;
-    ftube(w, F, [[0, 2.5, 1.0, 0.27, 0.27], [0, 2.15, 1.55, 0.19, 0.19], [0, 1.3, 1.95, 0.15, 0.15], [0, 0.72, hz, 0.13, 0.13]], 5, false);
-    ftube(w, F, [[0, 0.74, hz - 0.05, 0.15, 0.14], [0, 0.48, hz + 0.17, 0.13, 0.12], [0, 0.26, hz + 0.33, 0.09, 0.08]], 5, true);
-    for (const sx of [-1, 1])
-      for (const sz of [-1, 1]) {
-        const lx = sx * 0.27, lz = sz * 0.8;
-        fbar(w, F, lx, 2.2, lz, lx, 1.15, lz + 0.02 * sz, 0.3);
-        fbar(w, F, lx, 1.15, lz + 0.02 * sz, lx, 0.0, lz, 0.15);
-      }
-  }
-  // ears
-  const hy = lying ? 2.12 : 0.82, hzz = lying ? 1.78 : 2.12;
-  for (const s of [-1, 1]) ftri(w, F, [s * 0.08, hy, hzz], [s * 0.17, hy + 0.13, hzz - 0.06], [s * 0.12, hy, hzz + 0.1], s, 0.3, 0);
-  // flank fringes and tail
-  setCoat(coat, true);
-  const fy = y0 + 0.8;
-  const foot = lying ? 0.06 : fy - 0.85;
-  for (const s of [-1, 1])
-    for (const z of [-0.8, -0.35, 0.1, 0.55]) ftri(w, F, [s * 0.42, fy, z - 0.22], [s * 0.42, fy, z + 0.22], [s * 0.52, foot, z + 0.03], s, 0, 0);
-  ftri(w, F, [-0.1, y0 + 0.8, -1.36], [0.1, y0 + 0.8, -1.36], [0, lying ? 0.1 : y0 + 0.1, -1.5], 0, 0, -1);
-  // a rolled blanket or a load still on the back
-  if (rng() < 0.45) {
-    w.mat = MAT.cloth;
-    w.tint = 64 + Math.floor(rng() * 128);
-    w.extra = rng() < 0.5 ? 6 : 0;
-    const by = y0 + 1.36;
-    ubox(w, F.X(0, 0), F.y + by, F.Z(0, 0), F.c * 0.5, 0, -F.s * 0.5, 0, 0.06, 0, F.s * 0.7, 0, F.c * 0.7, 63);
-    w.extra = 0;
-  }
-}
-
 // ------------------------------------------------------------------ the builder
 
 interface Part {
@@ -545,6 +419,8 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
 
   const solids: Solid[] = [];
   const emitters: Emitter[] = [];
+  /** The animal pens, for the caravans to keep their beasts in (see pens.ts). */
+  const pens: PenLocal[] = [];
   const nearGlow = new GlowList();
   const farGlow = new GlowList();
   const counts = {
@@ -1374,6 +1250,8 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
         if (k - 1 !== gate) {
           bar(w, px, pg + 0.55, pz, qx, qg + 0.55, qz, 0.07);
           bar(w, px, pg + 1.1, pz, qx, qg + 1.1, qz, 0.07);
+          // the rails keep a ridden beast (and the wanderer) to the gate
+          solids.push({ x: (px + qx) / 2, z: (pz + qz) / 2, hw: Math.abs(qx - px) / 2 + 0.06, hd: Math.abs(qz - pz) / 2 + 0.06, y0: Math.min(pg, qg) - 0.3, y1: Math.max(pg, qg) + 1.15 });
         }
         px = qx;
         pz = qz;
@@ -1387,26 +1265,37 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     w.box(tx - 1.1, tg - 0.2, tz - 0.3, tx + 1.1, tg + 0.5, tz + 0.3, 1 | 2 | 16 | 32);
     w.mat = MAT.opening;
     w.box(tx - 1.0, tg + 0.35, tz - 0.22, tx + 1.0, tg + 0.45, tz + 0.22, 4);
+    solids.push({ x: tx, z: tz, hw: 1.1, hd: 0.3, y0: tg - 0.2, y1: tg + 0.5 });
     w.mat = MAT.cloth;
     w.tint = 12;
     const hx = x - hw + 1.6, hz = z - hd + 1.6;
     taper(w, hx, hz, 1.1, 0.25, gat(hx, hz) - 0.1, gat(hx, hz) + 0.9, 7, rng());
     solids.push({ x: hx, z: hz, hw: 0.7, hd: 0.7, y0: gat(hx, hz) - 1, y1: gat(hx, hz) + 0.9 });
-    // the animals, mostly resting
-    const F = new Frame();
+    // The animals, mostly resting. They live with the caravans (which move and draw them), so
+    // only where each starts is chosen here, drawing the numbers just as the beasts built here
+    // once did, so that every later pen stands where it always has.
     const na = Math.max(2, Math.round((2 + rng() * 4) * Math.max(0.6, dens)));
-    const herd = Math.floor(rng() * 3);
+    rng(); // (the herd's coat)
     const spots: number[] = [];
+    const beasts: PenBeastSpot[] = [];
     for (let k = 0, tries = 0; k < na && tries < 40; tries++) {
       const ax = x + (rng() - 0.5) * (hw * 2 - 3.5), az = z + (rng() - 0.5) * (hd * 2 - 3.5);
       if (spots.some((_, i) => i % 2 === 0 && Math.hypot(spots[i] - ax, spots[i + 1] - az) < 3)) continue;
       if (Math.hypot(ax - hx, az - hz) < 2.4 || Math.hypot(ax - tx, az - tz) < 2) continue;
       spots.push(ax, az);
-      const coat = rng() < 0.7 ? herd : Math.floor(rng() * 3);
-      animal(w, F.set(ax, gat(ax, az) - 0.05, az, rng() * TAU), rng() < 0.7, coat, rng);
+      if (rng() >= 0.7) rng(); // (a coat of its own)
+      const yaw = rng() * TAU;
+      const lying = rng() < 0.7;
+      if (!lying) rng(); // (how far its head reached)
+      if (rng() < 0.45) {
+        rng(); // (the colour of its blanket, and its weave)
+        rng();
+      }
+      beasts.push({ u: ax - x, v: az - z, yaw, lying });
       counts.animals++;
       k++;
     }
+    pens.push({ x, z, hw, hd, tu: tx - x, tv: tz - z, hu: hx - x, hv: hz - z, floor: level, beasts });
   }
 
   // ---------------------------------------------------------------- burial ground
@@ -2153,6 +2042,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   near.userData.groundCalls = G.calls;
   near.userData.buildMs = performance.now() - t0;
   near.userData.tracksKnown = tracks.length > 0;
+  near.userData.pens = pens;
 
   const H2 = HIDE * HIDE;
   let spin = 0;
