@@ -57,6 +57,9 @@ describe('rooms of a planned city', () => {
         // above the lintel the doorway is wall
         const [dx, dz] = at(uc, -r.t / 2);
         expect(shellSolid(r, dx, r.door.top + 0.2, dz, 0)).toBe(true);
+        // (a roof with the hatch of a stair in it is open over the stair: furnish.test.ts)
+        const hatch = r.hatch && ix >= r.hatch.x0 && ix < r.hatch.x1 && iz >= r.hatch.z0 && iz < r.hatch.z1;
+        if (hatch) continue;
         // standing on the roof from outside
         expect(shellTop(r, ix, iz, r.h)).toBe(r.h);
         // the slab is solid to the camera, unless the roof is cut away

@@ -8,6 +8,7 @@
 // shadows, props and people go on treating the building as a block; only the wanderer and the
 // camera ask the shell.
 
+import { SLAB, furnish, planStairs, stairTop } from './furnish';
 import { bodyOf, shapeOf } from './shape';
 import type { Building, CityPlan, Room, RoomDoor } from './types';
 
@@ -119,7 +120,7 @@ export function roomFor(plan: CityPlan, b: Building, bi: number): Room | null {
       if (f.len < 10 || street(plan, f, f.len / 2, 4) < 2) continue;
       const p = portalOf(f, b.h);
       if (p.top > ceil - 0.2 || !clearFront(plan, f, p.u0 + 0.3, p.u1 - 0.3)) continue;
-      return { bi, x0, z0, x1, z1, t, ceil, h: b.h, grand, door: makeDoor(f, fi, p.u0, p.u1, p.top, p.arch, true) };
+      return levelled(plan, b, bi, { bi, x0, z0, x1, z1, t, ceil, h: b.h, grand, door: makeDoor(f, fi, p.u0, p.u1, p.top, p.arch, true) });
     }
   }
 
@@ -154,7 +155,33 @@ export function roomFor(plan: CityPlan, b: Building, bi: number): Room | null {
     }
   }
   if (!best) return null;
-  return { bi, x0, z0, x1, z1, t, ceil, h: b.h, grand, door: best };
+  return levelled(plan, b, bi, { bi, x0, z0, x1, z1, t, ceil, h: b.h, grand, door: best });
+}
+
+type Bare = Omit<Room, 'floors' | 'stairs' | 'hatch' | 'pieces' | 'candles'>;
+
+/** A tall house gets floors and stairs where a flight fits; every room is furnished. */
+function levelled(plan: CityPlan, b: Building, bi: number, bare: Bare): Room {
+  const room: Room = { ...bare, floors: [], stairs: [], hatch: null, pieces: [], candles: [] };
+  const n = b.role === 'house' ? Math.min(4, Math.round(b.h / 3.2)) : 1;
+  const sh = b.h / n;
+  if (n >= 2 && sh >= 2.9 && sh <= 4.2) {
+    // the stairs of a flat-roofed box come out through its roof
+    const hatchOk = (b.roof === 'flat' || b.roof === 'parapet') && (shapeOf(b) === 'box' || shapeOf(b) === 'slump');
+    const floors = Array.from({ length: n - 1 }, (_, k) => (k + 1) * sh);
+    const seed = plan.site.seed | 0;
+    const stairs = planStairs({ ...room, floors, ceil: b.h - 0.4 }, n, sh, hatchOk, seed, bi);
+    if (stairs.length >= n - 1) {
+      room.floors = floors;
+      room.ceil = b.h - 0.4;
+      room.stairs = stairs;
+      room.hatch = stairs.length === n ? stairs[n - 1] : null;
+    }
+  }
+  const f = furnish(room, b.role, plan.site.seed | 0, bi);
+  room.pieces = f.pieces;
+  room.candles = f.candles;
+  return room;
 }
 
 /** Every room of a plan and the cell index that finds them. */
@@ -207,31 +234,87 @@ export function depthIn(r: Room, x: number, z: number): number {
   return Math.min(x - r.x0, r.x1 - x, z - r.z0, r.z1 - z);
 }
 
+/** The camera's cut-away: off, on for the top storey's ceiling, or the height of the ceiling it is cut at. */
+export type Cut = boolean | number;
+
+const cutLim = (r: Room, cut: Cut): number => (cut === false ? Infinity : cut === true ? r.ceil : cut);
+
+const inRect = (a: { x0: number; z0: number; x1: number; z1: number }, x: number, z: number): boolean => x >= a.x0 && x < a.x1 && z >= a.z0 && z < a.z1;
+
+/** Whether (x, z) lies over the hole that the flight rising out of storey k leaves in the slab above it. */
+function inHole(r: Room, k: number, x: number, z: number): boolean {
+  for (const st of r.stairs) if (st.k === k) return inRect(st, x, z);
+  return false;
+}
+
 /**
  * Height (local) of the solid under or around feet at (x, z, y) in room r, the way the wanderer's
- * roof query asks it: -Infinity where the floor is open (the floor is the plateau itself), r.h
- * where a wall stands or over the roof. `cut`: the wanderer is inside, the roof and the walls above
- * the ceiling are drawn away and are nothing to the camera.
+ * roof query asks it: -Infinity where the floor is open (the ground floor is the plateau itself), r.h
+ * where a wall stands or over the roof, the floor, stair or furniture under the feet inside. `cut`:
+ * the wanderer is inside, the roof and the walls and floors above its storey's ceiling are drawn
+ * away and are nothing to the camera (a number is the ceiling it is cut at).
  */
-export function shellTop(r: Room, x: number, z: number, y: number, cut = false): number {
-  if (y >= r.ceil - 0.05) return cut ? -Infinity : r.h;
-  if (depthIn(r, x, z) >= r.t) return -Infinity;
-  if (y < doorClear(r.door) - HEADROOM && inDoorway(r, x, z, JAMB)) return -Infinity;
-  return r.h;
+export function shellTop(r: Room, x: number, z: number, y: number, cut: Cut = false): number {
+  const lim = cutLim(r, cut);
+  const dep = depthIn(r, x, z);
+  const inHatch = r.hatch !== null && dep >= r.t && inRect(r.hatch, x, z);
+  if (cut !== false && y >= lim - 0.05 && !inHatch) return -Infinity;
+  if (dep < r.t) {
+    if (y >= r.ceil - 0.05) return r.h;
+    if (y < doorClear(r.door) - HEADROOM && inDoorway(r, x, z, JAMB)) return -Infinity;
+    return r.h;
+  }
+  if (y >= r.ceil - 0.05 && !inHatch) return r.h;
+  let best = -Infinity;
+  for (let j = 0; j < r.floors.length; j++) {
+    const f = r.floors[j];
+    if (f - SLAB >= lim - 1e-6 || y < f - SLAB - 0.05 || inHole(r, j, x, z)) continue;
+    if (f > best) best = f;
+  }
+  for (const st of r.stairs) {
+    if (st.y0 >= lim - 1e-6 || y < st.y0 - 0.5) continue;
+    const h = stairTop(st, x, z);
+    if (h > best) best = h;
+  }
+  for (const p of r.pieces) {
+    if (p.y >= lim - 1e-6 || y < p.y - 0.5 || !inRect(p, x, z)) continue;
+    if (p.y + p.h > best) best = p.y + p.h;
+  }
+  return best;
 }
 
 /**
  * Whether the point (x, y, z) grown by m is inside the stone of room r: its walls (less the
- * doorway), and the slab between ceiling and roof. With `cut`, nothing above the ceiling counts.
+ * doorway), the floors, stairs and furniture, and the slab between ceiling and roof. With `cut`,
+ * nothing above the ceiling it is cut at counts.
  */
-export function shellSolid(r: Room, x: number, y: number, z: number, m: number, cut = false): boolean {
+export function shellSolid(r: Room, x: number, y: number, z: number, m: number, cut: Cut = false): boolean {
   if (y > r.h + m) return false;
-  const top = cut ? r.ceil : r.h;
+  const lim = cutLim(r, cut);
+  const top = cut !== false ? lim : r.h;
   if (y > top + m) return false;
   if (y < -m - 0.5) return false;
   const dep = depthIn(r, x, z);
   if (dep < -m) return false;
-  if (dep >= r.t + m) return !cut && y > r.ceil - m; // the room itself: only the slab overhead
+  if (dep >= r.t + m) {
+    // the room itself: the slabs overhead, the stairs and the furniture
+    if (cut === false && y > r.ceil - m && !(r.hatch && inRect(r.hatch, x, z))) return true;
+    for (let j = 0; j < r.floors.length; j++) {
+      const f = r.floors[j];
+      if ((cut !== false && f - SLAB >= lim - 1e-6) || inHole(r, j, x, z)) continue;
+      if (y > f - SLAB - m && y < f + m) return true;
+    }
+    for (const st of r.stairs) {
+      if (cut !== false && st.y0 >= lim - 1e-6) continue;
+      const h = stairTop(st, x, z);
+      if (h > -Infinity && y < h + m && y > st.y0 - 0.3 - m) return true;
+    }
+    for (const p of r.pieces) {
+      if (cut !== false && p.y >= lim - 1e-6) continue;
+      if (inRect(p, x, z) && y > p.y - m && y < p.y + p.h + m) return true;
+    }
+    return false;
+  }
   // in the wall: the doorway is open below its springing
   if (y < doorClear(r.door) - m && inDoorway(r, x, z, m)) return false;
   return true;
@@ -239,7 +322,12 @@ export function shellSolid(r: Room, x: number, y: number, z: number, m: number, 
 
 /** The ceiling (local) over feet at (x, z, y) in room r, or Infinity when not under it. */
 export function shellCeil(r: Room, x: number, z: number, y: number): number {
-  if (y >= r.ceil || depthIn(r, x, z) < 0) return Infinity;
-  if (depthIn(r, x, z) >= r.t) return r.ceil;
-  return inDoorway(r, x, z, 0) ? doorClear(r.door) : Infinity;
+  const dep = depthIn(r, x, z);
+  if (y >= r.ceil || dep < 0) return Infinity;
+  if (dep < r.t) return inDoorway(r, x, z, 0) ? doorClear(r.door) : Infinity;
+  for (let j = 0; j < r.floors.length; j++) {
+    const u = r.floors[j] - SLAB;
+    if (y < u && !inHole(r, j, x, z)) return u;
+  }
+  return r.hatch && inRect(r.hatch, x, z) ? Infinity : r.ceil;
 }

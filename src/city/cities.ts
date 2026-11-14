@@ -11,6 +11,7 @@ import { EXTRAS } from './extrasList';
 import { WORLD_SCALE } from '../world/scale';
 import { RouteNet } from './routes';
 import { Interiors } from './interiors';
+import { ceilOf, storeyAt } from './furnish';
 import { depthIn, roomAt, shellCeil, shellSolid, shellTop } from './rooms';
 import type { Room } from './types';
 import { contactShade } from './contactShade';
@@ -62,6 +63,8 @@ export class Cities {
    * they leave, so the roof is never put back over the camera. Its roof is nothing to the camera.
    */
   cutRoom: Room | null = null;
+  /** Ceiling (local) of the storey the wanderer is in, in the room being cut: the cut-away starts there. */
+  private cutAbove = Infinity;
   private cutFade = 0;
 
   private loaded = new Map<number, Loaded>();
@@ -152,7 +155,7 @@ export class Cities {
     if (ri > 0) {
       // a hollow building: its shell answers (walls, the doorway, the floor inside, the roof)
       const r = p.rooms[ri - 1];
-      const st = shellTop(r, lx, lz, y - s.groundY, r === this.cutRoom);
+      const st = shellTop(r, lx, lz, y - s.groundY, r === this.cutRoom ? this.cutAbove : false);
       return st > -Infinity ? Math.max(top, s.groundY + st) : top;
     }
     const h = p.grid[k];
@@ -184,7 +187,7 @@ export class Cities {
       if (ri > 0) {
         // (the point itself with the margin all round; a probe off to the side, as it stands)
         const r = p.rooms[ri - 1];
-        if (shellSolid(r, lx + ox, ly, lz + oz, k === 0 ? m : 0, r === this.cutRoom)) return true;
+        if (shellSolid(r, lx + ox, ly, lz + oz, k === 0 ? m : 0, r === this.cutRoom ? this.cutAbove : false)) return true;
         continue;
       }
       const h = p.grid[q];
@@ -223,12 +226,15 @@ export class Cities {
       const lz = -si * (feet.x - s.cx) + co * (feet.z - s.cz);
       const r = roomAt(c.plan, lx, lz);
       if (r && feet.y - s.groundY < r.ceil) room = r;
-      if (room) this.cutRoom = room;
-      else if (this.cutRoom) {
+      if (room) {
+        this.cutRoom = room;
+        this.cutAbove = ceilOf(room, storeyAt(room, feet.y - s.groundY));
+      } else if (this.cutRoom) {
         const r2 = this.cutRoom;
         const ex = co * (eye.x - s.cx) + si * (eye.z - s.cz);
         const ez = -si * (eye.x - s.cx) + co * (eye.z - s.cz);
-        if (depthIn(r2, ex, ez) < -0.4 || eye.y - s.groundY > r2.h + 3) this.cutRoom = null;
+        // (or the wanderer is up on its roof, which is then solid again)
+        if (depthIn(r2, ex, ez) < -0.4 || eye.y - s.groundY > r2.h + 3 || r === r2) this.cutRoom = null;
       }
     } else this.cutRoom = null;
     this.inside = room;
@@ -242,7 +248,7 @@ export class Cities {
     const cut = c.meshes.cut;
     const r = this.cutRoom;
     if (r) cut.uCutBox.value.set(r.x0, r.z0, r.x1, r.z1);
-    if (r) cut.uCutY.value.x = r.ceil - 0.015;
+    if (r) cut.uCutY.value.x = this.cutAbove - 0.015;
     cut.uCutY.value.y = this.cutFade;
   }
 

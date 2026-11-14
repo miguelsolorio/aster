@@ -155,4 +155,60 @@ export interface Room {
   door: RoomDoor;
   /** A landmark's single great chamber. */
   grand: boolean;
+  /**
+   * Upper storeys of a tall house: the tops of the floor slabs (storey k + 1 stands on floors[k]),
+   * empty for one storey. The ground storey is at 0 and the top storey's ceiling is `ceil`.
+   */
+  floors: number[];
+  /** Straight stairs climbing from storey k to the next floor (or, the last, out to the roof). */
+  stairs: RoomStair[];
+  /** The stair that comes out through the roof, or null. */
+  hatch: RoomStair | null;
+  /** The furniture, and the candles that light it. */
+  pieces: Piece[];
+  candles: Candle[];
+}
+
+/** A flight of stairs: the strip it fills, which way it rises and its steps. */
+export interface RoomStair {
+  /** Storey it starts on (0 is the ground). */
+  k: number;
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  /** Which way it rises: 0 +x, 1 -x, 2 +z, 3 -z. */
+  dir: number;
+  /** Floor it starts from and floor it reaches. */
+  y0: number;
+  y1: number;
+  steps: number;
+  run: number;
+}
+
+export type PieceKind = 'bed' | 'table' | 'chair' | 'stool' | 'bench' | 'stand';
+
+/** A sand-built piece of furniture standing on a floor, as an axis-aligned footprint. */
+export interface Piece {
+  kind: PieceKind;
+  x0: number;
+  z0: number;
+  x1: number;
+  z1: number;
+  /** Floor it stands on. */
+  y: number;
+  /** Height of its top above the floor (what can be stood on). */
+  h: number;
+  /** Which way it faces (the foot of a bed, the front of a chair): 0 +x, 1 -x, 2 +z, 3 -z. */
+  dir: number;
+  /** 0..1 variation for tint. */
+  tint: number;
+}
+
+/** A candle: where its flame is (local metres, y above the plateau). */
+export interface Candle {
+  x: number;
+  y: number;
+  z: number;
+  seed: number;
 }
