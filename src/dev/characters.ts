@@ -132,8 +132,10 @@ function frame(now: number) {
   const h = innerHeight / panels.length;
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
-  camera.position.set(0.2, showAnimals ? 1.6 : 1.35, showPeople || showAnimals ? 12 : 7.2);
-  camera.lookAt(0.2, 1.0, 0);
+  // ?focus=<x> frames the one figure standing at that x, close up (-3.6 front, -1.8 side, 0 behind)
+  const fx = qs.has('focus') ? Number(qs.get('focus')) : null;
+  camera.position.set(fx ?? 0.2, fx === null ? (showAnimals ? 1.6 : 1.35) : 1.1, fx !== null ? 3.4 : showPeople || showAnimals ? 12 : 7.2);
+  camera.lookAt(fx ?? 0.2, fx !== null ? 0.95 : 1.0, 0);
   panels.forEach((p, i) => {
     const step = still && warm <= 0 ? 0 : still ? 1 / 30 : dt;
     p.u.uTime.value += step;
