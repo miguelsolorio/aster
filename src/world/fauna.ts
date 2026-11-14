@@ -40,6 +40,14 @@ export const SNAKE = 9;
 /** Sandgrouse: a flock pecking over the sand that takes off all at once. */
 export const GROUSE = 10;
 const SPECIES = 11;
+/** The ones a person can sit on: a wild ass and an oryx. */
+const RIDEABLE: boolean[] = [true, false, false, false, false, false, true, false, false, false, false];
+/** How near a calm person may come before a rideable animal moves off (m): inside the mounting reach. */
+const CALM_FLEE = 1.2;
+/** How far a rider may be from an animal and still climb on (m). */
+export const MOUNT_REACH = 3.2;
+/** The back's height over the ground at scale 1 (m). */
+export const MOUNT_BACK = 1.3;
 const GOAT_COATS: V3[] = [
   [0.16, 0.13, 0.12],
   [0.42, 0.28, 0.18],
@@ -1226,6 +1234,8 @@ interface Herd {
   small: boolean;
   /** A shepherd's flock: home is wherever the shepherd is. */
   follow: Herder | null;
+  /** Seconds left in which nothing about the player spooks it (a mount just let go of). */
+  grace: number;
 }
 
 /** Where a shepherd is, as the caravans keep it, for the flock to follow. */
@@ -1416,7 +1426,7 @@ export class Fauna {
       sp = wet ? (r < 0.65 ? ASS : r < 0.85 ? GAZELLE : ORYX) : r < 0.55 ? ORYX : r < 0.85 ? GAZELLE : ASS;
       count = sp === ORYX ? 4 + Math.floor(rng() * 6) : sp === GAZELLE ? 5 + Math.floor(rng() * 7) : 3 + Math.floor(rng() * 4);
     }
-    const h: Herd = { key, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small, follow: null };
+    const h: Herd = { key, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small, follow: null, grace: 0 };
     return this.fill(h, count, rng);
   }
 
@@ -1434,7 +1444,7 @@ export class Fauna {
       if (this.blocked?.(x, z)) continue;
       const sm = this.world.sample(x, z, this.sample);
       if (sm.rock > 0.3 || sm.salt > 0.4) continue;
-      const h: Herd = { key: WATER_KEY - l.key * 4 - k, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small: sp === GROUSE, follow: null };
+      const h: Herd = { key: WATER_KEY - l.key * 4 - k, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small: sp === GROUSE, follow: null, grace: 0 };
       return this.fill(h, sp === GAZELLE ? 5 + Math.floor(rng() * 6) : sp === ASS ? 3 + Math.floor(rng() * 4) : 6 + Math.floor(rng() * 8), rng);
     }
     return null;
@@ -1443,14 +1453,14 @@ export class Fauna {
   /** A shepherd's goats, close round them. */
   private makeFlock(f: Herder): Herd {
     const rng = mulberry32(Math.floor(f.seed * 4294967296) ^ 0x6f47);
-    const h: Herd = { key: FLOCK_KEY + f.key, sp: GOAT, hx: f.x, hz: f.z, animals: [], pres: 0, alarm: 0, small: false, follow: f };
+    const h: Herd = { key: FLOCK_KEY + f.key, sp: GOAT, hx: f.x, hz: f.z, animals: [], pres: 0, alarm: 0, small: false, follow: f, grace: 0 };
     return this.fill(h, 5 + Math.floor(rng() * 6), rng);
   }
 
   /** Vultures over a site of bones or ruins. */
   private makeRoost(l: Landmark): Herd {
     const rng = mulberry32((Math.imul(l.key | 0, 0x2c1b3c6d) ^ (this.world.seed | 0) ^ 0x51f15e) >>> 0);
-    const h: Herd = { key: -1 - l.key, sp: VULTURE, hx: l.x, hz: l.z, animals: [], pres: 0, alarm: 0, small: false, follow: null };
+    const h: Herd = { key: -1 - l.key, sp: VULTURE, hx: l.x, hz: l.z, animals: [], pres: 0, alarm: 0, small: false, follow: null, grace: 0 };
     const n = 2 + Math.floor(rng() * 2);
     const ground = this.world.height(l.x, l.z);
     for (let i = 0; i < n; i++) {
@@ -1524,6 +1534,127 @@ export class Fauna {
     }
   }
   private readonly empty = new Set<number>();
+  private ridden: Animal | null = null;
+  private soloKey = 0;
+
+  // ---------------------------------------------------------------- riding
+
+  /** Whether someone is on an animal now. */
+  get mounted(): boolean {
+    return this.ridden !== null;
+  }
+
+  /** The nearest animal within `reach` of (x, z) that can be ridden, or null. */
+  nearestRideable(x: number, z: number, reach = MOUNT_REACH): unknown {
+    if (this.ridden) return null;
+    let best: Animal | null = null;
+    let bd = reach;
+    for (const h of this.herds.values()) {
+      if (!RIDEABLE[h.sp] || h.pres < 0.5) continue;
+      for (const a of h.animals) {
+        const d = Math.hypot(a.x - x, a.z - z);
+        if (d < bd) {
+          bd = d;
+          best = a;
+        }
+      }
+    }
+    return best;
+  }
+
+  /** Climb on an animal got from nearestRideable. */
+  mount(ref: unknown): boolean {
+    const a = ref as Animal | null;
+    if (!a || this.ridden) return false;
+    for (const h of this.herds.values()) {
+      const i = h.animals.indexOf(a);
+      if (i < 0) continue;
+      h.animals.splice(i, 1);
+      this.ridden = a;
+      a.state = 0;
+      a.spd = 0;
+      a.pose = 0;
+      a.avT = 0;
+      return true;
+    }
+    return false;
+  }
+
+  /** Get off: the animal stays where it stands, alone, and is not startled for a few seconds. */
+  dismount(): void {
+    const a = this.ridden;
+    if (!a) return;
+    this.ridden = null;
+    a.state = 0;
+    a.t = 2;
+    a.tx = a.x;
+    a.tz = a.z;
+    const key = 1.5e12 + this.soloKey++;
+    this.herds.set(key, { key, sp: a.sp, hx: a.x, hz: a.z, animals: [a], pres: 1, alarm: 0, small: false, follow: null, grace: 3 });
+  }
+
+  /** Where the ridden animal stands and faces, and how fast it goes (valid while mounted). */
+  get seat(): { x: number; z: number; y: number; yaw: number; spd: number; back: number; turn: number } | null {
+    const a = this.ridden;
+    if (!a) return null;
+    return { x: a.x, z: a.z, y: a.y, yaw: a.yaw, spd: a.spd, back: MOUNT_BACK * a.scale, turn: this.turnRate };
+  }
+  private turnRate = 0;
+
+  /**
+   * Steer the ridden animal. (wx, wz) is the way to go in the world (length 0..1, 0 to stand);
+   * run gallops. It turns at its own pace, speeds up and slows down, and goes round what is in its way.
+   */
+  ride(dt: number, wx: number, wz: number, run: boolean): void {
+    const a = this.ridden;
+    if (!a || dt <= 0) return;
+    const spec = SPEC[a.sp];
+    const k = (rate: number) => 1 - Math.exp(-dt * rate);
+    const want = Math.hypot(wx, wz);
+    let targetSpd = 0;
+    if (want > 0.1) {
+      const err = angDiff(Math.atan2(wx, wz), a.yaw);
+      const tr = spec.turn * 1.4 * dt;
+      const step = Math.max(-tr, Math.min(tr, err));
+      a.yaw += step;
+      this.turnRate += (step / dt - this.turnRate) * k(8);
+      targetSpd = (run ? spec.run : spec.walk * 2) * Math.min(1, want) * (Math.abs(err) < 1.4 ? 1 : 0.4);
+    } else this.turnRate += (0 - this.turnRate) * k(8);
+    a.spd += (targetSpd - a.spd) * k(targetSpd > a.spd ? 2.2 : 4);
+    if (a.spd < 0.02) a.spd = 0;
+    const mx = Math.sin(a.yaw) * a.spd * dt;
+    const mz = Math.cos(a.yaw) * a.spd * dt;
+    if (a.spd === 0) return;
+    // too steep a face and it will not climb; a stone or a wall and it goes round
+    let nx = a.x + mx;
+    let nz = a.z + mz;
+    if (this.solid && steer(this.solid, a.x, a.z, a.y, mx, mz, spec.body, a.dodge || 1)) {
+      a.dodge = steered.side;
+      nx = steered.x;
+      nz = steered.z;
+    }
+    const run2 = Math.hypot(nx - a.x, nz - a.z);
+    if (run2 > 1e-4 && (this.world.height(nx, nz) - a.y) / run2 > 1.1) {
+      a.spd *= 0.3;
+      return;
+    }
+    a.x = nx;
+    a.z = nz;
+  }
+
+  private putRidden(dt: number, f: FrameState): void {
+    const a = this.ridden;
+    if (!a) return;
+    const spec = SPEC[a.sp];
+    const running = a.spd > spec.walk * 1.5;
+    a.ph = (a.ph + (a.spd * dt) / (running ? spec.runStride : spec.stride)) % 1;
+    const gait = a.spd <= spec.walk ? a.spd / spec.walk : 1 + Math.min(1, (a.spd - spec.walk) / (spec.run - spec.walk));
+    a.y = this.world.height(a.x, a.z);
+    this.world.normal(a.x, a.z, this.nrm);
+    const tilt = 0.45;
+    this.put(a, a.x, a.y, a.z, this.nrm.x * tilt, this.nrm.y * tilt + (1 - tilt), this.nrm.z * tilt, 0, gait, 0, a.scale);
+    void f;
+  }
 
   // ---------------------------------------------------------------- update
 
@@ -1571,6 +1702,7 @@ export class Fauna {
       this.callT = 25 + Math.random() * 35;
       if (nearestFox < 220 && this.onCall) this.onCall(FOX, nearestFox);
     }
+    this.putRidden(dt, f);
     this.geo.instanceCount = this.n;
     this.iPos.attr.needsUpdate = this.iUp.attr.needsUpdate = this.iMot.attr.needsUpdate = this.iCoat.attr.needsUpdate = true;
   }
@@ -1580,14 +1712,20 @@ export class Fauna {
     const spec = SPEC[sp];
     const pl = f.player;
     const k = (rate: number) => 1 - Math.exp(-dt * rate);
+    if (h.animals.length === 0) return;
     // Something coming fast, or close: the whole herd runs (a flock of sandgrouse takes off). A lone
     // fox or hare runs on its own; a tortoise just pulls its head in and waits.
     const fast = pl.speed > 4;
+    // A wild ass or an oryx lets someone walk up to it (not run, not slide in on a board): that is
+    // how you get close enough to climb on.
+    const calm = RIDEABLE[sp] && pl.grounded && !pl.running && !pl.sliding && pl.speed < 6.5;
+    const flee = calm ? CALM_FLEE : spec.flee * (fast ? 1.6 : 1);
+    h.grace = Math.max(0, h.grace - dt);
     let mx = 0;
     let mz = 0;
     for (const a of h.animals) {
       const d = Math.hypot(a.x - px, a.z - pz);
-      if (d < spec.flee * (fast ? 1.6 : 1) && h.pres > 0.5) h.alarm = Math.max(h.alarm, 2.5 + Math.random());
+      if (d < flee && h.pres > 0.5 && h.grace <= 0) h.alarm = Math.max(h.alarm, 2.5 + Math.random());
       mx += a.x;
       mz += a.z;
     }
@@ -1596,7 +1734,7 @@ export class Fauna {
     if (h.alarm > 0) {
       const d = Math.hypot(mx - px, mz - pz);
       // keep running until well clear, then settle where they stopped
-      if (d < spec.flee * 2.4) h.alarm = Math.max(h.alarm, 0.5);
+      if (d < spec.flee * 2.4 && h.grace <= 0) h.alarm = Math.max(h.alarm, 0.5);
       h.alarm -= dt;
       if (h.alarm <= 0) {
         h.hx = mx;

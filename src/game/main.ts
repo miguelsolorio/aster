@@ -750,12 +750,51 @@ function start() {
   const SWING_HIT = 0.45; // the fraction of it at which the point lands
   let swingT = -1; // seconds into a swing, or -1 at rest
   let swingHit = false;
+  // ---- riding: a wild ass or an oryx, walked up to and climbed onto. The board and carpet are stowed meanwhile.
+  const tryMount = () => {
+    const p = player.state.pos;
+    if (!player.state.grounded || discoveries.deepIn || cities.inside || ui.state !== 'playing') return false;
+    const a = fauna.nearestRideable(p.x, p.z);
+    if (!a || !fauna.mount(a)) return false;
+    player.board = false;
+    figure.boardOn = false;
+    figure.seated = true;
+    swingT = -1;
+    figure.swing = -1;
+    touch.setBoard(save.has('board'), false);
+    audio.footstep(0.8, false);
+    buzz(10);
+    if (!touch.used) ui.toast('E to get off', 4000);
+    return true;
+  };
+  const dismount = () => {
+    if (!fauna.mounted) return;
+    const s = fauna.seat;
+    fauna.dismount();
+    figure.seated = false;
+    player.board = boardOn;
+    figure.boardOn = boardOn;
+    touch.setBoard(save.has('board'), boardOn);
+    if (s) {
+      // step down onto the ground beside it
+      const side = s.yaw + Math.PI / 2;
+      const x = s.x + Math.sin(side) * 1.1;
+      const z = s.z + Math.cos(side) * 1.1;
+      const st = player.state;
+      st.pos.set(x, world.height(x, z), z);
+      st.vel.set(0, 0, 0);
+      st.speed = 0;
+    }
+    buzz(10);
+  };
   /** Whether a swing may start now: a pick, feet on the ground, and no conversation to have. */
   const canDig = () => save.has('pick') && player.state.grounded && !talk.available;
   const interact = () => {
     const p = player.state.pos;
     if (!talk.talking && discoveries.stoneNear(p.x, p.y, p.z)) discoveries.wakeStone(p.x, p.y, p.z);
     else if (talk.available) talk.interact();
+    else if (fauna.mounted) dismount();
+    else if (tryMount()) return;
     else if (canDig() && swingT < 0) {
       swingT = 0;
       swingHit = false;
@@ -827,6 +866,7 @@ function start() {
 
   // Step on or off the board. Off, it rides on your back and you walk.
   const toggleBoard = () => {
+    if (fauna.mounted) return dismount();
     if (!save.has('board')) return;
     boardOn = !boardOn;
     player.board = boardOn;
@@ -1072,37 +1112,62 @@ function start() {
     // Near the things found in the desert a fast move is taken in short steps, so a rib a
     // hand's width across is not stepped clean over between two frames.
     {
-      const near = dt > 0 && (!!deepIn || discoveries.nearSolids(st.pos.x, st.pos.z, 15) || props.nearSolids(st.pos.x, st.pos.z, 15));
-      const steps = near ? Math.min(8, Math.max(1, Math.ceil((Math.hypot(st.vel.x, st.vel.y, st.vel.z) * dt) / 0.3))) : 1;
-      const h = dt / steps;
-      for (let i = 0; i < steps; i++) {
-        if (i > 0) input.jump = false;
-        // You cannot rise through a stone you are under: slow to meet its underside, and stay below it.
-        let under = Infinity;
-        if (near && !st.grounded) {
-          under = Math.min(discoveries.ceilAt(st.pos.x, st.pos.z, st.pos.y), props.ceilAt(st.pos.x, st.pos.z, st.pos.y)) - 1.9;
-          if (st.vel.y > 0 && st.pos.y + st.vel.y * h > under) st.vel.y = Math.max(0, (under - st.pos.y) / h);
-        }
-        player.update(h, input, camYaw, events);
-        if (near && !st.grounded) {
-          const uy = Math.min(st.pos.y, under);
-          under = Math.min(discoveries.ceilAt(st.pos.x, st.pos.z, uy), props.ceilAt(st.pos.x, st.pos.z, uy)) - 1.9;
-          if (st.pos.y > under) {
-            st.pos.y = under;
-            if (st.vel.y > 0) st.vel.y = 0;
-          }
-        }
-        // Nor through the rock over a room of a deep: a leap or a carpet is held under its
-        // ceiling (and never pressed into the floor where the two are close).
-        if (deepIn && !st.grounded) {
-          const lim = deepIn.ceilAt(st.pos.x, st.pos.z, st.pos.y) - 1.9;
-          if (st.pos.y > lim) {
-            const fl = deepIn.floorAt(st.pos.x, st.pos.z, st.pos.y);
-            st.pos.y = Math.max(lim, fl !== null && Number.isFinite(fl) ? Math.min(fl, st.pos.y) : lim);
-            if (st.vel.y > 0) st.vel.y = 0;
-          }
-        }
+      if (fauna.mounted && (deepIn || cities.inside)) dismount();
+    if (fauna.mounted) {
+      // On an animal's back: it is steered and the rider goes where it goes. No leaping, gliding or flying.
+      jumpQueued = false;
+      const fx = -Math.sin(camYaw);
+      const fz = -Math.cos(camYaw);
+      const wx = fx * input.z - fz * input.x;
+      const wz = fz * input.z + fx * input.x;
+      fauna.ride(dt, wx, wz, input.run);
+      const m = fauna.seat;
+      if (m) {
+        st.pos.set(m.x, world.height(m.x, m.z) + m.back - 0.58, m.z);
+        st.vel.set(Math.sin(m.yaw) * m.spd, 0, Math.cos(m.yaw) * m.spd);
+        st.speed = m.spd;
+        st.grounded = true;
+        st.sliding = false;
+        st.running = input.run && m.spd > 1;
+        st.onRock = world.sample(m.x, m.z, probe).rock;
+        player.facing = m.yaw;
+        player.turn = m.turn;
+        player.gliding = player.lifting = false;
+        player.alt = 0;
       }
+    } else {
+        const near = dt > 0 && (!!deepIn || discoveries.nearSolids(st.pos.x, st.pos.z, 15) || props.nearSolids(st.pos.x, st.pos.z, 15));
+        const steps = near ? Math.min(8, Math.max(1, Math.ceil((Math.hypot(st.vel.x, st.vel.y, st.vel.z) * dt) / 0.3))) : 1;
+        const h = dt / steps;
+        for (let i = 0; i < steps; i++) {
+          if (i > 0) input.jump = false;
+          // You cannot rise through a stone you are under: slow to meet its underside, and stay below it.
+          let under = Infinity;
+          if (near && !st.grounded) {
+            under = Math.min(discoveries.ceilAt(st.pos.x, st.pos.z, st.pos.y), props.ceilAt(st.pos.x, st.pos.z, st.pos.y)) - 1.9;
+            if (st.vel.y > 0 && st.pos.y + st.vel.y * h > under) st.vel.y = Math.max(0, (under - st.pos.y) / h);
+          }
+          player.update(h, input, camYaw, events);
+          if (near && !st.grounded) {
+            const uy = Math.min(st.pos.y, under);
+            under = Math.min(discoveries.ceilAt(st.pos.x, st.pos.z, uy), props.ceilAt(st.pos.x, st.pos.z, uy)) - 1.9;
+            if (st.pos.y > under) {
+              st.pos.y = under;
+              if (st.vel.y > 0) st.vel.y = 0;
+            }
+          }
+          // Nor through the rock over a room of a deep: a leap or a carpet is held under its
+          // ceiling (and never pressed into the floor where the two are close).
+          if (deepIn && !st.grounded) {
+            const lim = deepIn.ceilAt(st.pos.x, st.pos.z, st.pos.y) - 1.9;
+            if (st.pos.y > lim) {
+              const fl = deepIn.floorAt(st.pos.x, st.pos.z, st.pos.y);
+              st.pos.y = Math.max(lim, fl !== null && Number.isFinite(fl) ? Math.min(fl, st.pos.y) : lim);
+              if (st.vel.y > 0) st.vel.y = 0;
+            }
+          }
+        }
+    }
     }
     // A cave has a ceiling: you cannot rise through the rock.
     {

@@ -29,8 +29,8 @@ There are 20 of these in [docs/screenshots](docs/screenshots).
 | Mouse | Look |
 | `Shift` | Run, or boost in the air |
 | `Space` | Leap. Hold to rise, let go to glide, double-tap to drop |
-| `Q` | Step on or off the board, once you have one |
-| `E` | Talk |
+| `Q` | Step on or off the board, once you have one (or get off an animal) |
+| `E` | Talk, or climb onto a wild ass or oryx (walk up to one, don't run) and get off again |
 | `Esc` | Menu and photo mode |
 
 It plays on a phone too, with touch controls.
