@@ -12,6 +12,7 @@ import { blockedAt, clearAt, CREATURE_STEP, steer, steered, type SolidQuery } fr
 import { routePos, routeSAtU, routeSlope, routeUAtS, type RouteCamp, type RouteNet, type TravelRoute } from './routes';
 import type { Herder } from '../world/fauna';
 import { inPen, PEN_MARGIN, penSpot, type PenSpot } from './pens';
+import { CITY_CLEAR, EARLY_CELL, EARLY_CHANCE, EARLY_R, WILD_CELL, WILD_CHANCE, WILD_TRIES, wildAnchor, wildWanted } from './wildcamps';
 
 const RANGE = 2500;
 const FADE0 = 1200;
@@ -1448,6 +1449,11 @@ export class Caravans {
   private readonly oases = new Map<number, Group[]>();
   /** Shepherds, by the cell they keep to (null: nobody keeps that one). */
   private readonly shepCells = new Map<number, Group | null>();
+  /** Camps out in the open desert by grid cell (the everyday grid, and the finer one for those with no board). */
+  private readonly wildCells = new Map<number, Group | null>();
+  private readonly earlyCells = new Map<number, Group | null>();
+  /** Set while the wanderer has no board: more camps near, so one is soon found. */
+  needy = false;
   /** 0..1 from the quality tier (as people.setDensity): extras with a rank at or above it stay home. */
   private density = 1;
   private readonly cityBuf: CitySite[] = [];
@@ -1896,15 +1902,20 @@ export class Caravans {
     // (the caravans themselves walk the routes between cities: see buildRoute)
 
     // resting camp
+    // (two, on different sides: the first close in, the second further out)
     const base = rng() * TAU;
-    for (let k = 0; k < 10; k++) {
-      const a = base + k * 0.62;
-      const d = site.radius + 300 + rng() * 600;
-      const x = site.cx + Math.cos(a) * d;
-      const z = site.cz + Math.sin(a) * d;
-      if (this.levelAt(x, z)) {
-        groups.push(this.buildCamp(rng, x, z));
-        break;
+    for (let c = 0; c < 2; c++) {
+      for (let k = 0; k < 10; k++) {
+        const a = base + c * 3.1 + k * 0.62;
+        const d = site.radius + 300 + c * 500 + rng() * 600;
+        const x = site.cx + Math.cos(a) * d;
+        const z = site.cz + Math.sin(a) * d;
+        if (this.levelAt(x, z)) {
+          const g = this.buildCamp(rng, x, z);
+          if (c > 0) g.rank = 0.1 + 0.6 * rng();
+          groups.push(g);
+          break;
+        }
       }
     }
 
@@ -2155,6 +2166,57 @@ export class Caravans {
       if (g) groups.push(g);
     }
     return groups;
+  }
+
+  /** The camp of a grid cell, if it has one: the first level, open spot near its anchor. Decided by the cell alone. */
+  private buildWildCamp(cx: number, cz: number, cell: number, chance: number, early: boolean): Group | null {
+    const s = this.world.seed | 0;
+    if (!wildWanted(cx, cz, chance, hash4, s)) return null;
+    const an = wildAnchor(cx, cz, cell, hash4, s);
+    for (const [ox, oz] of WILD_TRIES) {
+      const x = an.x + ox;
+      const z = an.z + oz;
+      if (!this.levelAt(x, z)) continue;
+      const sites = this.cities.near(x, z);
+      let ok = true;
+      for (let i = 0; i < sites.length && ok; i++) if (Math.hypot(sites[i].cx - x, sites[i].cz - z) < sites[i].radius + CITY_CLEAR) ok = false;
+      for (let i = 0; i < this.marks.length && ok; i++) if (Math.hypot(this.marks[i].x - x, this.marks[i].z - z) < 120) ok = false;
+      if (ok && this.solid && blockedAt(this.solid, x, z, this.world.height(x, z))) ok = false;
+      if (!ok) continue;
+      const g = this.buildCamp(mulberry32(Math.floor(hash4(cx, cz, s, early ? 84 : 83) * 4294967296)), x, z);
+      // the everyday ones thin out on a lesser tier; the early ones stay, they are the way to the first board
+      g.rank = early ? 0 : 0.1 + 0.8 * hash4(cx, cz, s, 85);
+      return g;
+    }
+    return null;
+  }
+
+  /** Puts the camps of the cells round (px, pz) on the live list, building any not met before. */
+  private wildNear(px: number, pz: number, cell: number, chance: number, early: boolean, cells: Map<number, Group | null>, reach: number): void {
+    const span = Math.ceil(reach / cell);
+    const pcx = Math.floor(px / cell);
+    const pcz = Math.floor(pz / cell);
+    for (let dz = -span; dz <= span; dz++) {
+      for (let dx = -span; dx <= span; dx++) {
+        const cx = pcx + dx;
+        const cz = pcz + dz;
+        if (Math.hypot((cx + 0.5) * cell - px, (cz + 0.5) * cell - pz) > reach + cell * 0.5) continue;
+        const key = (cx + 32768) * 65536 + (cz + 32768);
+        let g = cells.get(key);
+        if (g === undefined) {
+          g = this.buildWildCamp(cx, cz, cell, chance, early);
+          cells.set(key, g);
+        }
+        if (g && Math.hypot(g.ax - px, g.az - pz) <= reach + 200) this.live.push(g);
+      }
+    }
+    if (cells.size > 300) {
+      for (const [key, g] of cells) {
+        const cx = Math.floor(key / 65536) - 32768;
+        const cz = (key % 65536) - 32768;
+        if (Math.hypot((cx + 0.5) * cell - px, (cz + 0.5) * cell - pz) > RANGE * 3 && !(g && g.active)) cells.delete(key);
+      }
+    }
   }
 
   /** The shepherd who keeps to a cell, if anyone does: decided by the cell alone. */
@@ -2865,6 +2927,8 @@ export class Caravans {
         }
       }
       this.shepherdsNear(px, pz);
+      this.wildNear(px, pz, WILD_CELL, WILD_CHANCE, false, this.wildCells, RANGE);
+      if (this.needy) this.wildNear(px, pz, EARLY_CELL, EARLY_CHANCE, true, this.earlyCells, EARLY_R);
     }
     this.heldT -= dt;
     if (this.heldT <= 0) this.held = null;

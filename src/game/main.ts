@@ -1613,6 +1613,7 @@ function start() {
     wildlife.update(frame);
     fauna.update(frame);
     const ambience = cities.frame(frame);
+    caravans.needy = !save.has('board');
     caravans.update(frame);
     // the camp fires out on the routes crackle like the city's own
     ambience.fire = Math.min(1, Math.hypot(ambience.fire, caravans.fireLevel(frame.player.pos.x, frame.player.pos.z)));
