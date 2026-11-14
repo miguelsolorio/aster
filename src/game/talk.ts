@@ -99,6 +99,11 @@ export class Talk {
     return this.script !== null;
   }
 
+  /** Where the person being spoken to stands (valid while talking). */
+  get speaker(): Speaker {
+    return this.who;
+  }
+
   /** The bubble takes the look's ink and paper, as long as the two can be told apart. */
   setColours(ink: THREE.Vector3, paper: THREE.Vector3): void {
     const lum = (c: THREE.Vector3) => 0.3 * c.x + 0.59 * c.y + 0.11 * c.z;
@@ -189,11 +194,16 @@ export class Talk {
     let x = (v.x * 0.5 + 0.5) * w;
     let y = (-v.y * 0.5 + 0.5) * h;
     if (bubble) {
+      // The bubble is a caption in a fixed place near the top of the screen, so a close or
+      // crowded view never hides it. Its tail points down at the speaker when they are below it.
       const bw = el.offsetWidth;
       const bh = el.offsetHeight;
-      x = Math.min(w - bw / 2 - 12, Math.max(bw / 2 + 12, x));
-      y = Math.min(h - 24, Math.max(bh + 20, y));
-      el.style.transform = `translate(${Math.round(x - bw / 2)}px, ${Math.round(y - bh - 10)}px)`;
+      const top = Math.round(Math.max(56, h * 0.1));
+      const left = Math.round((w - bw) / 2);
+      el.style.transform = `translate(${left}px, ${top}px)`;
+      const tail = Math.min(bw - 20, Math.max(20, x - left));
+      el.style.setProperty('--tail-x', `${Math.round(tail)}px`);
+      el.classList.toggle('has-tail', y > top + bh + 24);
     } else {
       el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px)`;
     }

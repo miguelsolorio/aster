@@ -748,6 +748,12 @@ function start() {
   }
   let camDist = 7.5;
   let dragging = false;
+  // On meeting someone the eye eases round to an over-the-shoulder angle that frames both of
+  // them, a little higher and never nearer than before. It lets go after a moment, so the view
+  // can still be turned by hand.
+  let wasTalking = false;
+  let talkEase = 0;
+  let talkYaw = 0;
 
   // ---- touch: a floating stick, drag to look (pinch zooms in photo mode only), one button to leap and fly
   const touchHost = document.createElement('div');
@@ -1336,6 +1342,24 @@ function start() {
 
     // Camera: orbit behind the figure, kept above the sand.
     if (ui.state === 'title' || ui.state === 'intro') camYaw += dt * 0.05;
+    if (talk.talking && !wasTalking) {
+      // look from behind the player toward the speaker, turned ~35 degrees to whichever side is nearer
+      const sp = talk.speaker;
+      const base = Math.atan2(st.pos.x - sp.x, st.pos.z - sp.z);
+      const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
+      const a = base + 0.6;
+      const b = base - 0.6;
+      talkYaw = Math.abs(wrap(a - camYaw)) < Math.abs(wrap(b - camYaw)) ? a : b;
+      talkEase = 1.4;
+    }
+    wasTalking = talk.talking;
+    if (talkEase > 0 && talk.talking && !dragging) {
+      talkEase -= dt;
+      const k = 1 - Math.exp(-dt * 4);
+      camYaw += Math.atan2(Math.sin(talkYaw - camYaw), Math.cos(talkYaw - camYaw)) * k;
+      camPitch += (Math.max(camPitch, 0.42) - camPitch) * k;
+      camDist += (Math.max(camDist, 6.5) - camDist) * k;
+    } else talkEase = 0;
     tmp.copy(st.pos);
     tmp.y += 1.5;
     camTarget.lerp(tmp, 1 - Math.exp(-dt * 12));
