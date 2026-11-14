@@ -15,6 +15,7 @@ import { MAX_TERRAIN_H, SURFACE_GLSL, TERRAIN } from '../world/surface';
 import { DEEP_HOLE } from '../world/deep/types';
 import { CITY_SHADOW_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 import { ROUTE_GLSL } from '../city/routes';
+import { FOOT_GLSL } from '../city/footpaths';
 import { STYLE_GLSL } from './styleGlsl';
 
 // The look's settings (see render/types.ts Params; the game's 35 mm look sets them
@@ -185,6 +186,7 @@ ${LOOK}
 ${COMMON}
 ${HIGH}
 ${ROUTE_GLSL}
+${FOOT_GLSL}
 
 // Explicit LOD everywhere: these run inside loops and branches.
 // The heightmap holds raw metres in both the 32-bit and the 16-bit float bake.
@@ -320,9 +322,10 @@ void main() {
     if (abs(dot(hd, uCavA[i].zw) - uCavD[i].y) < ${DEEP_HOLE.halfU.toFixed(2)} && abs(dot(hd, vec2(-uCavA[i].w, uCavA[i].z))) < ${DEEP_HOLE.halfV.toFixed(2)} && p.y < uCavB[i].y + 0.5) discard;
   }
 
-  // ---- the worn paths between cities (and the camps along them), on sand and salt alike
+  // ---- the worn paths between cities (and the camps along them), and the fainter footpaths out
+  // to the finds, on sand and salt alike
   float track = 0.0;
-  if (sandW + salt > 0.01) track = routePaths(p.xz, fwXZ, dist) * (sandW + 0.75 * salt);
+  if (sandW + salt > 0.01) track = max(routePaths(p.xz, fwXZ, dist), footPaths(p.xz, fwXZ, dist)) * (sandW + 0.75 * salt);
 
   // ---- base normal: mesh near, heightmap far
   vec2 huv = (p.xz - uRect.xy) / max(uRect.z, 1.0);

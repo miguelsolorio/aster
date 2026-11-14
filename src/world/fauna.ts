@@ -9,20 +9,44 @@ import type { Landmark } from './discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import { steer, steered, type SolidQuery } from './avoid';
 
-const CAP = 128;
-const BIG_CELL = 320; // one oryx herd at most per cell
-const SMALL_CELL = 90; // one small animal (or a few) at most per cell
+// Every instance runs the whole mesh (all species) through the vertex shader, so the cap is what
+// bounds the cost; the quality tier lowers the share of it in use (setDensity).
+const CAP = 200;
+const BIG_CELL = 320; // one herd at most per cell
+const SMALL_CELL = 90; // one small animal (or a few, or a flock of birds) at most per cell
 const BIG_R = 720; // herds are kept within this of the player
 const SMALL_R = 240; // small animals within this: further out they're specks
 const SCAN_EVERY = 0.5;
 const AVOID_R = 300; // animals walk round a site's stones within this of the player; further out nobody can tell
 const TAU = Math.PI * 2;
+// Keys for herds that do not come from a cell: the ones by an oasis, and a shepherd's flock.
+// Cell keys stay under 2^33 and the vultures' are negative, so these never meet them.
+const WATER_KEY = -1e12;
+const FLOCK_KEY = 1e12;
 
 export const ORYX = 0;
 export const FOX = 1;
 export const HARE = 2;
 export const LIZARD = 3;
 export const VULTURE = 4;
+export const GAZELLE = 5;
+/** A wild ass (an onager): grey, long eared, never far from water. */
+export const ASS = 6;
+/** A shepherd's goats (only ever with their shepherd, from the caravans). */
+export const GOAT = 7;
+export const TORTOISE = 8;
+/** A sidewinder. */
+export const SNAKE = 9;
+/** Sandgrouse: a flock pecking over the sand that takes off all at once. */
+export const GROUSE = 10;
+const SPECIES = 11;
+const GOAT_COATS: V3[] = [
+  [0.16, 0.13, 0.12],
+  [0.42, 0.28, 0.18],
+  [0.8, 0.76, 0.68],
+  [0.55, 0.42, 0.3],
+  [0.24, 0.2, 0.18],
+];
 
 type V3 = [number, number, number];
 
@@ -35,16 +59,31 @@ interface Spec {
   turn: number; // rad/s
   roam: number; // wanders this far from home (m)
   body: number; // kept this far (m) from anything standing in the way
+  gap: number; // keeps this far (m) from the others of its herd
+  spread: number; // a herd starts out scattered this far (m) round its home
   coat: V3;
 }
 
 const SPEC: Spec[] = [
-  { walk: 1.0, run: 9, flee: 30, stride: 1.5, runStride: 3.6, turn: 2.0, roam: 35, body: 0.6, coat: [0.86, 0.8, 0.7] },
-  { walk: 1.1, run: 6.5, flee: 13, stride: 0.42, runStride: 1.1, turn: 4.0, roam: 30, body: 0.25, coat: [0.88, 0.74, 0.54] },
-  { walk: 1.0, run: 8, flee: 10, stride: 0.5, runStride: 1.5, turn: 5.0, roam: 14, body: 0.2, coat: [0.6, 0.5, 0.38] },
-  { walk: 0.4, run: 4, flee: 5, stride: 0.1, runStride: 0.22, turn: 8.0, roam: 3, body: 0.08, coat: [0.66, 0.55, 0.4] },
-  { walk: 9, run: 9, flee: 0, stride: 1, runStride: 1, turn: 1, roam: 0, body: 0, coat: [0.3, 0.24, 0.2] },
+  { walk: 1.0, run: 9, flee: 30, stride: 1.5, runStride: 3.6, turn: 2.0, roam: 35, body: 0.6, gap: 2.2, spread: 9, coat: [0.86, 0.8, 0.7] },
+  { walk: 1.1, run: 6.5, flee: 13, stride: 0.42, runStride: 1.1, turn: 4.0, roam: 30, body: 0.25, gap: 0.6, spread: 4, coat: [0.88, 0.74, 0.54] },
+  { walk: 1.0, run: 8, flee: 10, stride: 0.5, runStride: 1.5, turn: 5.0, roam: 14, body: 0.2, gap: 0.6, spread: 4, coat: [0.6, 0.5, 0.38] },
+  { walk: 0.4, run: 4, flee: 5, stride: 0.1, runStride: 0.22, turn: 8.0, roam: 3, body: 0.08, gap: 0.6, spread: 2.5, coat: [0.66, 0.55, 0.4] },
+  { walk: 9, run: 9, flee: 0, stride: 1, runStride: 1, turn: 1, roam: 0, body: 0, gap: 0, spread: 0, coat: [0.3, 0.24, 0.2] },
+  // gazelle: the most skittish thing out here, and the fastest away
+  { walk: 1.1, run: 11, flee: 40, stride: 1.0, runStride: 3.0, turn: 2.6, roam: 30, body: 0.4, gap: 1.5, spread: 8, coat: [0.8, 0.6, 0.4] },
+  { walk: 1.2, run: 10, flee: 28, stride: 1.5, runStride: 3.4, turn: 1.8, roam: 40, body: 0.6, gap: 2.4, spread: 9, coat: [0.66, 0.6, 0.53] },
+  // goats are used to people: they only shy off a step or two
+  { walk: 0.9, run: 3.2, flee: 4, stride: 0.75, runStride: 1.3, turn: 3.0, roam: 9, body: 0.35, gap: 1.0, spread: 5, coat: [0.4, 0.3, 0.22] },
+  { walk: 0.1, run: 0.1, flee: 4, stride: 0.07, runStride: 0.07, turn: 0.8, roam: 6, body: 0.18, gap: 0.5, spread: 3, coat: [0.55, 0.46, 0.32] },
+  { walk: 0.35, run: 1.5, flee: 4, stride: 0.25, runStride: 0.3, turn: 3.0, roam: 8, body: 0.1, gap: 0.5, spread: 2, coat: [0.82, 0.72, 0.55] },
+  { walk: 0.5, run: 11, flee: 15, stride: 0.12, runStride: 0.12, turn: 6.0, roam: 10, body: 0.1, gap: 0.35, spread: 3, coat: [0.76, 0.62, 0.42] },
 ];
+
+/** Herd animals: they bunch, face the same way, graze head down and watch the player a long way off. */
+function herdSp(sp: number): boolean {
+  return sp === ORYX || sp === GAZELLE || sp === ASS || sp === GOAT;
+}
 
 // ------------------------------------------------------------------ geometry
 
@@ -423,6 +462,493 @@ function vulture(b: GB): void {
   }
 }
 
+// The four legs of a hoofed animal: hips at (hx, hy, +-hz), knees at ky. Low sided, since every
+// instance runs every species' vertices and the legs are thin enough not to need more.
+function hooves(b: GB, sp: number, hx: number, hy: number, front: number, back: number, ky: number, r0: number, r1: number): void {
+  for (const [fx, fz, ph] of [
+    [hx, front, 0],
+    [-hx, front, 0.5],
+    [hx, back, 0.5],
+    [-hx, back, 0],
+  ] as V3[]) {
+    const lean = fz < 0 ? -0.05 * hy : 0.02 * hy;
+    b.set(1, 0, sp, ph, [fx, hy, fz]).tube(
+      [
+        { c: [fx, hy, fz], rx: r0, rz: r0 },
+        { c: [fx, ky, fz + lean], rx: r1, rz: r1 },
+      ],
+      4,
+      Math.PI / 4,
+      false,
+      false,
+    );
+    b.set(1, 2, sp, ph, [fx, hy, fz]).tube(
+      [
+        { c: [fx, ky, fz + lean], rx: r1, rz: r1 },
+        { c: [fx, 0.04, fz], rx: r1 * 0.75, rz: r1 * 0.75 },
+        { c: [fx, 0, fz + 0.02], rx: r1 * 0.85, rz: r1 * 0.85 },
+      ],
+      4,
+      Math.PI / 4,
+      false,
+      true,
+    );
+  }
+}
+
+function gazelle(b: GB): void {
+  b.set(0, 0, GAZELLE).tube(
+    [
+      { c: [0, 0.6, -0.42], rx: 0.1, rz: 0.11 },
+      { c: [0, 0.63, -0.27], rx: 0.14, rz: 0.16 },
+      { c: [0, 0.64, 0.05], rx: 0.13, rz: 0.16 },
+      { c: [0, 0.67, 0.29], rx: 0.12, rz: 0.15 },
+      { c: [0, 0.72, 0.4], rx: 0.08, rz: 0.1 },
+    ],
+    6,
+    0,
+    true,
+    true,
+  );
+  // the dark band along the flank, and the white belly under it
+  b.set(0, 1, GAZELLE).tube(
+    [
+      { c: [0, 0.58, -0.26], rx: 0.145, rz: 0.035 },
+      { c: [0, 0.59, 0.27], rx: 0.125, rz: 0.035 },
+    ],
+    6,
+    0,
+    false,
+    false,
+  );
+  b.set(0, 2, GAZELLE).tube(
+    [
+      { c: [0, 0.52, -0.25], rx: 0.11, rz: 0.05 },
+      { c: [0, 0.53, 0.26], rx: 0.1, rz: 0.05 },
+    ],
+    6,
+    0,
+    true,
+    true,
+  );
+  hooves(b, GAZELLE, 0.075, 0.6, 0.3, -0.31, 0.32, 0.045, 0.024);
+  const NP: V3 = [0, 0.72, 0.38];
+  b.set(2, 0, GAZELLE, 0, NP, 1).tube(
+    [
+      { c: [0, 0.7, 0.36], rx: 0.065, rz: 0.085 },
+      { c: [0, 0.92, 0.5], rx: 0.045, rz: 0.05 },
+      { c: [0, 0.98, 0.54], rx: 0.045, rz: 0.045 },
+    ],
+    5,
+    0,
+    false,
+    false,
+  );
+  b.set(2, 2, GAZELLE, 0, NP, 1).tube(
+    [
+      { c: [0, 1.0, 0.51], rx: 0.045, rz: 0.05 },
+      { c: [0, 0.98, 0.6], rx: 0.04, rz: 0.045 },
+      { c: [0, 0.92, 0.7], rx: 0.022, rz: 0.024 },
+    ],
+    5,
+    0,
+    true,
+    true,
+  );
+  b.set(2, 4, GAZELLE, 0, NP, 1);
+  b.box(0.04, 1.0, 0.59, 0.022, 0.022, 0.022);
+  b.box(-0.04, 1.0, 0.59, 0.022, 0.022, 0.022);
+  b.box(0, 0.93, 0.71, 0.03, 0.02, 0.02);
+  for (const s of [-1, 1]) {
+    // lyre horns: up, out, and the tips turned in
+    b.set(2, 3, GAZELLE, 0, NP, 1).tube(
+      [
+        { c: [s * 0.022, 1.04, 0.53], rx: 0.014, rz: 0.014 },
+        { c: [s * 0.05, 1.17, 0.46], rx: 0.011, rz: 0.011 },
+        { c: [s * 0.045, 1.27, 0.45], rx: 0.008, rz: 0.008 },
+        { c: [s * 0.03, 1.33, 0.5], rx: 0.003, rz: 0.003 },
+      ],
+      4,
+      0,
+      false,
+      false,
+    );
+    b.set(4, 5, GAZELLE, 0, NP, 1, s).tube(
+      [
+        { c: [s * 0.035, 1.04, 0.5], rx: 0.024, rz: 0.01 },
+        { c: [s * 0.1, 1.09, 0.46], rx: 0.02, rz: 0.008 },
+        { c: [s * 0.13, 1.11, 0.44], rx: 0.004, rz: 0.004 },
+      ],
+      4,
+      0,
+      false,
+      true,
+    );
+  }
+  b.set(3, 1, GAZELLE, 0, [0, 0.64, -0.43]).tube(
+    [
+      { c: [0, 0.64, -0.44], rx: 0.02, rz: 0.02, z: 0 },
+      { c: [0, 0.52, -0.49], rx: 0.016, rz: 0.024, z: 1 },
+    ],
+    4,
+    0,
+    false,
+    true,
+  );
+}
+
+function ass(b: GB): void {
+  b.set(0, 0, ASS).tube(
+    [
+      { c: [0, 0.98, -0.68], rx: 0.2, rz: 0.24 },
+      { c: [0, 1.02, -0.44], rx: 0.27, rz: 0.31 },
+      { c: [0, 1.0, 0.05], rx: 0.26, rz: 0.31 },
+      { c: [0, 1.04, 0.44], rx: 0.24, rz: 0.29 },
+      { c: [0, 1.12, 0.62], rx: 0.16, rz: 0.2 },
+    ],
+    7,
+    0,
+    true,
+    true,
+  );
+  // pale belly, and the dark stripe down the spine
+  b.set(0, 2, ASS).tube(
+    [
+      { c: [0, 0.8, -0.42], rx: 0.21, rz: 0.08 },
+      { c: [0, 0.8, 0.4], rx: 0.2, rz: 0.08 },
+    ],
+    6,
+    0,
+    true,
+    true,
+  );
+  b.set(0, 1, ASS).box(0, 1.32, -0.05, 0.05, 0.03, 1.1);
+  hooves(b, ASS, 0.13, 0.94, 0.44, -0.47, 0.5, 0.075, 0.042);
+  const NP: V3 = [0, 1.12, 0.58];
+  b.set(2, 0, ASS, 0, NP, 1).tube(
+    [
+      { c: [0, 1.06, 0.55], rx: 0.13, rz: 0.17 },
+      { c: [0, 1.36, 0.8], rx: 0.09, rz: 0.12 },
+      { c: [0, 1.46, 0.88], rx: 0.085, rz: 0.1 },
+    ],
+    6,
+    0,
+    false,
+    false,
+  );
+  b.set(2, 0, ASS, 0, NP, 1).tube(
+    [
+      { c: [0, 1.48, 0.85], rx: 0.085, rz: 0.1 },
+      { c: [0, 1.38, 1.06], rx: 0.075, rz: 0.09 },
+    ],
+    6,
+    0,
+    false,
+    false,
+  );
+  b.set(2, 2, ASS, 0, NP, 1).tube(
+    [
+      { c: [0, 1.38, 1.06], rx: 0.075, rz: 0.09 },
+      { c: [0, 1.28, 1.18], rx: 0.065, rz: 0.07 },
+    ],
+    6,
+    0,
+    false,
+    true,
+  );
+  // the short mane standing up along the neck
+  b.set(2, 1, ASS, 0, NP, 1).tube(
+    [
+      { c: [0, 1.3, 0.56], rx: 0.02, rz: 0.05 },
+      { c: [0, 1.56, 0.8], rx: 0.02, rz: 0.05 },
+      { c: [0, 1.62, 0.87], rx: 0.01, rz: 0.02 },
+    ],
+    4,
+    0,
+    true,
+    true,
+  );
+  b.set(2, 4, ASS, 0, NP, 1);
+  b.box(0.08, 1.46, 0.98, 0.028, 0.028, 0.028);
+  b.box(-0.08, 1.46, 0.98, 0.028, 0.028, 0.028);
+  b.box(0, 1.26, 1.2, 0.09, 0.03, 0.05);
+  for (const s of [-1, 1]) {
+    // long ears, the first thing you see of one over a dune
+    b.set(4, 0, ASS, 0, NP, 1, s).tube(
+      [
+        { c: [s * 0.05, 1.54, 0.88], rx: 0.04, rz: 0.016 },
+        { c: [s * 0.11, 1.73, 0.83], rx: 0.036, rz: 0.014 },
+        { c: [s * 0.13, 1.83, 0.8], rx: 0.006, rz: 0.006 },
+      ],
+      4,
+      0,
+      false,
+      true,
+    );
+  }
+  const TP: V3 = [0, 1.04, -0.72];
+  b.set(3, 0, ASS, 0, TP).tube(
+    [
+      { c: [0, 1.04, -0.73], rx: 0.03, rz: 0.03, z: 0 },
+      { c: [0, 0.74, -0.82], rx: 0.022, rz: 0.022, z: 0.8 },
+    ],
+    4,
+    0,
+    false,
+    false,
+  );
+  b.set(3, 1, ASS, 0, TP).tube(
+    [
+      { c: [0, 0.74, -0.82], rx: 0.04, rz: 0.04, z: 0.8 },
+      { c: [0, 0.56, -0.85], rx: 0.015, rz: 0.015, z: 1 },
+    ],
+    4,
+    0,
+    false,
+    true,
+  );
+}
+
+function goat(b: GB): void {
+  b.set(0, 0, GOAT).tube(
+    [
+      { c: [0, 0.55, -0.35], rx: 0.11, rz: 0.12 },
+      { c: [0, 0.58, -0.21], rx: 0.15, rz: 0.18 },
+      { c: [0, 0.58, 0.08], rx: 0.15, rz: 0.18 },
+      { c: [0, 0.6, 0.25], rx: 0.13, rz: 0.16 },
+      { c: [0, 0.64, 0.35], rx: 0.09, rz: 0.11 },
+    ],
+    6,
+    0,
+    true,
+    true,
+  );
+  hooves(b, GOAT, 0.075, 0.54, 0.25, -0.26, 0.28, 0.045, 0.026);
+  const NP: V3 = [0, 0.64, 0.33];
+  b.set(2, 0, GOAT, 0, NP, 1).tube(
+    [
+      { c: [0, 0.6, 0.31], rx: 0.075, rz: 0.095 },
+      { c: [0, 0.8, 0.43], rx: 0.055, rz: 0.065 },
+      { c: [0, 0.85, 0.45], rx: 0.055, rz: 0.06 },
+    ],
+    5,
+    0,
+    false,
+    false,
+  );
+  b.set(2, 0, GOAT, 0, NP, 1).tube(
+    [
+      { c: [0, 0.85, 0.44], rx: 0.055, rz: 0.06 },
+      { c: [0, 0.8, 0.55], rx: 0.045, rz: 0.05 },
+      { c: [0, 0.73, 0.63], rx: 0.03, rz: 0.03 },
+    ],
+    5,
+    0,
+    false,
+    true,
+  );
+  b.set(2, 1, GOAT, 0, NP, 1).tube(
+    [
+      { c: [0, 0.72, 0.58], rx: 0.018, rz: 0.018 },
+      { c: [0, 0.62, 0.57], rx: 0.006, rz: 0.006 },
+    ],
+    4,
+    0,
+    false,
+    true,
+  );
+  b.set(2, 4, GOAT, 0, NP, 1);
+  b.box(0.045, 0.85, 0.52, 0.02, 0.02, 0.02);
+  b.box(-0.045, 0.85, 0.52, 0.02, 0.02, 0.02);
+  for (const s of [-1, 1]) {
+    // horns swept back over the neck
+    b.set(2, 3, GOAT, 0, NP, 1).tube(
+      [
+        { c: [s * 0.028, 0.88, 0.46], rx: 0.016, rz: 0.016 },
+        { c: [s * 0.05, 0.97, 0.4], rx: 0.012, rz: 0.012 },
+        { c: [s * 0.07, 0.99, 0.31], rx: 0.008, rz: 0.008 },
+        { c: [s * 0.08, 0.94, 0.25], rx: 0.003, rz: 0.003 },
+      ],
+      4,
+      0,
+      false,
+      false,
+    );
+    // ears that hang out to the side
+    b.set(4, 5, GOAT, 0, NP, 1, s).tube(
+      [
+        { c: [s * 0.05, 0.85, 0.46], rx: 0.016, rz: 0.03 },
+        { c: [s * 0.13, 0.8, 0.46], rx: 0.012, rz: 0.028 },
+        { c: [s * 0.16, 0.77, 0.46], rx: 0.004, rz: 0.006 },
+      ],
+      4,
+      0,
+      false,
+      true,
+    );
+  }
+  b.set(3, 0, GOAT, 0, [0, 0.64, -0.36]).tube(
+    [
+      { c: [0, 0.63, -0.37], rx: 0.025, rz: 0.02, z: 0 },
+      { c: [0, 0.72, -0.43], rx: 0.006, rz: 0.006, z: 1 },
+    ],
+    4,
+    0,
+    false,
+    true,
+  );
+}
+
+function tortoise(b: GB): void {
+  // the high domed shell, its rim and a few darker plates on top
+  b.set(0, 0, TORTOISE).tube(
+    [
+      { c: [0, 0.055, -0.19], rx: 0.05, rz: 0.03 },
+      { c: [0, 0.075, -0.14], rx: 0.13, rz: 0.075 },
+      { c: [0, 0.085, 0.0], rx: 0.155, rz: 0.095 },
+      { c: [0, 0.075, 0.14], rx: 0.13, rz: 0.075 },
+      { c: [0, 0.055, 0.19], rx: 0.05, rz: 0.03 },
+    ],
+    7,
+    0,
+    true,
+    true,
+  );
+  b.set(0, 1, TORTOISE).tube(
+    [
+      { c: [0, 0.045, -0.17], rx: 0.1, rz: 0.02 },
+      { c: [0, 0.045, 0.0], rx: 0.165, rz: 0.022 },
+      { c: [0, 0.045, 0.17], rx: 0.1, rz: 0.02 },
+    ],
+    7,
+    0,
+    false,
+    false,
+  );
+  b.box(0, 0.18, 0, 0.07, 0.012, 0.08);
+  b.box(0.06, 0.155, 0.08, 0.05, 0.012, 0.05, 0.4);
+  b.box(-0.06, 0.155, 0.08, 0.05, 0.012, 0.05, -0.4);
+  b.box(0.065, 0.155, -0.08, 0.05, 0.012, 0.05, -0.4);
+  b.box(-0.065, 0.155, -0.08, 0.05, 0.012, 0.05, 0.4);
+  for (const [s, fz, ph] of [
+    [1, 0.1, 0],
+    [-1, 0.1, 0.5],
+    [1, -0.1, 0.5],
+    [-1, -0.1, 0],
+  ] as V3[]) {
+    b.set(1, 2, TORTOISE, ph, [s * 0.11, 0.06, fz]).tube(
+      [
+        { c: [s * 0.11, 0.06, fz], rx: 0.032, rz: 0.032 },
+        { c: [s * 0.13, 0.0, fz + 0.01], rx: 0.03, rz: 0.03 },
+      ],
+      4,
+      Math.PI / 4,
+      false,
+      true,
+    );
+  }
+  const NP: V3 = [0, 0.06, 0.17];
+  b.set(2, 2, TORTOISE, 0, NP, 1).tube(
+    [
+      { c: [0, 0.055, 0.15], rx: 0.03, rz: 0.028 },
+      { c: [0, 0.08, 0.25], rx: 0.028, rz: 0.026 },
+      { c: [0, 0.075, 0.29], rx: 0.012, rz: 0.012 },
+    ],
+    5,
+    0,
+    false,
+    true,
+  );
+  b.set(2, 4, TORTOISE, 0, NP, 1);
+  b.box(0.022, 0.088, 0.26, 0.01, 0.01, 0.01);
+  b.box(-0.022, 0.088, 0.26, 0.01, 0.01, 0.01);
+}
+
+function snake(b: GB): void {
+  // a sidewinder: one long tube the shader bends into a moving S
+  const rings: { c: V3; rx: number; rz: number }[] = [];
+  for (let i = 0; i <= 9; i++) {
+    const z = -0.32 + i * 0.065;
+    const t = i / 9;
+    const r = 0.006 + 0.016 * Math.sin(Math.min(1, t * 1.25) * Math.PI * 0.5) * (t > 0.88 ? 0.75 : 1);
+    rings.push({ c: [0, 0.016, z], rx: r * 1.15, rz: r * 0.8 });
+  }
+  rings.push({ c: [0, 0.016, 0.31], rx: 0.004, rz: 0.004 });
+  b.set(0, 0, SNAKE).tube(rings, 5, 0, true, true);
+  b.set(0, 1, SNAKE);
+  for (let i = 0; i < 6; i++) b.box(0, 0.028, -0.24 + i * 0.085, 0.016, 0.006, 0.03);
+  b.set(0, 4, SNAKE);
+  b.box(0.014, 0.024, 0.255, 0.006, 0.006, 0.006);
+  b.box(-0.014, 0.024, 0.255, 0.006, 0.006, 0.006);
+}
+
+function grouse(b: GB): void {
+  // a sandgrouse: plump, short legged, pointed tail; the wings fold along its sides
+  b.set(0, 0, GROUSE).tube(
+    [
+      { c: [0, 0.1, -0.13], rx: 0.03, rz: 0.025 },
+      { c: [0, 0.115, -0.06], rx: 0.062, rz: 0.058 },
+      { c: [0, 0.125, 0.03], rx: 0.066, rz: 0.062 },
+      { c: [0, 0.145, 0.08], rx: 0.045, rz: 0.045 },
+    ],
+    6,
+    0,
+    true,
+    false,
+  );
+  b.set(0, 2, GROUSE).tube(
+    [
+      { c: [0, 0.125, 0.045], rx: 0.064, rz: 0.06 },
+      { c: [0, 0.135, 0.07], rx: 0.052, rz: 0.05 },
+    ],
+    6,
+    0,
+    false,
+    false,
+  );
+  b.set(0, 1, GROUSE);
+  b.tri([-0.02, 0.11, -0.12], [0.02, 0.11, -0.12], [0, 0.115, -0.24], null);
+  for (const [s, ph] of [
+    [1, 0],
+    [-1, 0.5],
+  ] as Array<[number, number]>) {
+    b.set(1, 2, GROUSE, ph, [s * 0.025, 0.08, 0]).tube(
+      [
+        { c: [s * 0.025, 0.08, 0], rx: 0.009, rz: 0.009 },
+        { c: [s * 0.025, 0, 0.01], rx: 0.007, rz: 0.007 },
+      ],
+      3,
+      0,
+      false,
+      true,
+    );
+  }
+  const NP: V3 = [0, 0.145, 0.08];
+  b.set(2, 0, GROUSE, 0, NP, 1).tube(
+    [
+      { c: [0, 0.15, 0.08], rx: 0.032, rz: 0.034 },
+      { c: [0, 0.19, 0.105], rx: 0.033, rz: 0.033 },
+      { c: [0, 0.19, 0.135], rx: 0.018, rz: 0.018 },
+      { c: [0, 0.185, 0.155], rx: 0.003, rz: 0.003 },
+    ],
+    5,
+    0,
+    false,
+    true,
+  );
+  b.set(2, 4, GROUSE, 0, NP, 1);
+  b.box(0.026, 0.198, 0.115, 0.009, 0.009, 0.009);
+  b.box(-0.026, 0.198, 0.115, 0.009, 0.009, 0.009);
+  for (const s of [-1, 1]) {
+    const P = (x: number, z: number): V3 => [s * x, 0.14, z];
+    b.set(5, 0, GROUSE, 0, [s * 0.05, 0.14, 0.03], s);
+    b.tri(P(0.05, 0.06), P(0.22, 0.03), P(0.22, -0.06), null);
+    b.tri(P(0.05, 0.06), P(0.22, -0.06), P(0.05, -0.08), null);
+    b.set(5, 1, GROUSE, 0, [s * 0.05, 0.14, 0.03], s);
+    b.tri(P(0.22, 0.03), P(0.32, -0.04), P(0.22, -0.06), null);
+  }
+}
+
 function faunaGeometry(): THREE.InstancedBufferGeometry {
   const b = new GB();
   oryx(b);
@@ -430,6 +956,12 @@ function faunaGeometry(): THREE.InstancedBufferGeometry {
   hare(b);
   lizard(b);
   vulture(b);
+  gazelle(b);
+  ass(b);
+  goat(b);
+  tortoise(b);
+  snake(b);
+  grouse(b);
   return b.geometry();
 }
 
@@ -460,9 +992,16 @@ void main() {
     return;
   }
   float TAU = 6.2831853;
+  int S = int(sp + 0.5);
   float kind = aRig.y;
   float ph = iMot.x;
   float g = iMot.y;
+  // a sandgrouse's gait runs past 2 into flight: legs still, wings out and beating
+  float fly = 0.0;
+  if (S == 10) {
+    fly = clamp(g - 2.0, 0.0, 1.0);
+    if (g > 2.0) g = 0.0;
+  }
   float walk = min(g, 1.0);
   float run = clamp(g - 1.0, 0.0, 1.0);
   float pose = iMot.z;
@@ -471,8 +1010,10 @@ void main() {
   vec3 n = normal;
   float th = TAU * (ph + aRig.x);
   if (kind > 0.5 && kind < 1.5) {
-    float amp = sp > 2.5 ? 0.9 : mix(0.45, 0.85, run);
-    if (sp > 1.5 && sp < 2.5) amp = 0.9;
+    float amp = mix(0.45, 0.85, run);
+    if (S == 2 || S == 3) amp = 0.9;
+    else if (S == 10) amp = 0.75;
+    else if (S == 8) amp = 0.5;
     float a = amp * walk * sin(th);
     p = aPivot + rotX(p - aPivot, a);
     n = rotX(n, a);
@@ -481,6 +1022,12 @@ void main() {
     float pitch = (pose * 1.35 + 0.07 * walk * sin(2.0 * TAU * ph) + 0.04 * sin(T * 0.8 + seed * 30.0)) * w;
     float turn = iUp.w * w;
     vec3 q = p - aPivot;
+    if (S == 8) {
+      // a tortoise does not bow its head: it draws it back into the shell
+      q.z -= 0.11 * pose;
+      pitch = 0.05 * sin(T * 0.7 + seed * 30.0);
+      turn *= 1.0 - pose;
+    }
     if (kind > 3.5) {
       // an ear flicks now and then
       float flick = pow(max(sin(T * 1.3 + seed * 50.0 + aRig.w), 0.0), 16.0);
@@ -494,19 +1041,34 @@ void main() {
     p = aPivot + rotY(p - aPivot, b);
     n = rotY(n, b);
   } else if (kind > 4.5) {
-    float a = aRig.z * (g * sin(TAU * ph) + 0.08);
-    p = aPivot + rotZ(p - aPivot, a);
-    n = rotZ(n, a);
+    if (S == 10) {
+      // folded back along the flanks on the ground; spread and beating in the air
+      float flap = aRig.z * (fly * (0.95 * sin(TAU * ph) + 0.15) - 0.35 * (1.0 - fly));
+      float fold = aRig.z * 1.4 * (1.0 - fly);
+      vec3 q = rotY(rotZ(p - aPivot, flap), fold);
+      n = rotY(rotZ(n, flap), fold);
+      p = aPivot + q;
+    } else {
+      float a = aRig.z * (g * sin(TAU * ph) + 0.08);
+      p = aPivot + rotZ(p - aPivot, a);
+      n = rotZ(n, a);
+    }
   }
-  if (sp > 2.5 && sp < 3.5) {
+  if (S == 3) {
     // a lizard runs in a sideways S
     p.x += sin(p.z * 26.0 - TAU * ph) * (0.004 + 0.012 * walk) * smoothstep(0.14, -0.1, p.z);
+  } else if (S == 9) {
+    // a sidewinder lies in an S, and the S runs down its length as it goes; the loops lift clear
+    float wv = p.z * 15.0 - TAU * ph;
+    float amp = (0.035 + 0.02 * walk) * mix(1.0, 0.35, smoothstep(0.15, 0.3, p.z));
+    p.x += sin(wv) * amp;
+    p.y += 0.012 * walk * max(0.0, cos(wv));
   }
-  if (sp > 1.5 && sp < 2.5) {
+  if (S == 2) {
     // a hare lopes: the whole body arcs up between landings
     p.y += 0.1 * walk * (0.4 + run) * max(0.0, sin(TAU * ph));
-  } else if (sp < 1.5 && !(kind > 0.5 && kind < 1.5)) {
-    p.y += (0.015 + 0.05 * run) * walk * sin(2.0 * TAU * ph) * (sp < 0.5 ? 1.0 : 0.3);
+  } else if ((S <= 1 || (S >= 5 && S <= 7) || S == 10) && !(kind > 0.5 && kind < 1.5)) {
+    p.y += (0.015 + 0.05 * run) * walk * sin(2.0 * TAU * ph) * (S == 1 ? 0.3 : S == 10 ? 0.15 : 1.0);
   }
   vY = position.y;
   p *= iMot.w;
@@ -648,6 +1210,8 @@ interface Animal {
   dodge: number;
   avT: number;
   avYaw: number;
+  /** A sandgrouse's height off the ground (m): above zero it is flying. */
+  fly: number;
 }
 
 interface Herd {
@@ -660,6 +1224,21 @@ interface Herd {
   /** Something has spooked them: every animal in the herd runs. */
   alarm: number;
   small: boolean;
+  /** A shepherd's flock: home is wherever the shepherd is. */
+  follow: Herder | null;
+}
+
+/** Where a shepherd is, as the caravans keep it, for the flock to follow. */
+export interface Herder {
+  key: number;
+  x: number;
+  z: number;
+  /** In sight and out with the flock. */
+  on: boolean;
+  /** Sitting out the night: the flock settles round them. */
+  rest: boolean;
+  /** For the flock's own look (how many, what colours). */
+  seed: number;
 }
 
 export class Fauna {
@@ -672,6 +1251,13 @@ export class Fauna {
   solid: SolidQuery | null = null;
   /** An animal has called out, this far from the player (m). */
   onCall: ((sp: number, dist: number) => void) | null = null;
+  /** The shepherds out in the open now, each with a flock of goats to keep near. Set by the game. */
+  herders: ((out: Herder[]) => Herder[]) | null = null;
+
+  /** 0..1 from the quality tier: how many cells have animals in them, and how many to a herd. */
+  private density = 1;
+  private cap = CAP;
+  private readonly herderList: Herder[] = [];
 
   private readonly world: World;
   private readonly geo: THREE.InstancedBufferGeometry;
@@ -712,9 +1298,27 @@ export class Fauna {
 
   /** How many animals are about right now, by species (for checking from the console). */
   census(): number[] {
-    const c = [0, 0, 0, 0, 0];
+    const c: number[] = new Array<number>(SPECIES).fill(0);
     for (const h of this.herds.values()) if (h.pres > 0.5) c[h.sp] += h.animals.length;
     return c;
+  }
+
+  /**
+   * Fewer animals on a lesser tier (d in 0..1, as people.setDensity): fewer cells with anything in
+   * them, smaller herds, and a lower cap on how many are drawn. Herds already out stay until they
+   * are left behind; cells passed over as empty are looked at again.
+   */
+  setDensity(d: number): void {
+    const v = Math.min(1, Math.max(0.1, d));
+    if (v === this.density) return;
+    this.density = v;
+    this.cap = Math.round(CAP * (0.45 + 0.55 * v));
+    this.empty.clear();
+  }
+
+  /** The share of cells that get animals, and of each herd's head count, at this density. */
+  private get thin(): number {
+    return 0.4 + 0.6 * this.density;
   }
 
   // ---------------------------------------------------------------- spawning
@@ -722,6 +1326,7 @@ export class Fauna {
   private newAnimal(sp: number, x: number, z: number, rng: () => number): Animal {
     const spec = SPEC[sp];
     const j = 0.92 + rng() * 0.14;
+    const coat = sp === GOAT ? GOAT_COATS[Math.floor(rng() * GOAT_COATS.length)] : spec.coat;
     return {
       sp,
       x,
@@ -738,7 +1343,7 @@ export class Fauna {
       poseT: 0,
       look: 0,
       scale: (sp === ORYX ? 0.92 : 0.9) + rng() * 0.18,
-      coat: [spec.coat[0] * j, spec.coat[1] * j, spec.coat[2] * j],
+      coat: [coat[0] * j, coat[1] * j, coat[2] * j],
       seed: rng() * 0.999,
       cx: 0,
       cz: 0,
@@ -750,7 +1355,26 @@ export class Fauna {
       dodge: 0,
       avT: 0,
       avYaw: 0,
+      fly: 0,
     };
+  }
+
+  /** count animals of sp scattered round (x, z), thinned by the quality tier (never below one). */
+  private fill(h: Herd, count: number, rng: () => number): Herd {
+    const sp = h.sp;
+    const n = Math.max(1, Math.round(count * this.thin));
+    const spread = SPEC[sp].spread;
+    for (let i = 0; i < n; i++) {
+      const a = rng() * TAU;
+      const d = Math.sqrt(rng()) * spread;
+      h.animals.push(this.newAnimal(sp, h.hx + Math.cos(a) * d, h.hz + Math.sin(a) * d, rng));
+    }
+    if (herdSp(sp) || sp === GROUSE) {
+      // a herd faces mostly the same way
+      const y0 = rng() * TAU;
+      for (const an of h.animals) an.yaw = y0 + (rng() - 0.5) * 1.6;
+    }
+    return h;
   }
 
   /** What lives in a cell, if anything: decided by the cell alone, so it's the same every visit. */
@@ -760,45 +1384,73 @@ export class Fauna {
     const salt = small ? 31 : 17;
     const size = small ? SMALL_CELL : BIG_CELL;
     const roll = hash(cx, cz, s, salt);
-    if (roll > (small ? 0.24 : 0.08)) return null;
+    // Herds gather toward water: a cell within reach of a river is more often taken, and mostly by
+    // wild asses. The roll is thinned by the tier and then read as a share (r) to pick the species,
+    // so a lesser tier drops cells evenly across them.
     const x = (cx + 0.15 + 0.7 * hash(cx, cz, s, salt + 1)) * size;
     const z = (cz + 0.15 + 0.7 * hash(cx, cz, s, salt + 2)) * size;
+    const riv = small ? Infinity : ((this.world as Partial<{ river(x: number, z: number): number }>).river?.(x, z) ?? Infinity);
+    const wet = riv < 260;
+    const p = (small ? 0.34 : wet ? 0.2 : 0.11) * this.thin;
+    if (roll > p) return null;
+    const r = roll / p;
     const sm = w.sample(x, z, this.sample);
     if (this.blocked?.(x, z)) return null;
-    if (((this.world as Partial<{ river(x: number, z: number): number }>).river?.(x, z) ?? Infinity) < 25) return null;
+    if (!small && riv < 25) return null;
+    if (small && ((this.world as Partial<{ river(x: number, z: number): number }>).river?.(x, z) ?? Infinity) < 25) return null;
     let sp: number;
     let count: number;
     const rng = mulberry32(Math.floor(hash(cx, cz, s, salt + 3) * 4294967296));
     if (small) {
       if (sm.rock > 0.35) sp = LIZARD;
       else if (sm.salt > 0.4) return null;
-      else sp = roll < 0.07 ? FOX : roll < 0.14 ? HARE : roll < 0.19 ? LIZARD : -1;
+      else sp = r < 0.18 ? FOX : r < 0.36 ? HARE : r < 0.5 ? LIZARD : r < 0.68 ? GROUSE : r < 0.8 ? TORTOISE : r < 0.92 ? SNAKE : -1;
       if (sp < 0) return null;
-      count = sp === FOX ? (rng() < 0.3 ? 2 : 1) : sp === HARE ? 1 + Math.floor(rng() * 2) : 1 + Math.floor(rng() * 3);
+      count =
+        sp === FOX ? (rng() < 0.3 ? 2 : 1)
+        : sp === GROUSE ? 5 + Math.floor(rng() * 7)
+        : sp === TORTOISE || sp === SNAKE ? 1
+        : 1 + Math.floor(rng() * 3);
     } else {
       if (sm.rock > 0.3) return null;
-      sp = ORYX;
-      count = 3 + Math.floor(rng() * 5);
+      sp = wet ? (r < 0.65 ? ASS : r < 0.85 ? GAZELLE : ORYX) : r < 0.55 ? ORYX : r < 0.85 ? GAZELLE : ASS;
+      count = sp === ORYX ? 4 + Math.floor(rng() * 6) : sp === GAZELLE ? 5 + Math.floor(rng() * 7) : 3 + Math.floor(rng() * 4);
     }
-    const h: Herd = { key, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small };
-    const spread = sp === ORYX ? 9 : sp === LIZARD ? 2.5 : 4;
-    for (let i = 0; i < count; i++) {
+    const h: Herd = { key, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small, follow: null };
+    return this.fill(h, count, rng);
+  }
+
+  /** What comes down to an oasis to drink: a herd grazing a little way off, sometimes sandgrouse too. */
+  private makeWater(l: Landmark, k: number): Herd | null {
+    const rng = mulberry32((Math.imul(l.key | 0, 0x2c1b3c6d) ^ Math.imul(k + 1, 0x27d4eb2d) ^ (this.world.seed | 0) ^ 0x0a515) >>> 0);
+    if (rng() > (k === 0 ? 0.85 : 0.55) * this.thin) return null;
+    const sp = k === 0 ? (rng() < 0.55 ? GAZELLE : ASS) : GROUSE;
+    // out past the palms and stones round the pool, which are no place to graze
+    for (let t = 0; t < 6; t++) {
       const a = rng() * TAU;
-      const d = Math.sqrt(rng()) * spread;
-      h.animals.push(this.newAnimal(sp, x + Math.cos(a) * d, z + Math.sin(a) * d, rng));
+      const d = (sp === GROUSE ? 42 : 60) + rng() * 30;
+      const x = l.x + Math.cos(a) * d;
+      const z = l.z + Math.sin(a) * d;
+      if (this.blocked?.(x, z)) continue;
+      const sm = this.world.sample(x, z, this.sample);
+      if (sm.rock > 0.3 || sm.salt > 0.4) continue;
+      const h: Herd = { key: WATER_KEY - l.key * 4 - k, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small: sp === GROUSE, follow: null };
+      return this.fill(h, sp === GAZELLE ? 5 + Math.floor(rng() * 6) : sp === ASS ? 3 + Math.floor(rng() * 4) : 6 + Math.floor(rng() * 8), rng);
     }
-    if (sp === ORYX) {
-      // a herd faces mostly the same way
-      const y0 = rng() * TAU;
-      for (const an of h.animals) an.yaw = y0 + (rng() - 0.5) * 1.6;
-    }
-    return h;
+    return null;
+  }
+
+  /** A shepherd's goats, close round them. */
+  private makeFlock(f: Herder): Herd {
+    const rng = mulberry32(Math.floor(f.seed * 4294967296) ^ 0x6f47);
+    const h: Herd = { key: FLOCK_KEY + f.key, sp: GOAT, hx: f.x, hz: f.z, animals: [], pres: 0, alarm: 0, small: false, follow: f };
+    return this.fill(h, 5 + Math.floor(rng() * 6), rng);
   }
 
   /** Vultures over a site of bones or ruins. */
   private makeRoost(l: Landmark): Herd {
     const rng = mulberry32((Math.imul(l.key | 0, 0x2c1b3c6d) ^ (this.world.seed | 0) ^ 0x51f15e) >>> 0);
-    const h: Herd = { key: -1 - l.key, sp: VULTURE, hx: l.x, hz: l.z, animals: [], pres: 0, alarm: 0, small: false };
+    const h: Herd = { key: -1 - l.key, sp: VULTURE, hx: l.x, hz: l.z, animals: [], pres: 0, alarm: 0, small: false, follow: null };
     const n = 2 + Math.floor(rng() * 2);
     const ground = this.world.height(l.x, l.z);
     for (let i = 0; i < n; i++) {
@@ -845,10 +1497,29 @@ export class Fauna {
     if (this.empty.size > 20000) this.empty.clear();
     if (this.landmarks) {
       for (const l of this.landmarks(this.marks)) {
+        const ld = Math.hypot(l.x - px, l.z - pz);
+        if (l.kind === 'oasis' && ld < BIG_R) {
+          for (let k = 0; k < 2; k++) {
+            const key = WATER_KEY - l.key * 4 - k;
+            if (this.herds.has(key) || this.empty.has(key)) continue;
+            const h = this.makeWater(l, k);
+            if (h) this.herds.set(key, h);
+            else this.empty.add(key);
+          }
+          continue;
+        }
         if (l.kind !== 'bones' && l.kind !== 'ruins') continue;
-        if (Math.hypot(l.x - px, l.z - pz) > 1600) continue;
+        if (ld > 1600) continue;
         const key = -1 - l.key;
         if (!this.herds.has(key)) this.herds.set(key, this.makeRoost(l));
+      }
+    }
+    if (this.herders) {
+      const list = this.herders(this.herderList);
+      for (let i = 0; i < list.length; i++) {
+        const f = list[i];
+        const key = FLOCK_KEY + f.key;
+        if (f.on && !this.herds.has(key) && Math.hypot(f.x - px, f.z - pz) < BIG_R) this.herds.set(key, this.makeFlock(f));
       }
     }
   }
@@ -873,9 +1544,16 @@ export class Fauna {
       const awake =
         h.sp === FOX ? f.night > 0.45
         : h.sp === HARE ? f.night < 0.75
-        : h.sp === LIZARD ? f.night < 0.3
+        : h.sp === LIZARD || h.sp === TORTOISE ? f.night < 0.3
         : h.sp === VULTURE ? f.night < 0.5
+        : h.sp === GROUSE ? f.night < 0.4
+        : h.sp === SNAKE ? f.night < 0.9
+        : h.follow ? h.follow.on
         : true;
+      if (h.follow && h.alarm <= 0) {
+        h.hx = h.follow.x;
+        h.hz = h.follow.z;
+      }
       const lim = h.sp === VULTURE ? 1700 : h.small ? SMALL_R : BIG_R;
       const want = awake && Math.hypot(h.hx - px, h.hz - pz) < lim;
       h.pres = Math.min(1, Math.max(0, h.pres + (want ? 1 : -1) * dt * 0.5));
@@ -898,10 +1576,12 @@ export class Fauna {
   }
 
   private stepHerd(h: Herd, f: FrameState, dt: number, px: number, pz: number): void {
-    const spec = SPEC[h.sp];
+    const sp = h.sp;
+    const spec = SPEC[sp];
     const pl = f.player;
     const k = (rate: number) => 1 - Math.exp(-dt * rate);
-    // Something coming fast, or close: the whole herd runs. A lone fox or hare runs on its own.
+    // Something coming fast, or close: the whole herd runs (a flock of sandgrouse takes off). A lone
+    // fox or hare runs on its own; a tortoise just pulls its head in and waits.
     const fast = pl.speed > 4;
     let mx = 0;
     let mz = 0;
@@ -928,6 +1608,8 @@ export class Fauna {
       }
     }
     const w = this.world;
+    const flock = h.follow;
+    const herd = herdSp(sp);
     for (let i = 0; i < h.animals.length; i++) {
       const a = h.animals[i];
       const dx = a.x - px;
@@ -936,16 +1618,39 @@ export class Fauna {
       let targetYaw = a.yaw;
       let targetSpd = 0;
       let poseT = 0;
-      if (h.alarm > 0) {
+      if (h.alarm > 0 && sp === TORTOISE) {
+        a.state = 0;
+        poseT = 1;
+      } else if (h.alarm > 0) {
         a.state = 2;
         // away from the player, with a hare's jinks and a lizard's darts
         let away = Math.atan2(dx, dz) + (a.seed - 0.5) * 0.5;
-        if (h.sp === HARE) away += Math.sin(f.time * 3.1 + a.seed * 20) * 0.7;
-        if (h.sp === LIZARD) away += Math.sin(f.time * 7 + a.seed * 20) * 0.5;
+        if (sp === HARE) away += Math.sin(f.time * 3.1 + a.seed * 20) * 0.7;
+        if (sp === LIZARD || sp === SNAKE) away += Math.sin(f.time * 7 + a.seed * 20) * 0.5;
         targetYaw = away;
-        targetSpd = spec.run * (h.sp === ORYX ? 0.85 + a.seed * 0.15 : 1);
+        targetSpd = spec.run * (herd ? 0.85 + a.seed * 0.15 : 1);
+        // sandgrouse go up all together, climbing hard at first
+        if (sp === GROUSE) a.fly += (4 + a.seed * 4 - a.fly) * k(1.4);
+      } else if (a.fly > 0) {
+        // coming down again a little way on: glide in, slowing, and land running
+        a.fly = Math.max(0, a.fly - dt * 2.4);
+        targetSpd = Math.max(spec.walk, spec.run * Math.min(1, a.fly / 2.5));
+        if (a.fly === 0) {
+          a.state = 0;
+          a.t = 1 + Math.random() * 3;
+        }
       } else {
         a.t -= dt;
+        // a shepherd's goats keep round the shepherd: one left behind trots to catch up
+        const hd = flock ? Math.hypot(a.x - h.hx, a.z - h.hz) : 0;
+        if (flock && !flock.rest && (a.state !== 1 ? hd > spec.roam * 1.4 : Math.hypot(a.tx - h.hx, a.tz - h.hz) > spec.roam * 1.5)) {
+          const ang = Math.random() * TAU;
+          const rr = Math.sqrt(Math.random()) * spec.roam * 0.7;
+          a.tx = h.hx + Math.cos(ang) * rr;
+          a.tz = h.hz + Math.sin(ang) * rr;
+          a.state = 1;
+          a.t = 0;
+        }
         if (a.state === 1) {
           const ex = a.tx - a.x;
           const ez = a.tz - a.z;
@@ -954,10 +1659,10 @@ export class Fauna {
             a.t = 3 + Math.random() * 8;
           } else {
             targetYaw = Math.atan2(ex, ez);
-            targetSpd = spec.walk;
+            targetSpd = spec.walk * (hd > spec.roam * 2.2 ? 2.2 : 1);
           }
         } else if (a.t <= 0) {
-          if (Math.random() < (h.sp === LIZARD ? 0.3 : 0.6)) {
+          if (Math.random() < (sp === LIZARD || sp === TORTOISE ? 0.3 : 0.6) && !(flock && flock.rest)) {
             // wander off a little way from home
             const ang = Math.random() * TAU;
             const rr = Math.sqrt(Math.random()) * spec.roam;
@@ -967,11 +1672,20 @@ export class Fauna {
             a.t = 0;
           } else a.t = 3 + Math.random() * 8;
         }
-        // standing: an oryx grazes, a fox noses the sand, unless the player is near enough to watch
+        // standing: a grazer grazes, a fox noses the sand, a sandgrouse pecks, unless the player is near enough to watch
         if (a.state === 0) {
-          const grazing = h.sp === ORYX ? Math.sin(f.time * 0.21 + a.seed * 30) > -0.3 : h.sp === FOX ? Math.sin(f.time * 0.5 + a.seed * 30) > 0.4 : false;
+          const grazing =
+            herd ? Math.sin(f.time * 0.21 + a.seed * 30) > -0.3
+            : sp === FOX ? Math.sin(f.time * 0.5 + a.seed * 30) > 0.4
+            : sp === GROUSE ? Math.sin(f.time * 2.3 + a.seed * 40) > 0.1
+            : false;
           const wary = d < spec.flee * 1.8;
-          poseT = grazing && !wary ? (h.sp === ORYX ? 1 : 0.6) : 0;
+          poseT = grazing && !wary ? (herd ? 1 : sp === GROUSE ? 0.75 : 0.6) : 0;
+        }
+        // a tortoise someone walks right up to draws its head in all the same
+        if (sp === TORTOISE && d < spec.flee * 1.5) {
+          poseT = 1;
+          targetSpd = 0;
         }
       }
       // on the way round something in its path: keep to the heading that clears it a moment
@@ -986,28 +1700,29 @@ export class Fauna {
       const go = Math.abs(err) < 1.2 ? 1 : 0.3;
       a.spd += (targetSpd * go - a.spd) * k(a.state === 2 ? 3 : 1.5);
       if (a.spd < 0.01) a.spd = 0;
-      a.pose += (poseT - a.pose) * k(1.5);
+      a.pose += (poseT - a.pose) * k(sp === TORTOISE && poseT > a.pose ? 6 : 1.5);
       // keep a little apart from the others in the herd
-      let mx = 0;
-      let mz = 0;
+      let sx = 0;
+      let sz = 0;
+      const want = spec.gap;
       for (let j = 0; j < h.animals.length; j++) {
         if (j === i) continue;
         const b = h.animals[j];
-        const sx = a.x - b.x;
-        const sz = a.z - b.z;
-        const sd = Math.hypot(sx, sz);
-        const want = h.sp === ORYX ? 2.2 : 0.6;
+        const ox = a.x - b.x;
+        const oz = a.z - b.z;
+        const sd = Math.hypot(ox, oz);
         if (sd > 1e-3 && sd < want) {
-          mx += (sx / sd) * (want - sd) * k(2);
-          mz += (sz / sd) * (want - sd) * k(2);
+          sx += (ox / sd) * (want - sd) * k(2);
+          sz += (oz / sd) * (want - sd) * k(2);
         }
       }
-      mx += Math.sin(a.yaw) * a.spd * dt;
-      mz += Math.cos(a.yaw) * a.spd * dt;
+      sx += Math.sin(a.yaw) * a.spd * dt;
+      sz += Math.cos(a.yaw) * a.spd * dt;
       // never into a standing stone, a fallen column, a wall: round it, the same side each time
-      if (this.solid && d < AVOID_R && (mx !== 0 || mz !== 0)) {
+      // (a bird in the air has nothing to walk round)
+      if (this.solid && d < AVOID_R && a.fly < 0.6 && (sx !== 0 || sz !== 0)) {
         if (a.dodge === 0) a.dodge = a.seed < 0.5 ? 1 : -1;
-        if (steer(this.solid, a.x, a.z, a.y, mx, mz, spec.body, a.dodge)) {
+        if (steer(this.solid, a.x, a.z, a.y, sx, sz, spec.body, a.dodge)) {
           a.dodge = steered.side;
           a.avT = 0.8;
           if (steered.turn !== 0) a.avYaw = Math.atan2(steered.x - a.x, steered.z - a.z);
@@ -1024,16 +1739,23 @@ export class Fauna {
         a.x = steered.x;
         a.z = steered.z;
       } else {
-        a.x += mx;
-        a.z += mz;
+        a.x += sx;
+        a.z += sz;
       }
-      const running = a.spd > spec.walk * 1.5;
-      const stride = running ? spec.runStride : spec.stride;
-      a.ph = (a.ph + (a.spd * dt) / stride) % 1;
-      const gait = a.spd <= spec.walk ? a.spd / spec.walk : 1 + Math.min(1, (a.spd - spec.walk) / (spec.run - spec.walk));
+      let gait: number;
+      if (a.fly > 0) {
+        // wingbeats at their own pace; the shader reads a gait over 2 as flight
+        a.ph = (a.ph + dt * 6.5) % 1;
+        gait = 2 + Math.min(1, a.fly * 1.5);
+      } else {
+        const running = a.spd > spec.walk * 1.5;
+        const stride = running ? spec.runStride : spec.stride;
+        a.ph = (a.ph + (a.spd * dt) / stride) % 1;
+        gait = a.spd <= spec.walk ? a.spd / spec.walk : 1 + Math.min(1, (a.spd - spec.walk) / (spec.run - spec.walk));
+      }
       // the head follows the player, within reason
       let look = 0;
-      if (d < (h.sp === ORYX ? 45 : 16) && a.state !== 2) {
+      if (d < (herd && sp !== GOAT ? 45 : 16) && a.state !== 2 && sp !== SNAKE) {
         const c = Math.cos(a.yaw);
         const s = Math.sin(a.yaw);
         const ang = Math.atan2(-dx * c + dz * s, -dx * s - dz * c);
@@ -1042,13 +1764,17 @@ export class Fauna {
       a.look += (look - a.look) * k(3);
       const y = w.height(a.x, a.z);
       a.y = y;
+      const fade = h.pres * h.pres * (3 - 2 * h.pres) * (1 - ss(h.small ? SMALL_R - 60 : BIG_R - 120, h.small ? SMALL_R : BIG_R, d));
+      if (a.fly > 0) {
+        this.put(a, a.x, y + a.fly, a.z, 0, 1, 0, a.look, gait, a.pose, a.scale * fade);
+        continue;
+      }
       w.normal(a.x, a.z, this.nrm);
-      // stand mostly upright on a slope (a lizard lies flat to it)
-      const tilt = h.sp === LIZARD ? 1 : 0.45;
+      // stand mostly upright on a slope (what crawls lies flat to it)
+      const tilt = sp === LIZARD || sp === TORTOISE || sp === SNAKE ? 1 : 0.45;
       const ux = this.nrm.x * tilt;
       const uy = this.nrm.y * tilt + (1 - tilt);
       const uz = this.nrm.z * tilt;
-      const fade = h.pres * h.pres * (3 - 2 * h.pres) * (1 - ss(h.small ? SMALL_R - 60 : BIG_R - 120, h.small ? SMALL_R : BIG_R, d));
       this.put(a, a.x, y, a.z, ux, uy, uz, a.look, gait, a.pose, a.scale * fade);
     }
   }
@@ -1078,7 +1804,7 @@ export class Fauna {
   }
 
   private put(a: Animal, x: number, y: number, z: number, ux: number, uy: number, uz: number, look: number, gait: number, pose: number, scale: number, yaw = a.yaw, ph = a.ph): void {
-    if (scale < 0.01 || this.n >= CAP) return;
+    if (scale < 0.01 || this.n >= this.cap) return;
     const o = this.n * 4;
     this.iPos.arr[o] = x;
     this.iPos.arr[o + 1] = y;

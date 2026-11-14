@@ -1837,6 +1837,8 @@ export class Discoveries {
   private readonly cellPos = { x: 0, z: 0 };
   private readonly bankSample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private readonly springCache = new Map<number, Spring[]>();
+  /** Every cell's surface find as surfaceSite worked it out (null for an empty cell). */
+  private readonly placeCache = new Map<number, Landmark | null>();
   /** The rock caps over springs that are built now, by site key. */
   private readonly caps = new Map<number, Spring>();
   private scanT = 0;
@@ -3096,12 +3098,50 @@ export class Discoveries {
     return false;
   }
 
-  private buildSite(cx: number, cz: number): void {
+  /**
+   * The find on the surface of a cell, built yet or not: where it stands and what it is, or null
+   * for an empty cell. Decided from the cell alone (the same draws buildSite makes), so footpaths
+   * can be laid to finds the wanderer has not come near yet.
+   */
+  surfaceSite(cx: number, cz: number): Landmark | null {
+    const key = cellKey(cx, cz);
+    let p = this.placeCache.get(key);
+    if (p === undefined) {
+      p = null;
+      if (this.cellSite(cx, cz)) {
+        const at = this.placeSite(cx, cz, mulberry32(Math.floor(hash4(cx, cz, this.world.seed | 0, 7) * 4294967296)));
+        p = { key, kind: at.kind, x: at.x, z: at.z };
+      }
+      this.placeCache.set(key, p);
+    }
+    return p;
+  }
+
+  /** The surface finds (built or not) whose cells lie within r of (x, z). */
+  surfaceSitesNear(x: number, z: number, r: number, out: Landmark[]): Landmark[] {
+    out.length = 0;
+    const c0x = Math.floor((x - r) / CELL);
+    const c1x = Math.floor((x + r) / CELL);
+    const c0z = Math.floor((z - r) / CELL);
+    const c1z = Math.floor((z + r) / CELL);
+    for (let cz = c0z; cz <= c1z; cz++) {
+      for (let cx = c0x; cx <= c1x; cx++) {
+        const p = this.surfaceSite(cx, cz);
+        if (p && Math.hypot(p.x - x, p.z - z) <= r) out.push(p);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Where a cell's find settles and what kind it is. Takes the cell's own rng and leaves it where
+   * buildSite carries on from, so a find placed here and one built match exactly.
+   */
+  private placeSite(cx: number, cz: number, rng: () => number): { kind: string; x: number; z: number; onSalt: boolean } {
     this.cellSite(cx, cz);
     let x = this.cellPos.x;
     let z = this.cellPos.z;
     const w = this.world;
-    const rng = mulberry32(Math.floor(hash4(cx, cz, w.seed | 0, 7) * 4294967296));
     const s = w.sample(x, z, this.sample);
     const h = s.h;
     let mean = 0;
@@ -3153,10 +3193,16 @@ export class Discoveries {
       x = bx;
       z = bz;
     }
+    return { kind, x, z, onSalt: s.salt > 0.35 };
+  }
+
+  private buildSite(cx: number, cz: number): void {
+    const w = this.world;
+    const rng = mulberry32(Math.floor(hash4(cx, cz, w.seed | 0, 7) * 4294967296));
+    const { kind, x, z, onSalt } = this.placeSite(cx, cz, rng);
     const baseY = w.height(x, z);
     const ctx = new Ctx(w, x, z, baseY, rng, rng() * Math.PI * 2);
     ctx.stone.salt = (cx * 31 + cz * 17) & 1023;
-    const onSalt = s.salt > 0.35;
     switch (kind) {
       case 'ruins': buildRuins(ctx); break;
       case 'oasis': buildOasis(ctx); break;
