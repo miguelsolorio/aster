@@ -941,7 +941,7 @@ export function buildStreet(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   }
   if (!L.tower) {
     // nowhere on the lots: on a pad of its own (the twin houses' if need be)
-    const P = findPad(20, 14.4, uB1) ?? findPad(20, 14.4, uR0) ?? findPad(20, 11, uR0);
+    const P = findPad(20, 14.4, uB1) ?? findPad(20, 14.4, uR0) ?? findPad(18, 14.4, uR0) ?? findPad(20, 11, uR0); // (last resort: a pad a little shallower than the tower, whose base then sits a few metres onto the raw floor)
     if (P) {
       P.level();
       compactTower(Math.min(P.vIn, P.vOut), (x: number): number => P.x + x, Yf);
@@ -1687,6 +1687,7 @@ export function buildStreet(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     const open = (u: number, v: number, r: number): boolean => {
       const F = ground(u, v);
       if (!(F === F) || F > Yf + 0.6) return false;
+      if (Math.abs(c(u) - v) < 3.5 + r) return false; // (the lane stays open)
       if (pillars.some((q) => Math.hypot(q[0] - u, q[1] - v) < q[2] * 1.4 + r)) return false;
       if (lots.some((l) => l.used && u > l.u - r && u < l.u + PU + r && v > l.v - r && v < l.v + PV + r)) return false;
       if (pads.some((q) => u > q[0] - r && u < q[1] + r && v > q[2] - r && v < q[3] + r)) return false;
