@@ -87,6 +87,7 @@ export const TOWNSFOLK = {
     'Stay for the lamps. The streets are better after dark.',
     'My mother said never to trust a quiet wind.',
     'If you\'re looking for someone, ask at the square.',
+    'Somewhere out there a road of torches runs up into the snow. Villages at the top, they say.',
   ],
   /** Only to someone carrying a relic from under the sand. */
   relic: [

@@ -83,13 +83,41 @@ float hazeAt(float y) {
   return mix(1.0, 0.3, smoothstep(250.0, 800.0, y));
 }
 
-// Snow cover 0..1: above a wandering snow line, on ground gentle enough to hold it.
-// The higher it is, the steeper the slope snow clings to.
+// The frostland: (x, z) of its mountain, the radius inside which the ground is under snow, and
+// the radius beyond which there is none (w = 0 turns it off). Between them the snow thins out.
+uniform vec4 uFrost;
+
+// 0 when the point is nowhere near the frostland, so the snow work can be skipped.
+bool inFrost(vec3 p) {
+  vec2 d = p.xz - uFrost.xy;
+  return uFrost.w > 0.0 && dot(d, d) < uFrost.w * uFrost.w;
+}
+
+// Snow lying on open ground in the frostland, 0..1. Deep inside it is everywhere the ground is
+// not steep. Toward the edge it thins: it breaks into drifts that settle in the dune troughs and
+// on level ground, while the steeper faces and crests stay bare sand, then dwindles to dust.
+float frostSnowAt(vec3 p, float ny) {
+  float t = 1.0 - smoothstep(uFrost.z, uFrost.w, length(p.xz - uFrost.xy)); // 1 inside, 0 at the edge
+  if (t <= 0.0) return 0.0;
+  float n = 0.15 + 0.7 * fbm(p.xz * 0.0045 + vec2(3.1, 8.7)) + 0.15 * (vnoise(p.xz * 0.09) - 0.5);
+  float th = 1.0 - t; // the noise must beat this for snow to settle
+  float drift = 1.0 - smoothstep(n - 0.14, n + 0.14, th);
+  float hold = mix(0.9, 0.45, t);
+  return drift * smoothstep(hold - 0.07, hold + 0.07, ny);
+}
+
+// Snow cover 0..1: above a wandering snow line, on ground gentle enough to hold it, and over the
+// ground of the frostland. The higher the snow line, the steeper the slope snow clings to.
 float snowAt(vec3 p, float ny) {
-  float sh = p.y + 70.0 * (fbm(p.xz * 0.006 + vec2(9.2, -4.4)) - 0.5) + 14.0 * (vnoise(p.xz * 0.07) - 0.5);
-  float s = smoothstep(SNOW_LINE, SNOW_LINE + 70.0, sh);
-  float hold = mix(0.8, 0.52, smoothstep(SNOW_LINE, SNOW_LINE + 260.0, p.y));
-  return s * smoothstep(hold - 0.05, hold + 0.05, ny);
+  float s = 0.0;
+  if (p.y > SNOW_LINE - 50.0) {
+    float sh = p.y + 70.0 * (fbm(p.xz * 0.006 + vec2(9.2, -4.4)) - 0.5) + 14.0 * (vnoise(p.xz * 0.07) - 0.5);
+    s = smoothstep(SNOW_LINE, SNOW_LINE + 70.0, sh);
+    float hold = mix(0.8, 0.52, smoothstep(SNOW_LINE, SNOW_LINE + 260.0, p.y));
+    s *= smoothstep(hold - 0.05, hold + 0.05, ny);
+  }
+  if (inFrost(p)) s = max(s, frostSnowAt(p, ny));
+  return s;
 }
 `;
 
@@ -518,7 +546,7 @@ void main() {
     col = mix(col, worn, track);
   }
   // ---- snow on the high peaks
-  if (p.y > SNOW_LINE - 50.0) {
+  if (p.y > SNOW_LINE - 50.0 || inFrost(p)) {
     float snow = snowAt(p, n.y);
     col = mix(col, mix(uSnowShade * (0.85 + 0.15 * ambS), uSnowLit, l), snow);
   }
