@@ -677,6 +677,22 @@ export const lampGeometry = (): THREE.BufferGeometry => {
   return b.done();
 };
 
+/** The wanderer's trim: closed bands worn round the figure, each by height, radius, front-to-back squash and thickness. */
+export const trimGeometry = (bands: { y: number; r: number; flat: number; w: number; col: V3; arc?: number }[]): THREE.BufferGeometry => {
+  const b = new Build();
+  const N = 28;
+  for (const { y, r, flat, w, col, arc = Math.PI } of bands) {
+    const ring: V3[] = [];
+    for (let i = 0; i <= N; i++) {
+      const a = ((i / N) * 2 - 1) * arc;
+      ring.push([Math.sin(a) * r, y, Math.cos(a) * r * flat]);
+    }
+    b.tube(ring, ring.map(() => w), 4, col, Math.PI / 4, [1, 0.55]);
+  }
+  return b.done();
+};
+export const TRIM = { sash: OCHRE, scarf: [0.72, 0.4, 0.24] as V3 };
+
 /** A relic from under the sand: two crossed spindles of old gold, hung by its middle. */
 export const relicGeometry = (): THREE.BufferGeometry => {
   const b = new Build();

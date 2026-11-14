@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { PlayerState, Uniforms } from './contract';
 import { strideLength } from './player';
 import { STYLE_GLSL } from '../render/styleGlsl';
-import { CHOSEN, boardGeometry, carpetGeometry, lampGeometry, pickGeometry, relicGeometry, rollGeometry, rugMaterial, solidMaterial } from './equipment';
+import { CHOSEN, TRIM, boardGeometry, carpetGeometry, lampGeometry, pickGeometry, relicGeometry, rollGeometry, rugMaterial, solidMaterial, trimGeometry } from './equipment';
 
 // The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
 // legs, a plain white face and a round hood.
@@ -209,7 +209,9 @@ function drapeGeometry(d: Drape): THREE.BufferGeometry {
   const rag = (i: number) => {
     const k = closed ? i % NU : i;
     const h = Math.sin(k * 127.1 + d.top * 31.7) * 43758.5453;
-    return k % 2 === 0 ? d.rag * (0.3 + 0.7 * (h - Math.floor(h))) : 0;
+    void h;
+    // a clean scalloped hem: seven soft points round the cloth, not a ragged tear
+    return d.rag * (0.5 + 0.5 * Math.sin((k / NU) * Math.PI * 14 + d.top * 10));
   };
   for (let j = 0; j <= NV; j++) {
     const v = j / NV;
@@ -240,9 +242,9 @@ function drapeGeometry(d: Drape): THREE.BufferGeometry {
 }
 
 // The dress: narrow through the body, flaring late into a wide torn hem at mid-shin.
-const DRESS: Drape = { top: COLLAR, hem: HEM, r0: 0.075, r1: 0.35, curve: 1.25, arc: Math.PI, rag: 0.11, flat: 0.88 };
+const DRESS: Drape = { top: COLLAR, hem: HEM, r0: 0.07, r1: 0.33, curve: 1.45, arc: Math.PI, rag: 0.06, flat: 0.88 };
 // The cloak: a mantle off the shoulders to the knee, open down the front, one piece with the hood.
-const CLOAK: Drape = { top: COLLAR + 0.03, hem: 0.74, r0: 0.09, r1: 0.25, curve: 0.85, arc: 2.35, rag: 0.07, flat: 0.92 };
+const CLOAK: Drape = { top: COLLAR + 0.03, hem: 0.74, r0: 0.1, r1: 0.27, curve: 0.75, arc: 2.35, rag: 0.05, flat: 0.92 };
 
 const SHOULDER_Y = 1.3 - HIP;
 const DOWN = new THREE.Vector3(0, -1, 0);
@@ -321,11 +323,11 @@ export class Figure {
     for (const sx of [-1, 1]) {
       const hip = new THREE.Group();
       hip.position.set(sx * 0.065, HIP, 0);
-      add(hip, new THREE.CylinderGeometry(0.022, 0.019, THIGH, 6).translate(0, -THIGH / 2, 0), cloth);
+      add(hip, new THREE.CylinderGeometry(0.03, 0.024, THIGH, 8).translate(0, -THIGH / 2, 0), cloth);
       const knee = new THREE.Group();
       knee.position.y = -THIGH;
-      add(knee, new THREE.CylinderGeometry(0.019, 0.016, SHIN - 0.01, 6).translate(0, -(SHIN - 0.01) / 2, 0), cloth);
-      add(knee, new THREE.BoxGeometry(0.042, 0.028, 0.13).translate(0, -SHIN + 0.014, 0.04), cloth);
+      add(knee, new THREE.CylinderGeometry(0.024, 0.02, SHIN - 0.01, 8).translate(0, -(SHIN - 0.01) / 2, 0), cloth);
+      add(knee, new THREE.BoxGeometry(0.056, 0.036, 0.15).translate(0, -SHIN + 0.014, 0.04), cloth);
       hip.add(knee);
       this.group.add(hip);
       this.hips.push(hip);
@@ -355,6 +357,14 @@ export class Figure {
 
     // What it has been given. The designs live in equipment.ts.
     const solid = solidMaterial(u);
+    // trim: a warm sash at the waist, showing through the open front of the cloak, and a scarf at the neck
+    const dressR = (y: number) => DRESS.r0 + (DRESS.r1 - DRESS.r0) * Math.pow((DRESS.top - y) / (DRESS.top - DRESS.hem), DRESS.curve);
+    const trim = add(t, trimGeometry([
+      { y: 1.04 - HIP, r: dressR(1.04) + 0.012, flat: DRESS.flat, w: 0.024, col: TRIM.sash, arc: 1.0 },
+      { y: 1.0 - HIP, r: dressR(1.0) + 0.012, flat: DRESS.flat, w: 0.014, col: TRIM.sash, arc: 1.0 },
+      { y: COLLAR - 0.045 - HIP, r: 0.108, flat: 0.95, w: 0.03, col: TRIM.scarf },
+    ]), solid);
+    trim.position.y = 0;
     const empty = new THREE.BufferGeometry();
     // the board on the back: stood on end between the shoulders, nose up, leaning a little
     this.boardBack = add(t, empty, solid);
