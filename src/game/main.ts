@@ -17,6 +17,7 @@ import { Caravans, ROLE_KEEPER, ROLE_PILGRIM } from '../city/caravans';
 import { Waymarks } from '../city/waymarks';
 import { People } from '../city/people';
 import { Figure } from './figure';
+import { HEADROOM } from '../city/rooms';
 import { CollisionOverlay } from './collisionDebug';
 import { AudioEngine } from '../audio/audio';
 import { UI } from '../ui/ui';
@@ -906,6 +907,8 @@ function start() {
   let airCam = 0;
   let camLift = 0; // how much steeper the eye looks down while a wall is behind it, eased
   let clearDist = -1; // how far back the eye sits clear of walls on the surface, eased
+  let roomCam = 0; // 0..1 how far the eye has settled into a room's closer, higher view, eased
+  let roomReach = 9; // how far back the eye may sit in the room you are in
   let deepDist = -1; // how far back the eye sits underground, eased; -1 up on the sand
   let figNear = false; // the eye is drawn in so close underground that the figure is not shown
   let underK = 0; // 0 under the sky .. 1 well down in a deep, eased
@@ -1093,6 +1096,12 @@ function start() {
         st.pos.y = ceil - 1.9;
         if (st.vel.y > 0) st.vel.y = 0;
       }
+      // and a room its ceiling (and its doorway a lintel): no rising through to the roof
+      const roomCeil = cities.ceilAt(st.pos.x, st.pos.z, st.pos.y);
+      if (st.pos.y > roomCeil - HEADROOM - 0.02) {
+        st.pos.y = roomCeil - HEADROOM - 0.02;
+        if (st.vel.y > 0) st.vel.y = 0;
+      }
     }
 
     // Riding leaves one clean line in the sand; carving widens it and throws spray to the outside.
@@ -1198,7 +1207,17 @@ function start() {
     tmp.copy(st.pos);
     tmp.y += 1.5;
     camTarget.lerp(tmp, 1 - Math.exp(-dt * 12));
-    const reach = camDist * (1 + 0.6 * airCam);
+    // Inside a room the roof is drawn away and the eye comes in closer and looks down from a
+    // little higher, eased in as you cross the threshold and back out as you leave.
+    cities.interior(dt, st.pos, camera.position);
+    {
+      const rm = cities.inside;
+      if (rm) roomReach = Math.min(9, Math.max(3.2, 0.55 * Math.min(rm.x1 - rm.x0, rm.z1 - rm.z0) + 1.6));
+      roomCam += ((rm ? 1 : 0) - roomCam) * (1 - Math.exp(-dt * 3));
+    }
+    const reach0 = camDist * (1 + 0.6 * airCam);
+    const reach = reach0 + (Math.min(reach0, roomReach) - reach0) * roomCam;
+    const pitch0 = camPitch + (Math.max(camPitch, 0.5) - camPitch) * roomCam;
     // Against a wall the eye is lifted: of a few steeper angles, the one that leaves the most
     // room (a little steeper costs a little room) is eased into, so the figure is seen from above
     // the wall instead of from inside it. Open ground leaves the angle alone.
@@ -1207,7 +1226,7 @@ function start() {
       let maxFree = 0;
       const frees = [0, 0, 0, 0];
       for (let l = 0; l <= 3; l++) {
-        const pitch = Math.min(Math.max(camPitch, 1.05), camPitch + l * 0.3);
+        const pitch = Math.min(Math.max(pitch0, 1.05), pitch0 + l * 0.3);
         const c2 = Math.cos(pitch);
         const dx = Math.sin(camYaw) * c2;
         const dy = Math.sin(pitch);
@@ -1237,7 +1256,7 @@ function start() {
       if (maxFree < Infinity) for (let l = 0; l <= 3; l++) if (frees[l] >= Math.max(1.5, maxFree * 0.85)) bestLift = l * 0.3;
       camLift += (bestLift - camLift) * (1 - Math.exp(-dt * (bestLift > camLift ? 5 : 1.5)));
     } else camLift = 0;
-    const lp = Math.min(camPitch + camLift, Math.max(camPitch, 1.05));
+    const lp = Math.min(pitch0 + camLift, Math.max(pitch0, 1.05));
     const cp = Math.cos(lp);
     tmp2.set(Math.sin(camYaw) * cp, Math.sin(lp), Math.cos(camYaw) * cp);
     // pull back and rise a little while airborne
