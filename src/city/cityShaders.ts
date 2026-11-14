@@ -387,6 +387,10 @@ uniform float uFog;
 uniform float uTime;
 uniform float uViewH;
 uniform float uMinPx;
+#ifdef CUT
+uniform vec4 uCutBox;
+uniform vec2 uCutY;
+#endif
 varying vec2 vUv;
 varying vec3 vCol;
 varying float vSoft;
@@ -398,6 +402,10 @@ void main() {
   // windows use the same seeded threshold as the openings in the masonry shader
   float th = kind > 0.5 && kind < 1.5 ? 0.15 + 0.3 * fract(aGlow.z * 7.31) : 0.1 + 0.12 * aGlow.z;
   float on = smoothstep(th, th + 0.1, uNight);
+#ifdef CUT
+  // the cut-away of the room the wanderer is in takes the lights above its ceiling with it
+  if (position.y > uCutY.x && all(greaterThan(position.xz, uCutBox.xy)) && all(lessThan(position.xz, uCutBox.zw))) on *= 1.0 - uCutY.y;
+#endif
 #ifdef NEAR_GLOW
   // close up the window geometry itself glows; the points take over with distance
   if (kind > 0.5 && kind < 1.5) on *= smoothstep(160.0, 480.0, dist);
@@ -490,13 +498,13 @@ export function createWaterMaterial(shared: Uniforms): THREE.ShaderMaterial {
   });
 }
 
-export function createGlowMaterial(shared: Uniforms, near: boolean): THREE.ShaderMaterial {
+export function createGlowMaterial(shared: Uniforms, near: boolean, cut?: CutUniforms): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: withShared(shared, { uViewH: { value: 1080 }, uMinPx: { value: near ? 1.5 : 3.2 } }),
+    uniforms: withShared(shared, { uViewH: { value: 1080 }, uMinPx: { value: near ? 1.5 : 3.2 }, ...(cut ? { uCutBox: cut.uCutBox, uCutY: cut.uCutY } : {}) }),
     userData: { minPx: near ? 1.5 : 3.2 },
     vertexShader: glowVert,
     fragmentShader: glowFrag,
-    defines: near ? { NEAR_GLOW: 1 } : {},
+    defines: { ...(near ? { NEAR_GLOW: 1 } : {}), ...(cut ? { CUT: 1 } : {}) },
     transparent: true,
     depthWrite: false,
     blending: THREE.AdditiveBlending,

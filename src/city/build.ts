@@ -754,6 +754,20 @@ function circleLoop(cx: number, cz: number, r: number, n: number): Loop {
 }
 
 /** Flat roof over a (convex) loop at height y, as a fan from its centre. */
+/** A flat roof at y over the polygon (xs, zs), with the rectangular hatch of the stair out to it left open. */
+function capHatched(w: Writer, xs: number[], zs: number[], y: number, h: { x0: number; z0: number; x1: number; z1: number }): void {
+  const contour = xs.map((x, i) => new THREE.Vector2(x, zs[i]));
+  const hole = [new THREE.Vector2(h.x0, h.z0), new THREE.Vector2(h.x1, h.z0), new THREE.Vector2(h.x1, h.z1), new THREE.Vector2(h.x0, h.z1)];
+  const pts = [...contour, ...hole];
+  for (const [a, b, c] of THREE.ShapeUtils.triangulateShape(contour, [hole])) {
+    const A = pts[a], B = pts[b], C = pts[c];
+    // wound the way every upward face here is: the cross product's y comes out negative
+    const up = (B.y - A.y) * (C.x - A.x) - (B.x - A.x) * (C.y - A.y) < 0;
+    if (up) w.tri(A.x, y, A.y, B.x, y, B.y, C.x, y, C.y, 0, 1, 0);
+    else w.tri(A.x, y, A.y, C.x, y, C.y, B.x, y, B.y, 0, 1, 0);
+  }
+}
+
 function capLoop(w: Writer, L: Loop, y: number): void {
   const n = L.x.length;
   for (let i = 0; i < n; i++) {
@@ -1456,7 +1470,8 @@ export class NearBuilder {
       loopWalls(w, loop, faces, hid, FOOT, yt, holes);
 
       w.mat = MAT.roof;
-      capLoop(w, loop, b.h);
+      if (room?.hatch) capHatched(w, loop.x, loop.z, b.h, room.hatch);
+      else capLoop(w, loop, b.h);
       w.mat = wallMat;
       if (L.pb > 0) loopParapet(w, loop, faces, b.h, yt, 0.3, 0.07);
       // plaster bands: under the roof line, and on the storey line of taller houses
@@ -1473,7 +1488,8 @@ export class NearBuilder {
       for (let fi = 0; fi < 4; fi++) if (!hid[fi]) wallFace(w, faces[fi], FOOT, top, holes[fi]);
       // the walkable roof, exactly at h
       w.mat = landmark || gate ? MAT.stone : MAT.roof;
-      w.quad(L.x0, b.h, L.z0, L.x1, b.h, L.z0, L.x1, b.h, L.z1, L.x0, b.h, L.z1, 0, 1, 0);
+      if (room?.hatch) capHatched(w, [L.x0, L.x1, L.x1, L.x0], [L.z0, L.z0, L.z1, L.z1], b.h, room.hatch);
+      else w.quad(L.x0, b.h, L.z0, L.x1, b.h, L.z0, L.x1, b.h, L.z1, L.x0, b.h, L.z1, 0, 1, 0);
       w.mat = wallMat;
       if (L.pb > 0) this.parapet(L.x0, L.z0, L.x1, L.z1, b.h, L, faces);
     }
