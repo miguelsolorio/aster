@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { frostCover, frostRegion, frostUniform } from '../world/frost';
 import type { FrameState, Uniforms } from './contract';
 import { DayCycle } from './daycycle';
 import { Player, type PlayerInput } from './player';
@@ -181,6 +182,8 @@ function start() {
   cities.setFocus(player.state.pos.x, player.state.pos.z);
   cavernUniforms(u); // likewise for the caverns, which the discoveries fill in
   FootpathNet.uniforms(u); // and for the footpaths out to the finds
+  const frost = frostRegion(world);
+  u.uFrost = { value: frostUniform(frost) }; // and where the snow lies on the open ground
   const bake = new HeightBake(renderer, u);
   const trail = new TrailField(renderer, u);
   const clipmap = new Clipmap(u);
@@ -223,7 +226,8 @@ function start() {
   const massifs = new Massifs(world, u);
   // Rocks and cacti out in the open, kept off the finds and their caverns, and off where you start.
   const props = new Props(world, u);
-  props.blocked = (x, z, r) => discoveries.claimed(x, z, r);
+  // (and out of the snow, where no cactus grows: the frostland plants its own pines)
+  props.blocked = (x, z, r) => discoveries.claimed(x, z, r) || (frost !== null && frostCover(frost, x, z) > 0.25);
   props.keepClear(player.state.pos.x, player.state.pos.z, 25);
   scene.add(clipmap.group, cities.group, people.group, caravans.group, waymarks.group, discoveries.group, props.group, wildlife.group, fauna.group, dust.group, splash.group, massifs.group);
 

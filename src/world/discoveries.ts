@@ -6,11 +6,12 @@ import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import { WORLD_SCALE } from './scale';
 import { STYLE_GLSL } from '../render/styleGlsl';
-import { MAX_CAVERNS, TERRAIN, writeCaverns, type Cave, type Cavern, type Massif } from './surface';
+import { MAX_CAVERNS, TERRAIN, writeCaverns, type Cave, type Cavern, type DesertWorld, type Massif } from './surface';
 import { rockCapVert, terrainFrag } from '../render/terrainShaders';
 import { CITY_CELL } from '../city/placement';
 import { Solids, type SolidKind } from './solids';
 import { createDeep } from './deep/index';
+import { frostLayout, frostRegion, frostCover, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
 import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types';
 
 const CELL = 900 * WORLD_SCALE;
@@ -1309,6 +1310,317 @@ function buildHamlet(c: Ctx): void {
   }
 }
 
+// ------------------------------------------------------------------ the frostland
+
+/** Width of the road across the open desert and up the mountain (m). */
+const WAY_W = 4.2;
+const CLIMB_W = 3.4;
+/** Metres the road is laid above the ground, so it never sinks into the dunes. */
+const WAY_LIFT = 0.28;
+/** Points of the way in one chunk of road (a chunk is built and dropped as a whole). */
+const FROST_CHUNK = 34;
+/** Keys of the frost sites count down from here, clear of every other kind. */
+const FROST_KEY = -1e12;
+/** The frostland wakes (its layout is worked out) when the wanderer comes this close to its mountain. */
+const FROST_WAKE = 9500;
+
+/** A standing torch: a post, an iron cup and a flame that glows at night. */
+function frostTorch(c: Ctx, u: number, v: number, tall = 1): void {
+  const st = c.stone;
+  const g = c.g(u, v);
+  st.set(0.5, 0.36, 0.24, 2, 0.02);
+  c.prim(UNIT_BOX, u, g + 1.05 * tall, v, 0.16, 2.1 * tall, 0.16);
+  st.set(0.2, 0.18, 0.17, 1, 0.02);
+  c.prim(UNIT_CYL, u, g + 2.18 * tall, v, 0.3, 0.2, 0.3);
+  st.set(1, 1, 1, 3, 0);
+  c.prim(UNIT_BLOB, u, g + 2.42 * tall, v, 0.17, 0.3, 0.17);
+  c.glow(u, g + 2.5 * tall, v, 1.7);
+}
+
+/** A pine, its boughs lying under snow. s scales it. */
+function frostPine(c: Ctx, u: number, v: number, s: number): void {
+  const st = c.stone;
+  const g = c.g(u, v);
+  st.set(0.4, 0.28, 0.2, 2, 0.03);
+  c.prim(UNIT_CYL, u, g + 0.9 * s, v, 0.28 * s, 1.8 * s, 0.28 * s);
+  for (let t = 0; t < 3; t++) {
+    const y = g + (2.1 + t * 1.45) * s;
+    const rad = (2.0 - t * 0.55) * s;
+    const h = 2.7 * s;
+    st.set(0.2, 0.46, 0.3, 0, 0.1);
+    c.prim(UNIT_CONE, u, y, v, rad, h, rad, c.rng() * 1.5);
+    st.set(1.25, 1.27, 1.3, 1, 0.06);
+    c.prim(UNIT_CONE, u, y + h * 0.16, v, rad * 0.8, h * 0.72, rad * 0.8, 0.4);
+  }
+}
+
+/** A snow-capped boulder. */
+function frostBoulder(c: Ctx, u: number, v: number, s: number): void {
+  const st = c.stone;
+  const g = c.g(u, v);
+  const sy = s * c.r(0.55, 0.9);
+  st.set(0.62, 0.6, 0.6, 1, 0.18);
+  c.prim(UNIT_BLOB, u, g + sy * 0.4, v, s, sy, s * c.r(0.8, 1.1), c.rng() * 3);
+  st.set(1.25, 1.27, 1.3, 1, 0.12);
+  c.prim(UNIT_BLOB, u, g + sy * 0.95, v, s * 0.78, sy * 0.45, s * 0.7, c.rng() * 3);
+}
+
+/** The tall gate where the road crosses into the snow: two stone pillars, a snowy lintel, braziers. */
+function frostGate(c: Ctx, p: FrostPoint, ang: number): void {
+  const st = c.stone;
+  const u0 = p.x - c.x;
+  const v0 = p.z - c.z;
+  const nx = -Math.sin(ang);
+  const nz = Math.cos(ang);
+  const half = WAY_W / 2 + 2.2;
+  const ry = -ang;
+  const g0 = c.g(u0, v0);
+  for (const side of [-1, 1]) {
+    const u = u0 + nx * half * side;
+    const v = v0 + nz * half * side;
+    const g = c.g(u, v);
+    st.set(0.72, 0.68, 0.64, 1, 0.1);
+    c.prim(UNIT_BOX, u, g + 2.6, v, 1.2, 6.2, 1.2, ry);
+    st.set(0.55, 0.52, 0.5, 1, 0.1);
+    c.prim(UNIT_BOX, u, g + 0.5, v, 1.7, 1.4, 1.7, ry);
+    st.set(1.25, 1.27, 1.3, 1, 0.08);
+    c.prim(UNIT_BOX, u, g + 5.85, v, 1.5, 0.5, 1.5, ry);
+    st.set(0.2, 0.18, 0.17, 1, 0.02);
+    c.prim(UNIT_CYL, u, g + 6.3, v, 0.55, 0.3, 0.55);
+    st.set(1, 1, 1, 3, 0);
+    c.prim(UNIT_BLOB, u, g + 6.75, v, 0.3, 0.5, 0.3);
+    c.glow(u, g + 6.9, v, 3.6);
+  }
+  const top = g0 + 5.2;
+  st.set(0.66, 0.62, 0.58, 1, 0.1);
+  c.prim(UNIT_BOX, u0, top, v0, 1, 0.9, half * 2 + 0.8, ry + Math.PI / 2);
+  st.set(1.25, 1.27, 1.3, 1, 0.08);
+  c.prim(UNIT_BOX, u0, top + 0.6, v0, 0.8, 0.4, half * 2 + 0.2, ry + Math.PI / 2);
+}
+
+/**
+ * A stretch of the road: the worn ribbon over the ground, a pair of torches every few paces,
+ * and pines and boulders along it where the snow lies (more of them the deeper it is).
+ */
+function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): void {
+  const st = c.stone;
+  const { way, region } = layout;
+  const w = c.world;
+  const px = (p: FrostPoint) => p.x - c.x;
+  const pz = (p: FrostPoint) => p.z - c.z;
+  const dirAt = (i: number) => {
+    const a = way[Math.max(0, i - 1)];
+    const b = way[Math.min(way.length - 1, i + 1)];
+    return Math.atan2(b.z - a.z, b.x - a.x);
+  };
+  // the ribbon: cut into short strips so it hugs the dunes and the mountain's flank
+  const SUB = 3;
+  for (let i = i0; i < i1; i++) {
+    const a = way[i];
+    const b = way[i + 1];
+    const cover = frostCover(region, (a.x + b.x) / 2, (a.z + b.z) / 2);
+    const hw = (i >= layout.climbAt ? CLIMB_W : WAY_W) / 2;
+    // pale packed sand on the desert side, dark trodden gravel in the snow
+    const k = 1 - cover;
+    const m = 0.06 * Math.sin(i * 1.7);
+    st.set(0.4 + 0.4 * k + m, 0.4 + 0.36 * k + m, 0.42 + 0.26 * k + m, 1, 0.03);
+    const aa = dirAt(i);
+    let ab = dirAt(i + 1);
+    ab = aa + Math.atan2(Math.sin(ab - aa), Math.cos(ab - aa));
+    const edge = (t: number, s: number): [number, number, number] => {
+      const ang = aa + (ab - aa) * t;
+      const x = a.x + (b.x - a.x) * t - Math.sin(ang) * hw * s;
+      const z = a.z + (b.z - a.z) * t + Math.cos(ang) * hw * s;
+      return [x - c.x, w.height(x, z) - c.baseY + WAY_LIFT, z - c.z];
+    };
+    let a0 = edge(0, -1);
+    let a1 = edge(0, 1);
+    for (let j = 1; j <= SUB; j++) {
+      const b0 = edge(j / SUB, -1);
+      const b1 = edge(j / SUB, 1);
+      for (const q of [a0, b0, a1, a1, b0, b1]) st.vert(q[0], q[1], q[2]);
+      a0 = b0;
+      a1 = b1;
+    }
+  }
+  // the torches, and the gate
+  for (let i = i0; i <= i1; i++) {
+    const p = way[i];
+    const ang = dirAt(i);
+    if (i === layout.gateAt) frostGate(c, p, ang);
+    if (i % 3 !== 0 || Math.abs(i - layout.gateAt) < 3) continue;
+    const off = (i >= layout.climbAt ? CLIMB_W : WAY_W) / 2 + 1.2;
+    for (const side of [-1, 1]) {
+      frostTorch(c, px(p) - Math.sin(ang) * off * side, pz(p) + Math.cos(ang) * off * side);
+    }
+  }
+  // pines and boulders in the snow, a few frosted ones further out
+  const s: SurfaceSample = { h: 0, rock: 0, salt: 0 };
+  const river = (w as { river?: (x: number, z: number) => number }).river;
+  for (let i = i0; i <= i1; i += 2) {
+    const p = way[i];
+    const cover = frostCover(region, p.x, p.z);
+    if (cover <= 0.2) continue;
+    const ang = dirAt(i);
+    const nx = -Math.sin(ang);
+    const nz = Math.cos(ang);
+    const tx = Math.cos(ang);
+    const tz = Math.sin(ang);
+    const tries = c.rng() < 0.3 + 0.9 * cover ? 1 + Math.floor(c.rng() * (1 + 2 * cover)) : 0;
+    for (let k = 0; k < tries; k++) {
+      const side = c.rng() < 0.5 ? -1 : 1;
+      const lat = side * c.r(9, 20 + 55 * cover);
+      const al = c.r(-12, 12);
+      const x = p.x + nx * lat + tx * al;
+      const z = p.z + nz * lat + tz * al;
+      if (river && river.call(w, x, z) < 60) continue;
+      w.sample(x, z, s);
+      if (s.rock > 0.5 || s.salt > 0.3) continue;
+      if (c.rng() < 0.82) frostPine(c, x - c.x, z - c.z, c.r(0.8, 1.5) * (0.8 + 0.4 * cover));
+      else frostBoulder(c, x - c.x, z - c.z, c.r(1.2, 3));
+    }
+  }
+}
+
+/** One village: houses either side of the road, a fire pit, lamps at the doors, and for the high one a hold. */
+function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
+  const village = layout.villages[vi];
+  const st = c.stone;
+  const { way } = layout;
+  const ang = village.yaw;
+  const Tx = Math.cos(ang);
+  const Tz = Math.sin(ang);
+  const Nx = -Tz;
+  const Nz = Tx;
+  const ry = -ang;
+  const ox = village.x - c.x;
+  const oz = village.z - c.z;
+  c.foot = 70;
+  const n = village.kind === 'mid' ? 8 : village.kind === 'gate' ? 6 : 4;
+  const hw = CLIMB_W / 2;
+  for (let k = 0; k < n; k++) {
+    const side = k % 2 === 0 ? -1 : 1;
+    const a = (Math.floor(k / 2) - (Math.ceil(n / 2) - 1) / 2) * 11.5 + c.r(-1.5, 1.5);
+    const off = side * (hw + c.r(7.5, 10));
+    const w = c.r(6, 8);
+    const d = c.r(5, 6.4);
+    const wallH = c.r(2.6, 3.2);
+    const hx = ox + Tx * a + Nx * off;
+    const hz = oz + Tz * a + Nz * off;
+    // local (x along the road, z across it) to the site's frame
+    const at = (lx: number, lz: number): [number, number] => [hx + Tx * lx + Nx * lz, hz + Tz * lx + Nz * lz];
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (const [lx, lz] of [[-w / 2, -d / 2], [w / 2, -d / 2], [-w / 2, d / 2], [w / 2, d / 2], [0, 0]] as const) {
+      const [u, v] = at(lx, lz);
+      const gh = c.g(u, v);
+      lo = Math.min(lo, gh);
+      hi = Math.max(hi, gh);
+    }
+    const floor = hi + 0.15;
+    // footing: a stone plinth carries the house level over the slope
+    st.set(0.6, 0.57, 0.55, 1, 0.1);
+    c.prim(UNIT_BOX, hx, (lo - 1.2 + floor) / 2, hz, w + 0.7, floor - lo + 1.2, d + 0.7, ry);
+    // walls: timber, with a darker stone course at the foot
+    st.set(0.5, 0.39, 0.31, 2, 0.05);
+    c.prim(UNIT_BOX, hx, floor + wallH / 2, hz, w, wallH, d, ry);
+    // roof: two snow-laden slopes meeting at a ridge along the road
+    const th = 0.62;
+    const half = d / 2 + 0.55;
+    const run = half / Math.cos(th);
+    const ridge = floor + wallH + 0.1 + half * Math.tan(th) * 0.5;
+    for (const s of [-1, 1]) {
+      const [u, v] = at(0, s * (half / 2));
+      st.set(1.18, 1.2, 1.24, 1, 0.06);
+      c.prim(UNIT_BOX, u, ridge, v, w + 1.1, 0.34, run, ry, s * th);
+    }
+    st.set(0.46, 0.34, 0.24, 2, 0.04);
+    {
+      const [u, v] = at(0, 0);
+      c.prim(UNIT_BOX, u, floor + wallH + 0.1 + half * Math.tan(th) + 0.08, v, w + 1.1, 0.22, 0.4, ry);
+    }
+    // chimney
+    {
+      const [u, v] = at(w * 0.28, -side * d * 0.12);
+      st.set(0.6, 0.57, 0.55, 1, 0.08);
+      c.prim(UNIT_BOX, u, floor + wallH + 1.4, v, 0.8, 2.2, 0.8, ry);
+      st.set(1.25, 1.27, 1.3, 1, 0.06);
+      c.prim(UNIT_BOX, u, floor + wallH + 2.6, v, 1, 0.3, 1, ry);
+    }
+    // the door and two lit windows on the side that faces the road
+    const face = -side;
+    {
+      const [u, v] = at(0, face * (d / 2 + 0.02));
+      st.set(0.14, 0.1, 0.08, 2, 0);
+      c.solid = false;
+      c.prim(UNIT_BOX, u, floor + 1.0, v, 1.2, 2.0, 0.3, ry);
+      c.solid = true;
+    }
+    for (const wx of [-w * 0.3, w * 0.3]) {
+      const [u, v] = at(wx, face * (d / 2 + 0.05));
+      st.set(1, 1, 1, 3, 0);
+      c.solid = false;
+      c.prim(UNIT_BOX, u, floor + 1.7, v, 0.8, 0.7, 0.2, ry);
+      c.solid = true;
+      c.glow(u, floor + 1.7, v, 1.3);
+    }
+    // a lamp by the door
+    {
+      const [u, v] = at(w * 0.5 + 0.7, face * (d / 2 + 0.9));
+      frostTorch(c, u, v, 0.9);
+    }
+    // a stack of logs at the back
+    if (c.rng() < 0.7) {
+      const [u, v] = at(-w * 0.2, -face * (d / 2 + 0.7));
+      st.set(0.42, 0.3, 0.2, 2, 0.05);
+      c.prim(UNIT_BOX, u, floor + 0.45, v, 2.4, 0.9, 0.9, ry);
+      st.set(1.25, 1.27, 1.3, 1, 0.06);
+      c.prim(UNIT_BOX, u, floor + 0.98, v, 2.5, 0.22, 1, ry);
+    }
+  }
+  // a fire pit beside the road, ringed with stone
+  {
+    const fu = ox + Nx * (hw + 3.2);
+    const fv = oz + Nz * (hw + 3.2);
+    const g = c.g(fu, fv);
+    st.set(0.62, 0.58, 0.55, 1, 0.12);
+    for (let i = 0; i < 8; i++) {
+      const a = (i / 8) * Math.PI * 2;
+      c.prim(UNIT_BOX, fu + Math.cos(a) * 1.3, g + 0.35, fv + Math.sin(a) * 1.3, 0.8, 0.7, 0.7, -a);
+    }
+    st.set(1, 1, 1, 3, 0);
+    c.prim(UNIT_BLOB, fu, g + 0.7, fv, 0.5, 0.7, 0.5);
+    c.glow(fu, g + 1.0, fv, 4.5);
+  }
+  // pines among the houses
+  for (let k = 0; k < 9; k++) {
+    const a = c.r(-30, 30);
+    const side = c.rng() < 0.5 ? -1 : 1;
+    const off = side * c.r(19, 34);
+    frostPine(c, ox + Tx * a + Nx * off, oz + Tz * a + Nz * off, c.r(0.9, 1.5));
+  }
+  // the hold at the head of the road: a stone tower with a great brazier
+  if (village.kind === 'high') {
+    const end = way[way.length - 1];
+    const eu = end.x - c.x + Tx * 7;
+    const ev = end.z - c.z + Tz * 7;
+    const g = c.g(eu, ev);
+    st.set(0.66, 0.62, 0.58, 1, 0.12);
+    c.prim(UNIT_BOX, eu, g + 0.8, ev, 6.2, 3.2, 6.2, ry);
+    c.prim(UNIT_BOX, eu, g + 5.5, ev, 4.2, 8.6, 4.2, ry);
+    st.set(0.54, 0.5, 0.48, 1, 0.1);
+    c.prim(UNIT_BOX, eu, g + 10.1, ev, 5, 0.7, 5, ry);
+    st.set(1.25, 1.27, 1.3, 1, 0.08);
+    c.prim(UNIT_BOX, eu, g + 10.6, ev, 5.2, 0.4, 5.2, ry);
+    st.set(0.2, 0.18, 0.17, 1, 0.02);
+    c.prim(UNIT_CYL, eu, g + 11.2, ev, 1.1, 0.5, 1.1);
+    st.set(1, 1, 1, 3, 0);
+    c.prim(UNIT_BLOB, eu, g + 12.1, ev, 0.8, 1.2, 0.8);
+    c.glow(eu, g + 12.3, ev, 9);
+    c.glow(eu, g + 12.0, ev, 5);
+  }
+}
+
 function buildLantern(c: Ctx): void {
   const st = c.stone;
   const tk = c.r(0.9, 1.08);
@@ -1877,7 +2189,7 @@ export interface Landmark {
 }
 
 /** Sites that are not somewhere to walk to: underground, or up a mountain. */
-const NOT_LANDMARKS = new Set(['cavern', 'lamp', 'summit', 'cave', 'spring']);
+const NOT_LANDMARKS = new Set(['cavern', 'lamp', 'summit', 'cave', 'spring', 'snow-village', 'frostway']);
 
 export class Discoveries {
   readonly group = new THREE.Group();
@@ -2791,6 +3103,7 @@ export class Discoveries {
     const span = Math.ceil(BUILD_R / CELL);
     if (this.scanCaverns(px, pz)) return;
     if (this.scanMassifs(px, pz)) return;
+    if (this.scanFrost(px, pz)) return;
     for (let b = 0; b < maxBuilds; b++) {
       let best = Infinity;
       let bcx = 0;
@@ -2881,6 +3194,70 @@ export class Discoveries {
       }
     }
     return false;
+  }
+
+  /** The frostland's region and layout, worked out once and only when the wanderer is near enough to want it. */
+  private frostLayoutNear(px: number, pz: number): FrostLayout | null {
+    if (this.frostMemo === undefined) {
+      const w = this.world as Partial<DesertWorld>;
+      this.frostMemo = w.massif && w.cities ? frostRegion(this.world as DesertWorld) : null;
+    }
+    const region = this.frostMemo;
+    if (!region || Math.hypot(region.cx - px, region.cz - pz) > FROST_WAKE) return null;
+    this.frostLay ??= frostLayout(this.world as DesertWorld, region);
+    return this.frostLay;
+  }
+
+  private frostMemo: FrostRegion | null | undefined;
+  private frostLay: FrostLayout | undefined;
+
+  /**
+   * Builds the nearest unbuilt piece of the frostland road or one of its villages. Returns whether
+   * it built one.
+   */
+  private scanFrost(px: number, pz: number): boolean {
+    const lay = this.frostLayoutNear(px, pz);
+    if (!lay) return false;
+    const seed = Math.floor(hash4(Math.round(lay.region.cx), Math.round(lay.region.cz), this.world.seed | 0, 41) * 4294967296);
+    let best = BUILD_R;
+    let pick = -1;
+    // the villages, then the road in chunks (a key each)
+    for (let i = 0; i < lay.villages.length; i++) {
+      const v = lay.villages[i];
+      const d = Math.hypot(v.x - px, v.z - pz);
+      if (d < best && !this.isBuilt(FROST_KEY - 1000 - i)) {
+        best = d;
+        pick = 1000 + i;
+      }
+    }
+    const chunks = Math.ceil((lay.way.length - 1) / FROST_CHUNK);
+    for (let i = 0; i < chunks; i++) {
+      const mid = lay.way[Math.min(lay.way.length - 1, i * FROST_CHUNK + (FROST_CHUNK >> 1))];
+      const d = Math.hypot(mid.x - px, mid.z - pz);
+      if (d < best && !this.isBuilt(FROST_KEY - i)) {
+        best = d;
+        pick = i;
+      }
+    }
+    if (pick < 0) return false;
+    if (pick >= 1000) {
+      const vi = pick - 1000;
+      const v = lay.villages[vi];
+      const ctx = new Ctx(this.world, v.x, v.z, this.world.height(v.x, v.z), mulberry32(seed ^ (0x77 + vi * 131)), 0);
+      ctx.stone.salt = (vi * 53 + 9) & 1023;
+      buildSnowVillage(ctx, lay, vi);
+      this.finishSite(FROST_KEY - pick, 'snow-village', v.x, v.z, ctx.baseY, ctx);
+      return true;
+    }
+    const i0 = pick * FROST_CHUNK;
+    const i1 = Math.min(lay.way.length - 1, i0 + FROST_CHUNK);
+    const mid = lay.way[Math.min(lay.way.length - 1, i0 + (FROST_CHUNK >> 1))];
+    const ctx = new Ctx(this.world, mid.x, mid.z, this.world.height(mid.x, mid.z), mulberry32(seed ^ (0x1f3 + pick * 977)), 0);
+    ctx.stone.salt = (pick * 29 + 3) & 1023;
+    buildFrostWay(ctx, lay, i0, i1);
+    this.finishSite(FROST_KEY - pick, 'frostway', mid.x, mid.z, ctx.baseY, ctx);
+    this.reached.add(FROST_KEY - pick); // a stretch of road is not a find: it never chimes
+    return true;
   }
 
   /** The uncut rock at a point of a site's frame, for buildRoof: height, normal, rock and salt. */
