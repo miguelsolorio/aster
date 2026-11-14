@@ -5,6 +5,7 @@
 
 export const FIND_KINDS = [
   'temple',
+  'hamlet',
   'ruins',
   'oasis',
   'grove',
@@ -25,6 +26,7 @@ export type FindKind = (typeof FIND_KINDS)[number];
 
 const NAMES: Record<FindKind, string> = {
   temple: 'Temple',
+  hamlet: 'Hamlet',
   ruins: 'Ruins',
   oasis: 'Oasis',
   grove: 'Grove',

@@ -1,5 +1,5 @@
 // Rare things to stumble on: tended temples, ruins, oases, arches, standing stones, great bones,
-// lantern towers, sundial plazas and half-buried shells. Placement is a
+// lantern towers, sundial plazas, half-buried shells and small empty hamlets (about half the otherwise empty cells). Placement is a
 // deterministic jittered grid (675 m cells, about one in three occupied); sites
 // are built lazily near the player and disposed when far away.
 import * as THREE from 'three';
@@ -20,6 +20,7 @@ const BUILD_R = 2500;
 const DROP_R = 3500;
 const SCAN_EVERY = 0.3;
 const GROVE_P = 0.7; // chance an otherwise empty cell beside a river holds a grove
+const HAMLET_P = 0.5; // chance an otherwise empty cell (away from rivers) holds a hamlet
 const GROVE_REACH = 260; // metres from a river that counts as beside it
 const CAVERN_P = 0.84; // chance a cell hides a cavern where the ground suits one: measured, about one cell in three ends up with one
 const CAVERN_BUILD_R = 900; // an open cavern's roof is built inside this
@@ -1248,6 +1249,64 @@ function buildBones(c: Ctx): void {
   const sg = c.g(su, sv);
   c.prim(UNIT_BLOB, su, sg + 0.8, sv, 5.5, 3, 3.6, c.r(-0.3, 0.3), 0, c.r(-0.25, 0.1));
   c.prim(UNIT_BLOB, su - 5, sg - 0.2, sv + c.r(-1, 1), 4, 1.6, 2.6, c.r(-0.3, 0.3), 0, 0.15);
+}
+
+/** A handful of mud-brick houses round a well, with pens and a lamp post: a hamlet nobody is home in. */
+function buildHamlet(c: Ctx): void {
+  const st = c.stone;
+  const n = 4 + Math.floor(c.rng() * 4);
+  const R = c.r(14, 22);
+  c.foot = R + 14;
+  const a0 = c.rng() * Math.PI * 2;
+  const wall = c.r(0.98, 1.1);
+  for (let i = 0; i < n; i++) {
+    const a = a0 + (i / n) * Math.PI * 2 + c.r(-0.25, 0.25);
+    const d = R * c.r(0.75, 1.15);
+    const u = Math.cos(a) * d;
+    const v = Math.sin(a) * d;
+    const w = c.r(4.5, 7);
+    const dp = c.r(4, 6);
+    const h = c.r(2.8, 3.8);
+    const face = a + Math.PI; // doors look in toward the well
+    const g = c.g(u, v);
+    st.set(wall * c.r(0.95, 1.04), wall * 0.96 * c.r(0.95, 1.04), wall * 0.86, 2, 0.06);
+    c.prim(UNIT_BOX, u, g + h / 2 - 0.4, v, w, h, dp, -face + Math.PI / 2, 0, 0);
+    // parapet lip, and a dome over some
+    c.prim(UNIT_BOX, u, g + h - 0.2, v, w + 0.5, 0.45, dp + 0.5, -face + Math.PI / 2);
+    if (c.rng() < 0.4) c.prim(UNIT_BLOB, u, g + h - 0.2, v, Math.min(w, dp) * 0.42, 1.6, Math.min(w, dp) * 0.42, c.rng() * 6);
+    // the dark doorway, toward the well
+    st.set(0.16, 0.12, 0.1, 2, 0);
+    const du = u - Math.cos(a) * (dp / 2);
+    const dv = v - Math.sin(a) * (dp / 2);
+    c.solid = false;
+    c.prim(UNIT_BOX, du, g + 0.9, dv, 1.2, 1.8, 0.5, -face + Math.PI / 2);
+    c.solid = true;
+  }
+  // the well: a low ring of stone
+  const g0 = c.g(0, 0);
+  st.set(1.0, 0.97, 0.9, 0, 0.08);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    c.prim(UNIT_BOX, Math.cos(a) * 1.7, g0 + 0.5, Math.sin(a) * 1.7, 1.3, 1, 0.9, -a);
+  }
+  // a lamp post by it
+  st.set(0.5, 0.42, 0.34, 2, 0.02);
+  c.prim(UNIT_BOX, 3.4, g0 + 2.2, 0.4, 0.3, 4.4, 0.3, 0);
+  c.glow(3.4, g0 + 4.6, 0.4, 1.2);
+  // a pen or two: short low walls
+  const pens = 1 + Math.floor(c.rng() * 2);
+  for (let k = 0; k < pens; k++) {
+    const a = a0 + c.rng() * Math.PI * 2;
+    const d = R + c.r(9, 13);
+    const pu = Math.cos(a) * d;
+    const pv = Math.sin(a) * d;
+    const L = c.r(5, 8);
+    st.set(0.95, 0.9, 0.8, 2, 0.1);
+    for (const [du, dv, wu, wv] of [[0, -L / 2, L, 0.6], [0, L / 2, L, 0.6], [-L / 2, 0, 0.6, L], [L / 2, 0, 0.6, L]] as const) {
+      const gg = c.g(pu + du, pv + dv);
+      c.prim(UNIT_BOX, pu + du, gg + 0.6, pv + dv, wu, 1.3, wv, a);
+    }
+  }
 }
 
 function buildLantern(c: Ctx): void {
@@ -2618,7 +2677,12 @@ export class Discoveries {
     this.cellPos.x = cx * CELL + MARGIN + hash4(cx, cz, s, 2) * (CELL - 2 * MARGIN);
     this.cellPos.z = cz * CELL + MARGIN + hash4(cx, cz, s, 3) * (CELL - 2 * MARGIN);
     // Most cells are empty, but one beside a river usually holds a grove.
-    if (hash4(cx, cz, s, 1) >= SITE_P && !(hash4(cx, cz, s, 5) < GROVE_P && this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH)) return false;
+    this.cellHamlet = false;
+    if (hash4(cx, cz, s, 1) >= SITE_P && !(hash4(cx, cz, s, 5) < GROVE_P && this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH)) {
+      // An empty cell away from the water may hold a hamlet instead.
+      if (hash4(cx, cz, s, 31) >= HAMLET_P || this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH) return false;
+      this.cellHamlet = true;
+    }
     // The wilderness finds keep clear of cities.
     const cities = (this.world as Partial<{ cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>).cities;
     if (cities) {
@@ -2627,6 +2691,8 @@ export class Discoveries {
     }
     return true;
   }
+
+  private cellHamlet = false;
 
   private isBuilt(key: number): boolean {
     for (let i = 0; i < this.sites.length; i++) if (this.sites[i].key === key) return true;
@@ -3150,6 +3216,30 @@ export class Discoveries {
       mean += w.height(x + Math.cos(a) * 250, z + Math.sin(a) * 250);
     }
     mean /= 8;
+    if (this.cellHamlet) {
+      // a hamlet settles on the level sand nearby, off rock and salt
+      let best = Infinity;
+      let bx = x;
+      let bz = z;
+      const x0 = x;
+      const z0 = z;
+      for (let i = -1; i <= 1; i++) {
+        for (let j = -1; j <= 1; j++) {
+          const tx = x0 + i * 50;
+          const tz = z0 + j * 50;
+          const t = w.sample(tx, tz, this.sample);
+          const slope = Math.abs(w.height(tx + 25, tz) - w.height(tx - 25, tz)) + Math.abs(w.height(tx, tz + 25) - w.height(tx, tz - 25));
+          const score = slope + 40 * t.rock + 40 * t.salt + (i * i + j * j) * 0.3;
+          if (score < best) {
+            best = score;
+            bx = tx;
+            bz = tz;
+          }
+        }
+      }
+      rng();
+      return { kind: 'hamlet', x: bx, z: bz, onSalt: false };
+    }
     const r = rng();
     let kind: string;
     if (this.riverAt(x, z) < GROVE_REACH && this.bankNear(x, z)) {
@@ -3232,6 +3322,7 @@ export class Discoveries {
       case 'standing-stones': buildStones(ctx, onSalt); break;
       case 'bones': buildBones(ctx); break;
       case 'lantern': buildLantern(ctx); break;
+      case 'hamlet': buildHamlet(ctx); break;
       case 'sundial': buildSundial(ctx, onSalt); break;
       case 'temple': buildTemple(ctx); break;
       default: buildShell(ctx); break;
