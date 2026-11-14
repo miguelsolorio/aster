@@ -8,6 +8,7 @@
 // shadows, props and people go on treating the building as a block; only the wanderer and the
 // camera ask the shell.
 
+import { bodyOf, shapeOf } from './shape';
 import type { Building, CityPlan, Room, RoomDoor } from './types';
 
 /** Smallest footprint side (metres) that holds a room. */
@@ -46,6 +47,9 @@ const ROLES = new Set(['house', 'hall', 'market', 'landmark']);
 /** Whether a building is of a kind and size to be walked into (a doorway must still be found). */
 export function enterable(b: Building): boolean {
   if (!b.solid || !ROLES.has(b.role) || b.roof === 'canopy' || b.roof === 'none') return false;
+  // rooms have straight walls on the lot: round shapes (dome, mound, tower, tiered) and turned houses stay solid
+  const sh = shapeOf(b);
+  if (sh !== 'box' && !(sh === 'slump' && !b.rot)) return false;
   if (Math.min(b.w, b.d) < ROOM_MIN) return false;
   return b.h >= 2.9; // room for a door and a ceiling over it
 }
@@ -103,6 +107,7 @@ export function roomFor(plan: CityPlan, b: Building, bi: number): Room | null {
   const t = grand ? GRAND_WALL_T : WALL_T;
   const ceil = grand ? b.h - 0.6 : hall ? Math.min(b.h - 0.5, 4.6) : Math.min(b.h - 0.4, 3.0);
   const faces = rectFaces(x0, z0, x1, z1);
+  const rc = shapeOf(b) === 'slump' ? bodyOf(b)!.rc : 0;
   const seed = plan.site.seed | 0;
   const start = Math.floor(hash(seed, bi, 0x0d) * 4);
 
@@ -128,8 +133,10 @@ export function roomFor(plan: CityPlan, b: Building, bi: number): Room | null {
   for (let k = 0; k < 4; k++) {
     const fi = (start + k) & 3;
     const f = faces[fi];
-    const lo = t + 0.3 + dw / 2;
-    const hi = f.len - t - 0.3 - dw / 2;
+    // a slumped house's straight wall starts after its corner arc
+    const edge = Math.max(t + 0.3, rc + 0.15);
+    const lo = edge + dw / 2;
+    const hi = f.len - edge - dw / 2;
     if (hi < lo) continue;
     const mid = f.len / 2;
     for (let s = 0; s <= hi - lo + 1e-6; s += 0.5) {

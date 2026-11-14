@@ -5,6 +5,7 @@ import { CITY_SHADOW_GLSL } from '../cityGlsl';
 import { STYLE_GLSL } from '../../render/styleGlsl';
 import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, trackViewport } from '../cityShaders';
 import type { Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
+import { bodyFaces } from '../shape';
 import type { Building, CityKind } from '../types';
 
 // Street furniture: the small things that make the streets look lived in. Clay jars and
@@ -862,14 +863,9 @@ interface Face {
   len: number;
 }
 
+/** The building's straight walls as drawn (turned and inset for a slumped house; none on a round one). */
 function facesOf(b: Building): Face[] {
-  const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2, z0 = b.z - b.d / 2, z1 = b.z + b.d / 2;
-  return [
-    { ox: x1, oz: z0, tx: 0, tz: 1, nx: 1, nz: 0, len: z1 - z0 },
-    { ox: x0, oz: z1, tx: 0, tz: -1, nx: -1, nz: 0, len: z1 - z0 },
-    { ox: x1, oz: z1, tx: -1, tz: 0, nx: 0, nz: 1, len: x1 - x0 },
-    { ox: x0, oz: z0, tx: 1, tz: 0, nx: 0, nz: -1, len: x1 - x0 },
-  ];
+  return bodyFaces(b);
 }
 
 const fx = (f: Face, u: number, off: number): number => f.ox + f.tx * u + f.nx * off;

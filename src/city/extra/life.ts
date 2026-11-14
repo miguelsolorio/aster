@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { FrameState } from '../../game/contract';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx } from '../extras';
+import { bodyFaces, insideBody, isRound } from '../shape';
 import type { Building } from '../types';
 
 // Signs of life over a city: small flocks of an invented desert bird, and thin chimney smoke.
@@ -174,7 +175,7 @@ function buildBirds(ctx: ExtraCtx, near: THREE.Group, emitters: Emitter[], owned
 
   // ---- where the flocks live
   const ok = (b: Building): boolean =>
-    b.solid && b.roof !== 'none' && b.roof !== 'canopy' && b.role !== 'wall' && b.role !== 'stall' && b.role !== 'garden' && Math.min(b.w, b.d) >= 2;
+    b.solid && !isRound(b) && b.roof !== 'none' && b.roof !== 'canopy' && b.role !== 'wall' && b.role !== 'stall' && b.role !== 'garden' && Math.min(b.w, b.d) >= 2;
   const cands = plan.buildings.filter(ok);
   const tall = cands.slice().sort((a, b) => b.h + b.crown - (a.h + a.crown));
   const homes: Building[] = [];
@@ -208,10 +209,12 @@ function buildBirds(ctx: ExtraCtx, near: THREE.Group, emitters: Emitter[], owned
     const rim = b.roof === 'parapet' || b.roof === 'terrace' || b.role === 'landmark' || b.role === 'gate';
     const inset = rim ? 0.15 : 0.22;
     const y = b.h + (rim ? 0.62 : 0.08) + 0.04;
-    const x0 = b.x - b.w / 2 + inset, x1 = b.x + b.w / 2 - inset, z0 = b.z - b.d / 2 + inset, z1 = b.z + b.d / 2 - inset;
+    // along the walls as drawn (a slumped house is turned and inset in its lot, and leans in at the top)
     const pts: number[][] = [];
-    for (let x = x0; x <= x1 + 1e-6; x += 0.7) pts.push([x, z0], [x, z1]);
-    for (let z = z0 + 0.7; z < z1 - 1e-6; z += 0.7) pts.push([x0, z], [x1, z]);
+    for (const f of bodyFaces(b)) {
+      const t = inset + (b.shape === 'slump' ? 0.35 : 0);
+      for (let u = 0; u <= f.len + 1e-6; u += 0.7) pts.push([f.ox + f.tx * u - f.nx * t, f.oz + f.tz * u - f.nz * t]);
+    }
     if (pts.length < 8) continue;
     for (let i = pts.length - 1; i > 0; i--) {
       const j = Math.floor(rng() * (i + 1));
@@ -565,7 +568,7 @@ function buildSmoke(ctx: ExtraCtx, near: THREE.Group, owned: Array<{ dispose(): 
     // a corner of the roof, inside any parapet
     const x = b.x + (rng() < 0.5 ? -1 : 1) * (b.w / 2 - 1.1 - rng() * 0.6);
     const z = b.z + (rng() < 0.5 ? -1 : 1) * (b.d / 2 - 1.1 - rng() * 0.6);
-    if (Math.abs(ctx.roofAt(x, z) - b.h) > 0.01) continue;
+    if (Math.abs(ctx.roofAt(x, z) - b.h) > 0.01 || !insideBody(b, x, z, 0.8)) continue;
     if (cols.some((c) => Math.hypot(c.x - x, c.z - z) < 10)) continue;
     cols.push({ x, y: b.h + 0.35, z });
   }

@@ -171,12 +171,14 @@ void cutAway() {
 #endif
 
 vec3 plasterHue(float t) {
-  vec3 cream = vec3(1.05, 1.0, 0.93);
-  vec3 ochre = vec3(1.07, 0.95, 0.80);
-  vec3 rose = vec3(1.05, 0.93, 0.88);
-  vec3 lime = vec3(1.02, 1.01, 0.99);
-  vec3 h = t < 0.45 ? cream : t < 0.68 ? ochre : t < 0.86 ? rose : lime;
-  return h * (0.95 + 0.1 * fract(t * 5.7));
+  vec3 sand = vec3(1.06, 0.94, 0.78);   // warm sand, the common case
+  vec3 ochre = vec3(1.08, 0.92, 0.72);
+  vec3 cream = vec3(1.08, 1.04, 0.96);  // bleached
+  vec3 clay = vec3(0.98, 0.76, 0.62);   // darker terracotta
+  vec3 rose = vec3(1.04, 0.88, 0.80);
+  vec3 h = t < 0.38 ? sand : t < 0.60 ? ochre : t < 0.80 ? cream : t < 0.92 ? rose : clay;
+  float dark = t >= 0.92 ? 0.82 : 1.0;
+  return h * dark * (0.93 + 0.14 * fract(t * 5.7));
 }
 
 vec3 dye(float t) {
@@ -275,6 +277,17 @@ void main() {
     // dust and splash line at the foot of the walls
     float band = 1.0 - smoothstep(0.05, 0.55 + 0.5 * m, vH);
     col *= 1.0 - 0.12 * band * wall;
+    if (mat < 1.5) {
+      // weathering: grime climbing from the foot, faint vertical rain streaks
+      float grime = 1.0 - smoothstep(0.0, 2.6 + 1.6 * m, vH);
+      float sx = vW.x * 3.1 + vW.z * 2.7;
+      float streak = cvn(vec2(sx, vW.y * 0.12)) * 0.6 + cvn(vec2(sx * 2.3 + 7.0, vW.y * 0.2)) * 0.4;
+      streak = smoothstep(0.45, 0.8, streak);
+      float fade = smoothstep(0.0, 1.5, vH) * (1.0 - smoothstep(2.5, 7.0, vH));
+      float w = wall * (mat < 0.5 ? 1.0 : 0.3);
+      col *= 1.0 - (0.14 * grime + 0.06 * streak * (0.4 + fade)) * w;
+      col = mix(col, col * vec3(0.92, 0.88, 0.82), 0.5 * grime * w);
+    }
   }
   // Contact shade where an upright face meets the floor it stands on: the street, or the roof
   // in front of a parapet or a tower (read from the roof map just in front of the face).

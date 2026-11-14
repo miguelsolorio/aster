@@ -10,8 +10,9 @@
 //
 // A THREE.Group at position (cx, groundY, cz) with rotation.y = -rot maps local to world
 // (the integrator does this; builders only ever work in local space).
-// Buildings are axis-aligned boxes in local space with edges on the 1 m grid, so the
-// roof-height grid (used for collisions and shadows) matches the drawn walls exactly.
+// Buildings have axis-aligned lots in local space with edges on the 1 m grid; the roof-height grid
+// (used for collisions and shadows) stores the lots. Most are drawn rounder and smaller than their lot
+// (Building.shape), never larger than it by more than a hand's breadth.
 
 export type CityKind =
   | 'hill' // walled town on a raised mound, gates on the avenues
@@ -45,6 +46,8 @@ export interface CitySite {
 }
 
 export type RoofKind = 'flat' | 'parapet' | 'dome' | 'terrace' | 'windtower' | 'spire' | 'canopy' | 'none';
+/** How a solid building is drawn inside its lot (see shape.ts). Absent means 'box'. */
+export type BuildingShape = 'box' | 'slump' | 'dome' | 'mound' | 'tower' | 'tiered';
 export type BuildingRole = 'house' | 'hall' | 'market' | 'landmark' | 'wall' | 'gate' | 'stall' | 'garden';
 
 export interface Building {
@@ -64,6 +67,14 @@ export interface Building {
   solid: boolean;
   /** Extra height drawn above h that is NOT walkable (dome, spire, wind tower shaft). Used for the skyline. */
   crown: number;
+  /**
+   * How the building is drawn inside its lot (shape.ts); absent means a plain box. The lot rectangle
+   * above stays what the height grid stores: every shape is drawn inside it (a turned one may reach
+   * shape.SLACK past it), so the grid may over-block but never under-blocks.
+   */
+  shape?: BuildingShape;
+  /** Turn of a slumped house about its centre, radians (its body's +x axis points along (cos, sin)). Default 0. */
+  rot?: number;
 }
 
 export type SpotKind = 'market' | 'shade' | 'gather' | 'stall' | 'bench' | 'well' | 'gate';

@@ -15,6 +15,7 @@
 // only ever build on cells that are still free. All randomness comes from site.seed.
 
 import type { Building, BuildingRole, CityKind, CityPlan, CitySite, RoofKind, Spot, SpotKind } from './types';
+import { fitTurned } from './shape';
 import { planRooms } from './rooms';
 
 const STOREY = 3.2;
@@ -270,6 +271,7 @@ class Planner {
     this.fillLots();
     this.trim();
     this.pruneLanes();
+    this.shapeBuildings();
     const grid = this.writeGrid();
     this.buildEdges();
     this.makeSpots(grid);
@@ -1960,6 +1962,120 @@ class Planner {
       this.fillRect(x0, z0, x1, z1, SOFT, true);
       placed++;
     }
+  }
+
+  // ---------------------------------------------------------------- how buildings are drawn
+
+  /**
+   * Picks how each solid building is drawn inside its lot (Building.shape, see shape.ts): earth
+   * mounds and domed houses among the one- and two-storey houses, a few round towers among the
+   * tall narrow ones, and slumped, round-cornered blocks for the rest, some of them turned toward
+   * their lane. Landmark halls become tiered round halls and spires round towers. Lots and their
+   * heights stay as planned (a mound is lowered before the grid is written), so the grid only ever
+   * blocks at least what is drawn.
+   */
+  private shapeBuildings() {
+    const r = this.rng(17);
+    const segs: number[] = [];
+    for (const s of this.streets) {
+      for (let i = 0; i + 1 < s.pts.length; i++) {
+        const a = s.pts[i];
+        const b = s.pts[i + 1];
+        segs.push(this.nx[a], this.nz[a], this.nx[b], this.nz[b]);
+      }
+    }
+    for (const b of this.buildings) {
+      // always four draws, so one building's choice never shifts the next one's
+      const u = r();
+      const v = r();
+      const q = r();
+      const o = r();
+      if (!b.solid) continue;
+      if (b.role === 'landmark') {
+        if (b.roof === 'dome') b.shape = 'tiered';
+        else if (b.roof === 'spire') b.shape = 'tower';
+        continue;
+      }
+      if (b.role === 'hall') {
+        b.shape = b.roof === 'spire' ? 'tower' : b.roof === 'dome' ? 'dome' : 'slump';
+        continue;
+      }
+      if (b.role !== 'house') continue;
+      if (b.roof === 'spire') {
+        b.shape = 'tower';
+        continue;
+      }
+      if (b.roof === 'dome') {
+        b.shape = 'dome';
+        continue;
+      }
+      if (b.roof === 'terrace' || b.roof === 'windtower') {
+        b.shape = 'slump';
+        // many small terraced houses of the dense core wear a rounded or pitched crown instead
+        if (o < 0.3 && b.roof === 'terrace' && Math.min(b.w, b.d) < 5 && Math.min(b.w, b.d) >= 3) {
+          b.roof = 'dome';
+          b.crown = 0.4 * Math.min(b.w, b.d) + 0.4;
+        }
+        continue;
+      }
+      const m = Math.min(b.w, b.d);
+      const M = Math.max(b.w, b.d);
+      const st = Math.round(b.h / STOREY);
+      const rn = clamp(this.rhoN(b.x, b.z), 0, 1);
+      const pMound = st === 1 && m >= 4 && M >= 5 && M <= 12 ? (this.kind === 'oasis' ? 0.38 : 0.2) + 0.25 * rn : 0;
+      const pDome = st <= 2 && m >= 5 && M <= 1.5 * m ? 0.24 : 0;
+      const pTower = st >= 3 && m >= 4 && M <= 8 && M - m <= 2 ? 0.22 : 0;
+      if (u < pMound) {
+        b.shape = 'mound';
+        b.roof = 'dome';
+        b.h = clamp(0.36 * m + 1, 2.4, 3.1);
+        b.crown = 0.6;
+      } else if (u < pMound + pDome) {
+        b.shape = 'dome';
+        b.roof = 'dome';
+        b.crown = 0.42 * m * (0.85 + 0.3 * v);
+      } else if (u < pMound + pDome + pTower) {
+        b.shape = 'tower';
+        b.roof = 'dome';
+        b.crown = 0.35 * m + 0.8 + v;
+      } else {
+        b.shape = 'slump';
+        // a rounded roof (dome or barrel vault, chosen by the builder) on many of the rest
+        if (o < 0.8 && m >= 3) {
+          b.roof = 'dome';
+          b.crown = 0.42 * m + 0.5;
+        }
+        if (q < 0.12 + 0.43 * rn) {
+          const t = this.turnFor(b, segs, v);
+          if (t !== 0) b.rot = t;
+        }
+      }
+    }
+  }
+
+  /** A turn of up to 25 degrees for a house: toward the nearest lane, or a random one where it runs square. */
+  private turnFor(b: Building, segs: number[], v: number): number {
+    const DEG = Math.PI / 180;
+    let best = Infinity;
+    let ang = 0;
+    for (let k = 0; k < segs.length; k += 4) {
+      const d2 = segDist2(b.x, b.z, segs[k], segs[k + 1], segs[k + 2], segs[k + 3]);
+      if (d2 < best) {
+        best = d2;
+        ang = Math.atan2(segs[k + 3] - segs[k + 1], segs[k + 2] - segs[k]);
+      }
+    }
+    const reach = Math.max(b.w, b.d) / 2 + 12;
+    let t = ang - (Math.PI / 2) * Math.round(ang / (Math.PI / 2));
+    if (best > reach * reach || Math.abs(t) < 4 * DEG) t = (v < 0.5 ? -1 : 1) * (6 + 16 * Math.abs(v - 0.5) * 2) * DEG;
+    t = clamp(t, -25 * DEG, 25 * DEG);
+    // as steep as the lot allows without shrinking the house below 80% of it either way
+    while (Math.abs(t) >= 3 * DEG) {
+      const f = fitTurned(b.w, b.d, t);
+      if (f.hw >= 0.8 * (b.w / 2) && f.hd >= 0.8 * (b.d / 2)) return t;
+      t -= Math.sign(t) * 2 * DEG;
+    }
+    return 0;
   }
 
   // ---------------------------------------------------------------- budget and grid

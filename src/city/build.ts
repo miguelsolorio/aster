@@ -3,6 +3,7 @@ import type { Uniforms } from '../game/contract';
 import type { Building, CityPlan, Room } from './types';
 import { rectFaces, type Face } from './rooms';
 import { GLOW, MAT, createCutUniforms, type CutUniforms, createGlowMaterial, createMasonryMaterial, createWaterMaterial, trackViewport } from './cityShaders';
+import { bodyOf, isRound, loopFaces, roundedLoop, shapeOf, slumpRadius, tierRadius, towerRadius, type Body, type Loop } from './shape';
 
 // Turns a CityPlan into meshes. Everything is written straight into growable typed arrays
 // and merged per material family:
@@ -576,6 +577,21 @@ export function cylinder(w: Writer, cx: number, cz: number, r: number, y0: numbe
   }
 }
 
+/** Vertical cylinder wall facing inward (the inside of a parapet ring). */
+function cylinderIn(w: Writer, cx: number, cz: number, r: number, y0: number, y1: number, segs: number): void {
+  const v0 = w.nv, i0 = w.ni;
+  cylinder(w, cx, cz, r, y0, y1, segs);
+  for (let v = v0; v < w.nv; v++) {
+    w.nrm[v * 3] = -w.nrm[v * 3];
+    w.nrm[v * 3 + 2] = -w.nrm[v * 3 + 2];
+  }
+  for (let k = i0; k < w.ni; k += 3) {
+    const t = w.idx[k + 1];
+    w.idx[k + 1] = w.idx[k + 2];
+    w.idx[k + 2] = t;
+  }
+}
+
 /** Flat ring (annulus) facing up or down. */
 export function annulus(w: Writer, cx: number, cz: number, r0: number, r1: number, y: number, segs: number, up: boolean): void {
   for (let i = 0; i < segs; i++) {
@@ -626,6 +642,305 @@ export function finial(w: Writer, cx: number, y: number, cz: number, s: number):
   taper(w, cx, cz, s * 0.05, 0, yc + r * 1.2, yc + s * 0.9, 4, Math.PI / 4);
 }
 
+/** Quad with a normal per corner (smooth shading); the winding follows the corners' mean normal. P and N are 4 x (x, y, z). */
+function quadN(w: Writer, P: number[], N: number[]): void {
+  w.reserve(4, 6);
+  const ux = P[3] - P[0], uy = P[4] - P[1], uz = P[5] - P[2];
+  const vx = P[6] - P[0], vy = P[7] - P[1], vz = P[8] - P[2];
+  const mx = N[0] + N[3] + N[6] + N[9], my = N[1] + N[4] + N[7] + N[10], mz = N[2] + N[5] + N[8] + N[11];
+  const s = (uy * vz - uz * vy) * mx + (uz * vx - ux * vz) * my + (ux * vy - uy * vx) * mz;
+  const a = w.vert(P[0], P[1], P[2], N[0], N[1], N[2], 0, 0);
+  const b = w.vert(P[3], P[4], P[5], N[3], N[4], N[5], 1, 0);
+  const c = w.vert(P[6], P[7], P[8], N[6], N[7], N[8], 1, 1);
+  const d = w.vert(P[9], P[10], P[11], N[9], N[10], N[11], 0, 1);
+  if (s >= 0) {
+    w.index3(a, b, c);
+    w.index3(a, c, d);
+  } else {
+    w.index3(a, c, b);
+    w.index3(a, d, c);
+  }
+}
+
+/**
+ * Dome on an elliptical base (radii rx along x, rz along z), smooth-shaded; point 0 = round, up
+ * to ~0.5 = pointed. With top < 1 the profile stops at that fraction of its quarter turn and a
+ * flat disc closes it (an earth mound with a flat top).
+ */
+export function domeE(
+  w: Writer, cx: number, cz: number, rx: number, rz: number, y0: number, hgt: number, segs: number, rings: number, point: number, top = 1,
+): void {
+  const nv = (rings + 1) * (segs + 1);
+  w.reserve(nv, rings * segs * 6);
+  const base = w.nv;
+  const f = (t: number): number => {
+    const a = t * Math.PI * 0.5;
+    return (1 - point) * Math.cos(a) + point * (1 - Math.sin(a));
+  };
+  const g = (t: number): number => Math.sin(t * Math.PI * 0.5);
+  for (let j = 0; j <= rings; j++) {
+    const t = (j / rings) * top;
+    const ta = Math.max(0, t - 0.01), tb = Math.min(1, t + 0.01);
+    // normal of the unit profile (f, g), then through the inverse of the axis scaling
+    const pr = g(tb) - g(ta), py = -(f(tb) - f(ta));
+    for (let i = 0; i <= segs; i++) {
+      const a = (i / segs) * Math.PI * 2;
+      const c = Math.cos(a), s = Math.sin(a);
+      let nx = (pr * c) / rx, ny = py / hgt, nz = (pr * s) / rz;
+      if (j === rings && top >= 0.999) {
+        nx = 0;
+        ny = 1;
+        nz = 0;
+      }
+      const l = Math.hypot(nx, ny, nz) || 1;
+      const ft = f(t);
+      w.vert(cx + c * rx * ft, y0 + hgt * g(t), cz + s * rz * ft, nx / l, ny / l, nz / l, i / segs, t);
+    }
+  }
+  for (let j = 0; j < rings; j++) {
+    for (let i = 0; i < segs; i++) {
+      const a = base + j * (segs + 1) + i;
+      const b = a + 1;
+      const c = a + segs + 1;
+      const d = c + 1;
+      w.index3(a, c, b);
+      if (j < rings - 1 || top < 0.999) w.index3(b, c, d);
+    }
+  }
+  if (top < 0.999) {
+    const yt = y0 + hgt * g(top), ft = f(top);
+    for (let i = 0; i < segs; i++) {
+      const a0 = (i / segs) * Math.PI * 2, a1 = ((i + 1) / segs) * Math.PI * 2;
+      w.tri(cx, yt, cz, cx + Math.cos(a0) * rx * ft, yt, cz + Math.sin(a0) * rz * ft, cx + Math.cos(a1) * rx * ft, yt, cz + Math.sin(a1) * rz * ft, 0, 1, 0);
+    }
+  }
+}
+
+/** Smooth cone frustum from radius r0 at y0 to r1 at y1 (no caps); flares out when r1 > r0. */
+function frustum(w: Writer, cx: number, cz: number, r0: number, r1: number, y0: number, y1: number, segs: number): void {
+  w.reserve((segs + 1) * 2, segs * 6);
+  const base = w.nv;
+  const dy = y1 - y0, dr = r1 - r0;
+  const l = Math.hypot(dy, dr) || 1;
+  const nr = dy / l, ny = -dr / l;
+  for (let i = 0; i <= segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    const c = Math.cos(a), s = Math.sin(a);
+    w.vert(cx + c * r0, y0, cz + s * r0, c * nr, ny, s * nr, i / segs, 0);
+    w.vert(cx + c * r1, y1, cz + s * r1, c * nr, ny, s * nr, i / segs, 1);
+  }
+  for (let i = 0; i < segs; i++) {
+    const a = base + i * 2;
+    w.index3(a, a + 1, a + 2);
+    w.index3(a + 2, a + 1, a + 3);
+  }
+}
+
+/** A circle as an outline loop of n sides, every edge a smooth arc piece. */
+function circleLoop(cx: number, cz: number, r: number, n: number): Loop {
+  const L: Loop = { x: [], z: [], nx: [], nz: [], ox: [], oz: [], side: [], cx, cz };
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const c = Math.cos(a), s = Math.sin(a);
+    L.x.push(cx + c * r);
+    L.z.push(cz + s * r);
+    L.nx.push(c);
+    L.nz.push(s);
+    L.ox.push(c);
+    L.oz.push(s);
+    L.side.push(-1);
+  }
+  return L;
+}
+
+/** Flat roof over a (convex) loop at height y, as a fan from its centre. */
+function capLoop(w: Writer, L: Loop, y: number): void {
+  const n = L.x.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    w.tri(L.cx, y, L.cz, L.x[i], y, L.z[i], L.x[j], y, L.z[j], 0, 1, 0);
+  }
+}
+
+/** Outward normal of a loop's edge i at its end k (0 start, 1 end): the face's own on straight sides. */
+function edgeN(L: Loop, faces: Face[], i: number, k: number): [number, number] {
+  if (L.side[i] >= 0) return [faces[i].nx, faces[i].nz];
+  const v = k === 0 ? i : (i + 1) % L.x.length;
+  return [L.nx[v], L.nz[v]];
+}
+
+/**
+ * Walls round a loop from y0 up to yt (per point). Straight sides and any edge with openings are
+ * flat faces with their holes cut; the corner arcs are smooth.
+ */
+function loopWalls(w: Writer, L: Loop, faces: Face[], hid: boolean[], y0: number, yt: number[], holes: Hole[][] | null): void {
+  const n = faces.length;
+  for (let i = 0; i < n; i++) {
+    if (hid[i]) continue;
+    const j = (i + 1) % n;
+    const hs = holes ? holes[i] : [];
+    if (hs.length > 0 || L.side[i] >= 0) {
+      wallFace(w, faces[i], y0, Math.min(yt[i], yt[j]), hs);
+      continue;
+    }
+    quadN(
+      w,
+      [L.x[i], y0, L.z[i], L.x[j], y0, L.z[j], L.x[j], yt[j], L.z[j], L.x[i], yt[i], L.z[i]],
+      [L.nx[i], 0, L.nz[i], L.nx[j], 0, L.nz[j], L.nx[j], 0, L.nz[j], L.nx[i], 0, L.nz[i]],
+    );
+  }
+}
+
+/**
+ * A low wall standing on the roof at h just inside a loop (thickness t), up to yt per point, with
+ * a rounded coping that rises crest above it: the soft, hand-smoothed parapet of an adobe house.
+ */
+function loopParapet(w: Writer, L: Loop, faces: Face[], h: number, yt: number[], t: number, crest: number): void {
+  const n = faces.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const [nix, niz] = edgeN(L, faces, i, 0);
+    const [njx, njz] = edgeN(L, faces, i, 1);
+    const Pix = L.x[i], Piz = L.z[i], Pjx = L.x[j], Pjz = L.z[j];
+    const Iix = Pix - L.ox[i] * t, Iiz = Piz - L.oz[i] * t, Ijx = Pjx - L.ox[j] * t, Ijz = Pjz - L.oz[j] * t;
+    const yi = yt[i], yj = yt[j];
+    quadN(w, [Iix, h, Iiz, Ijx, h, Ijz, Ijx, yj - crest, Ijz, Iix, yi - crest, Iiz], [-nix, 0, -niz, -njx, 0, -njz, -njx, 0, -njz, -nix, 0, -niz]);
+    // the coping: one quad sloping in by crest, whose normals roll over from the outer edge to the
+    // inner one, so the light reads it as a rounded top
+    const a = 0.62, b = 0.78;
+    quadN(
+      w,
+      [Pix, yi, Piz, Pjx, yj, Pjz, Ijx, yj - crest, Ijz, Iix, yi - crest, Iiz],
+      [nix * a, b, niz * a, njx * a, b, njz * a, -njx * a, b, -njz * a, -nix * a, b, -niz * a],
+    );
+  }
+}
+
+/** A plaster band standing out from the walls round a loop, from y0 to y1, with a ledge on top. */
+function loopBand(w: Writer, L: Loop, faces: Face[], hid: boolean[], y0: number, y1: number, out: number): void {
+  const n = faces.length;
+  for (let i = 0; i < n; i++) {
+    if (hid[i]) continue;
+    const j = (i + 1) % n;
+    const [nix, niz] = edgeN(L, faces, i, 0);
+    const [njx, njz] = edgeN(L, faces, i, 1);
+    const Qix = L.x[i] + L.ox[i] * out, Qiz = L.z[i] + L.oz[i] * out, Qjx = L.x[j] + L.ox[j] * out, Qjz = L.z[j] + L.oz[j] * out;
+    quadN(w, [Qix, y0, Qiz, Qjx, y0, Qjz, Qjx, y1, Qjz, Qix, y1, Qiz], [nix, 0, niz, njx, 0, njz, njx, 0, njz, nix, 0, niz]);
+    w.quad(L.x[i], y1, L.z[i], L.x[j], y1, L.z[j], Qjx, y1, Qjz, Qix, y1, Qiz, 0, 1, 0);
+  }
+}
+
+/** Turns the vertices written since v0 about (cx, cz) by rot (positions and normals). */
+function turnRange(w: Writer, v0: number, cx: number, cz: number, rot: number): void {
+  if (rot === 0) return;
+  const c = Math.cos(rot), s = Math.sin(rot);
+  for (let v = v0; v < w.nv; v++) {
+    const p = v * 3;
+    const dx = w.pos[p] - cx, dz = w.pos[p + 2] - cz;
+    w.pos[p] = cx + c * dx - s * dz;
+    w.pos[p + 2] = cz + s * dx + c * dz;
+    const nx = w.nrm[p], nz = w.nrm[p + 2];
+    w.nrm[p] = Math.round(c * nx - s * nz);
+    w.nrm[p + 2] = Math.round(s * nx + c * nz);
+  }
+}
+
+/** Where (x, y, z) goes when a body's walls lean in by lean (+x, -x, +z, -z sides) at height h. */
+function leanAt(B: Body, lean: number[], h: number, x: number, y: number, z: number): [number, number, number] {
+  const t = clamp(y / h, 0, 1);
+  if (t <= 0) return [x, z, 0];
+  const c = Math.cos(B.rot), s = Math.sin(B.rot);
+  const dx = x - B.cx, dz = z - B.cz;
+  let lx = c * dx + s * dz, lz = -s * dx + c * dz;
+  const ax = lx >= 0 ? lean[0] : lean[1], az = lz >= 0 ? lean[2] : lean[3];
+  lx *= 1 - (t * ax) / B.hw;
+  lz *= 1 - (t * az) / B.hd;
+  return [B.cx + c * lx - s * lz, B.cz + s * lx + c * lz, Math.max(ax, az) / h];
+}
+
+/** Leans the walls of everything written since v0 (see leanAt); wall normals tip up to match. */
+function leanRange(w: Writer, v0: number, B: Body, lean: number[], h: number): void {
+  if (lean.every((d) => d === 0)) return;
+  for (let v = v0; v < w.nv; v++) {
+    const p = v * 3;
+    const [x, z, slope] = leanAt(B, lean, h, w.pos[p], w.pos[p + 1], w.pos[p + 2]);
+    w.pos[p] = x;
+    w.pos[p + 2] = z;
+    const nx = w.nrm[p] / 127, ny = w.nrm[p + 1] / 127, nz = w.nrm[p + 2] / 127;
+    if (slope > 0 && Math.abs(ny) < 0.5) {
+      const ty = ny + slope * Math.hypot(nx, nz);
+      const l = Math.hypot(nx, ty, nz) || 1;
+      w.nrm[p] = Math.round((nx / l) * 127);
+      w.nrm[p + 1] = Math.round((ty / l) * 127);
+      w.nrm[p + 2] = Math.round((nz / l) * 127);
+    }
+  }
+}
+
+/** The same lean for points stored (x, y, z, ...) every stride numbers from index i0. */
+function leanPoints(d: number[], i0: number, stride: number, B: Body, lean: number[], h: number): void {
+  if (lean.every((v) => v === 0)) return;
+  for (let k = i0; k < d.length; k += stride) {
+    const [x, z] = leanAt(B, lean, h, d[k], d[k + 1], d[k + 2]);
+    d[k] = x;
+    d[k + 2] = z;
+  }
+}
+
+/**
+ * The rounded roof of a slumped house, inside its parapet: a low dome over the whole body, or a
+ * barrel vault along its longer side with flat ends. Turned with the body.
+ */
+/** Which rounded or pitched roof a slumped house wears: 0 dome, 1 barrel vault, 2 pitched (gabled). */
+export const crownKind = (seed: number, i: number): number => {
+  const h = hashU(seed, i, 0x5d);
+  return h < 0.4 ? 0 : h < 0.72 ? 1 : 2;
+};
+
+function softCrown(w: Writer, B: Body, y0: number, rise: number, kind: number, far: boolean): void {
+  const v0 = w.nv;
+  const a = B.hw - 0.4, c = B.hd - 0.4;
+  if (a < 0.6 || c < 0.6) return;
+  const hgt = clamp(rise, 0.6, 0.9 * Math.min(a, c) + 0.6);
+  const vault = kind !== 0;
+  if (!vault) {
+    domeE(w, B.cx, B.cz, a, c, y0, hgt, far ? 4 : 8, far ? 1 : 2, 0);
+  } else {
+    // along local x; a vault along z is the same vault turned a quarter more
+    const along = a >= c;
+    const L = along ? a : c, R = along ? c : a;
+    const K = kind === 2 ? 2 : far ? 2 : 6;
+    const pts: Array<[number, number, number, number]> = [];
+    for (let k = 0; k <= K; k++) {
+      if (kind === 2) {
+        // pitched: two flat slopes meeting in a ridge (eave, ridge, eave); the slope normal sits on both ends of a segment
+        pts.push([R * (1 - k), k === 1 ? hgt : 0, 0, 0]);
+        continue;
+      }
+      const ph = (k / K) * Math.PI;
+      const nz = Math.cos(ph) / R, ny = Math.sin(ph) / hgt;
+      const l = Math.hypot(nz, ny) || 1;
+      pts.push([R * Math.cos(ph), hgt * Math.sin(ph), nz / l, ny / l]);
+    }
+    for (let k = 0; k < K; k++) {
+      let [z0, ya, n0z, n0y] = pts[k], [z1, yb, n1z, n1y] = pts[k + 1];
+      if (kind === 2) {
+        const l = Math.hypot(hgt, R) || 1;
+        n0z = n1z = (k === 0 ? hgt : -hgt) / l;
+        n0y = n1y = R / l;
+      }
+      quadN(
+        w,
+        [B.cx - L, y0 + ya, B.cz + z0, B.cx + L, y0 + ya, B.cz + z0, B.cx + L, y0 + yb, B.cz + z1, B.cx - L, y0 + yb, B.cz + z1],
+        [0, n0y, n0z, 0, n0y, n0z, 0, n1y, n1z, 0, n1y, n1z],
+      );
+      if (!far) for (const e of [-1, 1]) w.tri(B.cx + e * L, y0, B.cz, B.cx + e * L, y0 + ya, B.cz + z0, B.cx + e * L, y0 + yb, B.cz + z1, e, 0, 0);
+    }
+    if (!along) turnRange(w, v0, B.cx, B.cz, Math.PI / 2);
+  }
+  turnRange(w, v0, B.cx, B.cz, B.rot);
+}
+
 // ------------------------------------------------------------------ per-building layout shared by near and far
 
 type ParapetStyle = 'plain' | 'crenel' | 'corner';
@@ -653,6 +968,9 @@ export function layoutOf(plan: CityPlan, b: Building, i: number): Layout {
   const H = (k: number): number => hashU(seed, i, k);
   const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2, z0 = b.z - b.d / 2, z1 = b.z + b.d / 2;
   const L: Layout = { x0, z0, x1, z1, pb: 0, pm: 0, style: 'plain', block: null, dome: null, tower: null, spire: null, turrets: null };
+  // round buildings draw their own crowns and have no parapet (see NearBuilder.roundBuilding)
+  if (isRound(b)) return L;
+  const slump = shapeOf(b) === 'slump';
   const minWD = Math.min(b.w, b.d);
   const landmark = b.role === 'landmark';
   const crowned = b.roof === 'dome' || b.roof === 'spire' || b.roof === 'windtower';
@@ -670,6 +988,18 @@ export function layoutOf(plan: CityPlan, b: Building, i: number): Layout {
       L.pm = L.style === 'corner' ? ph + 0.35 : ph;
     }
   }
+  if (slump && minWD >= 2) {
+    // adobe has no merlons: crenels become raised, rounded corners, and a bare roof gets a low lip
+    if (L.style === 'crenel') {
+      L.style = 'corner';
+      L.pb = Math.max(L.pb, 0.5);
+      L.pm = L.pb + 0.35;
+    }
+    if (L.pb === 0) {
+      L.pb = 0.22;
+      L.pm = 0.22;
+    }
+  }
   const crown = Math.max(0, b.crown);
   const inset = L.pb > 0 ? 0.3 : 0;
   if (b.roof === 'terrace' && minWD >= 5) {
@@ -679,7 +1009,7 @@ export function layoutOf(plan: CityPlan, b: Building, i: number): Layout {
     const bx0 = c & 1 ? x1 - bw : x0;
     const bz0 = c & 2 ? z1 - bd : z0;
     L.block = { x0: bx0, z0: bz0, x1: bx0 + bw, z1: bz0 + bd, h: b.h + (crown >= 1.8 ? crown : 2.6) };
-  } else if (b.roof === 'dome' && minWD >= 2.5) {
+  } else if (b.roof === 'dome' && minWD >= 2.5 && !slump) {
     let r = minWD / 2 - inset - 0.25;
     const great = landmark;
     if (!great) r = Math.min(r, 9);
@@ -701,7 +1031,7 @@ export function layoutOf(plan: CityPlan, b: Building, i: number): Layout {
   } else if (b.roof === 'windtower' && minWD >= 3) {
     const s = clamp(minWD * 0.28, 1.6, 3.2);
     const c = Math.floor(H(8) * 4);
-    const off = inset + 0.15 + s / 2;
+    const off = inset + 0.15 + s / 2 + (slump ? 0.35 * slumpRadius(b.w / 2, b.d / 2) : 0);
     const cx = c & 1 ? x1 - off : x0 + off;
     const cz = c & 2 ? z1 - off : z0 + off;
     L.tower = { cx, cz, s, top: b.h + (crown > 1 ? crown : 3.5) };
@@ -716,9 +1046,69 @@ export function layoutOf(plan: CityPlan, b: Building, i: number): Layout {
   return L;
 }
 
+// ------------------------------------------------------------------ outlines against the grid
+
+/** Signed distance to a rounded rectangle body with its own radius per corner ((+x,-z) (+x,+z) (-x,+z) (-x,-z)). */
+function rrDist(B: Body, radii: number[], x: number, z: number): number {
+  const c = Math.cos(B.rot), s = Math.sin(B.rot);
+  const dx = x - B.cx, dz = z - B.cz;
+  const lx = c * dx + s * dz, lz = -s * dx + c * dz;
+  const r = Math.min(radii[lx >= 0 ? (lz < 0 ? 0 : 1) : lz >= 0 ? 2 : 3], B.hw, B.hd);
+  const qx = Math.abs(lx) - (B.hw - r), qz = Math.abs(lz) - (B.hd - r);
+  return Math.hypot(Math.max(qx, 0), Math.max(qz, 0)) + Math.min(Math.max(qx, qz), 0) - r;
+}
+
+/**
+ * Corner radii of a slumped house: rounded unless something is built against both sides of the
+ * corner (then it could not be seen). The occlusion grid leaves a rounded corner's cells open, so a
+ * neighbour's wall beside the notch is always drawn. A turned house is rounded all round.
+ */
+function slumpRadii(b: Building, B: Body, H: (x: number, z: number) => number): number[] {
+  if (B.rot !== 0) return [B.rc, B.rc, B.rc, B.rc];
+  const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2, z0 = b.z - b.d / 2, z1 = b.z + b.d / 2;
+  const C: Array<[number, number, number, number]> = [[x1, z0, 1, -1], [x1, z1, 1, 1], [x0, z1, -1, 1], [x0, z0, -1, -1]];
+  return C.map(([x, z, sx, sz]) => (H(x + sx * 0.5, z - sz * 0.5) > 0 && H(x - sx * 0.5, z + sz * 0.5) > 0 ? 0 : B.rc));
+}
+
+/**
+ * The height grid as an occluder: each cell keeps its roof height only where the drawn walls fill
+ * it completely, else 0. Walls hide themselves against it, so a wall is only left out where a
+ * neighbour's wall really stands in front of it (round and turned houses leave gaps at their lot edges).
+ */
+function occlusionGrid(plan: CityPlan): Float32Array {
+  const gs = plan.gridSize | 0, gh = plan.gridHalf, grid = plan.grid;
+  const occ = grid.slice();
+  const H = (x: number, z: number): number => {
+    const i = Math.floor(x + gh), j = Math.floor(z + gh);
+    if (i < 0 || j < 0 || i >= gs || j >= gs) return 0;
+    return grid[j * gs + i] || 0;
+  };
+  for (const b of plan.buildings) {
+    const shape = shapeOf(b);
+    if (!b.solid || shape === 'box') continue;
+    const B = bodyOf(b);
+    const radii = B ? (shape === 'slump' ? slumpRadii(b, B, H) : [B.rc, B.rc, B.rc, B.rc]) : null;
+    const i0 = Math.round(b.x - b.w / 2 + gh), j0 = Math.round(b.z - b.d / 2 + gh);
+    for (let j = j0; j < j0 + b.d; j++) {
+      if (j < 0 || j >= gs) continue;
+      for (let i = i0; i < i0 + b.w; i++) {
+        if (i < 0 || i >= gs) continue;
+        let full = B !== null && radii !== null;
+        if (full) {
+          const x = i - gh, z = j - gh;
+          for (let k = 0; k < 4 && full; k++) if (rrDist(B!, radii!, x + (k & 1), z + (k >> 1)) > 0.01) full = false;
+        }
+        if (!full) occ[j * gs + i] = 0;
+      }
+    }
+  }
+  return occ;
+}
+
 // ------------------------------------------------------------------ the near city
 
-class NearBuilder {
+/** @internal Exported for tests; use buildCity. */
+export class NearBuilder {
   readonly w = new Writer(1 << 16, 1 << 17);
   readonly cloth = new Writer(4096, 8192);
   readonly plants = new Writer(4096, 8192);
@@ -727,6 +1117,10 @@ class NearBuilder {
   /** The room each enterable building holds, by building index. */
   private readonly rooms = new Map<number, Room>();
   private readonly grid: Float32Array;
+  /** The grid as an occluder (see occlusionGrid). */
+  private readonly occ: Float32Array;
+  /** Lot of the building being built: neighbour samples skip past it (a turned or round body stands inside it). */
+  private self: { x0: number; z0: number; x1: number; z1: number } | null = null;
   private readonly gs: number;
   private readonly gh: number;
   private readonly seed: number;
@@ -735,6 +1129,7 @@ class NearBuilder {
 
   constructor(private readonly plan: CityPlan) {
     this.grid = plan.grid;
+    this.occ = occlusionGrid(plan);
     this.gs = plan.gridSize | 0;
     this.gh = plan.gridHalf;
     this.seed = plan.site.seed | 0;
@@ -756,9 +1151,31 @@ class NearBuilder {
     return this.grid[j * this.gs + i] || 0;
   }
 
-  /** Height of the neighbour just outside a face at u (out metres from the wall). */
+  /** Occluder height of the cell containing local (x, z). */
+  O(x: number, z: number): number {
+    const i = Math.floor(x + this.gh);
+    const j = Math.floor(z + this.gh);
+    if (i < 0 || j < 0 || i >= this.gs || j >= this.gs) return 0;
+    return this.occ[j * this.gs + i] || 0;
+  }
+
+  /** Height of the neighbour just outside a face at u (out metres past the wall, or past the building's own lot). */
   nb(f: Face, u: number, out = 0.5): number {
-    return this.H(px(f, u, out), pz(f, u, out));
+    let x = px(f, u, 0), z = pz(f, u, 0);
+    const S = this.self;
+    if (S && x > S.x0 + EPS && x < S.x1 - EPS && z > S.z0 + EPS && z < S.z1 - EPS) {
+      // walk out along the normal to the edge of the lot first
+      let t = Infinity;
+      if (f.nx > 1e-6) t = Math.min(t, (S.x1 - x) / f.nx);
+      else if (f.nx < -1e-6) t = Math.min(t, (S.x0 - x) / f.nx);
+      if (f.nz > 1e-6) t = Math.min(t, (S.z1 - z) / f.nz);
+      else if (f.nz < -1e-6) t = Math.min(t, (S.z0 - z) / f.nz);
+      if (Number.isFinite(t)) {
+        x += f.nx * t;
+        z += f.nz * t;
+      }
+    }
+    return this.H(x + f.nx * out, z + f.nz * out);
   }
 
   /** Neighbour height over a span of the face (max). */
@@ -768,8 +1185,10 @@ class NearBuilder {
     return Math.max(m, this.nb(f, Math.min(u1, f.len - 0.01)), this.nb(f, Math.max(u0, 0.01)));
   }
 
+  /** Is a wall on its lot edge covered by the neighbours' walls all along, up to top? */
   hidden(f: Face, top: number): boolean {
-    for (let u = 0.5; u < f.len; u += 1) if (this.nb(f, u) < top - 0.01) return false;
+    if (f.len < 0.5) return false;
+    for (let u = 0.5; u < f.len; u += 1) if (this.O(px(f, u, 0.5), pz(f, u, 0.5)) < top - 0.01) return false;
     return true;
   }
 
@@ -804,8 +1223,29 @@ class NearBuilder {
       return;
     }
     const L = layoutOf(this.plan, b, i);
+    this.self = { x0: L.x0, z0: L.z0, x1: L.x1, z1: L.z1 };
+    const v0 = w.nv, c0 = this.cloth.nv, g0 = this.glows.d.length;
     if (b.role === 'wall') this.rampart(b, L, rng);
+    else if (isRound(b)) this.roundBuilding(b, rng, i);
     else this.blockBuilding(b, L, rng, i);
+    this.self = null;
+    const shape = shapeOf(b);
+    if (shape === 'slump' || shape === 'dome') {
+      // adobe walls lean in as they rise: the whole house (with its awnings and window glows) is
+      // drawn in toward its middle, on every side with open ground in front of it
+      const B = bodyOf(b)!;
+      const d = clamp(0.045 * b.h, 0.15, 0.4);
+      let lean = [d, d, d, d];
+      if (shape === 'slump' && B.rot === 0) {
+        lean = rectFaces(L.x0, L.z0, L.x1, L.z1).map((f) => {
+          for (let u = 0.5; u < f.len; u += 1) if (this.H(px(f, u, 0.5), pz(f, u, 0.5)) > 0) return 0;
+          return d;
+        });
+      }
+      leanRange(w, v0, B, lean, b.h);
+      leanRange(this.cloth, c0, B, lean, b.h);
+      leanPoints(this.glows.d, g0, 7, B, lean, b.h);
+    }
   }
 
   /** Solid thing with roof 'none' and no special role: just a plain plastered block. */
@@ -827,23 +1267,47 @@ class NearBuilder {
     const hall = b.role === 'hall' || b.role === 'market';
     const wallMat = landmark || gate ? MAT.stone : MAT.plaster;
     const top = b.h + L.pb;
-    const faces = rectFaces(L.x0, L.z0, L.x1, L.z1);
-    const holes: Hole[][] = [[], [], [], []];
-    const hid = faces.map((f) => this.hidden(f, top));
+    // a slumped house is a rounded (and maybe turned) outline; anything else is its lot rectangle
+    let loop: Loop | null = null;
+    let faces: Face[];
+    let radii: number[] = [0, 0, 0, 0];
+    if (shapeOf(b) === 'slump') {
+      const B = bodyOf(b)!;
+      radii = slumpRadii(b, B, (x, z) => this.H(x, z));
+      loop = roundedLoop(B, radii, 2);
+      faces = loopFaces(loop);
+    } else {
+      faces = rectFaces(L.x0, L.z0, L.x1, L.z1);
+    }
+    const turned = loop !== null && (b.rot ?? 0) !== 0;
+    const nf = faces.length;
+    /** Straight sides (the only faces that take openings and fittings). */
+    const straight = faces.map((_, fi) => !loop || loop.side[fi] >= 0);
+    const holes: Hole[][] = faces.map(() => []);
+    const hid = faces.map((f, fi) => !turned && straight[fi] && this.hidden(f, top));
     const litChance = clamp(0.15 + 0.5 * hashU(this.seed, i, 0x77), 0, 0.75);
     const lit = (): number => (rng() < litChance ? 1 + Math.floor(rng() * 254) : 0);
-    const arcadeFace = [false, false, false, false];
+    const arcadeFace = faces.map(() => false);
     const room = this.rooms.get(i) ?? null;
+    // a room's door is on a side of the lot; a slumped house draws that side as a straight edge that starts after its corner arc
+    let doorEdge = -1;
+    let doorShift = 0;
     let doorway: Hole | null = null;
     if (room) {
-      // the walk-in doorway, open right through the wall (a landmark's is its great portal)
       const d = room.door;
-      doorway = doorHole(room, 0, room.t);
-      if (!d.portal) holes[d.fi].push(doorway);
-      const f = faces[d.fi];
-      const uc = (d.u0 + d.u1) / 2;
+      doorEdge = loop ? loop.side.indexOf(d.fi) : d.fi;
+      const f = faces[doorEdge];
+      if (loop) {
+        const f0 = rectFaces(L.x0, L.z0, L.x1, L.z1)[d.fi];
+        doorShift = (f.ox - f0.ox) * f0.tx + (f.oz - f0.oz) * f0.tz;
+      }
+      hid[doorEdge] = false;
+      // the walk-in doorway, open right through the wall (a landmark's is its great portal)
+      doorway = doorHole(room, doorShift, room.t);
+      if (!d.portal) holes[doorEdge].push(doorway);
+      const uc = (d.u0 + d.u1) / 2 - doorShift;
       this.doors.push({ x: px(f, uc, 0), z: pz(f, uc, 0), nx: f.nx, nz: f.nz, w: d.u1 - d.u0 });
-      this.curtain(f, room, rng);
+      this.curtain(f, room, rng, doorShift);
     }
 
     // ground openings: gate portals, arcades for halls and landmarks, doors for houses
@@ -874,9 +1338,9 @@ class NearBuilder {
       const bw = landmark ? 2.4 : 2.0;
       const bayH = Math.min(landmark ? 4.2 : 3.0, b.h - 0.8);
       const step = landmark ? 3.8 : 3.4;
-      for (let fi = 0; fi < 4; fi++) {
+      for (let fi = 0; fi < nf; fi++) {
         const f = faces[fi];
-        if (hid[fi] || f.len < 5 || bayH < 2.2) continue;
+        if (hid[fi] || !straight[fi] || f.len < 5 || bayH < 2.2) continue;
         if (this.street(f, f.len / 2, 4) < 2) continue;
         arcadeFace[fi] = true;
         // landmarks get one great arched portal in the middle of each open face
@@ -886,7 +1350,7 @@ class NearBuilder {
           const ph = Math.min(b.h * 0.75, 12);
           const u0 = (f.len - pw) / 2;
           portal = { u0, u1: u0 + pw, y0: 0, y1: ph, d: 2.4, back: MAT.opening, seed: lit(), arch: pw * 0.6, k: 7, point: 0.4 };
-          if (doorway && room && room.door.portal && room.door.fi === fi) portal = doorway;
+          if (doorway && room && room.door.portal && doorEdge === fi) portal = doorway;
           holes[fi].push(portal);
         }
         const n = Math.floor((f.len - 1.2) / step);
@@ -900,12 +1364,13 @@ class NearBuilder {
         }
       }
     }
+    const frames: Array<{ f: Face; h: Hole }> = [];
     if (!gate) {
       // doors on street-facing sides
       const cands: Array<{ fi: number; u: number; s: number }> = [];
-      for (let fi = 0; fi < 4; fi++) {
+      for (let fi = 0; fi < nf; fi++) {
         const f = faces[fi];
-        if (hid[fi] || arcadeFace[fi] || f.len < 2.6) continue;
+        if (hid[fi] || !straight[fi] || arcadeFace[fi] || f.len < 2.6) continue;
         for (let u = 1.3; u <= f.len - 1.3; u += 1) {
           if (this.nb(f, u - 0.8) > 0 || this.nb(f, u + 0.8) > 0) continue;
           const s = this.street(f, u, 6);
@@ -922,11 +1387,13 @@ class NearBuilder {
         if (dh < 1.9) break;
         const u0 = c.u - dw / 2, u1 = c.u + dw / 2;
         if (u0 < 0.4 || u1 > f.len - 0.4 || overlaps(holes[c.fi], u0, u1, 0, dh, 1.2)) continue;
-        const arched = landmark || rng() < 0.45;
-        holes[c.fi].push({
+        const arched = landmark || rng() < (loop ? 0.75 : 0.45);
+        const door: Hole = {
           u0, u1, y0: 0, y1: dh, d: 0.45, back: rng() < 0.55 ? MAT.wood : MAT.opening,
           seed: rng() < 0.2 ? lit() : 0, arch: arched ? dw * 0.5 : 0, k: 3, point: 0.3,
-        });
+        };
+        holes[c.fi].push(door);
+        if (loop && arched && hashU(this.seed, i, 0x3d + placed) < 0.38) frames.push({ f, h: door });
         this.doors.push({ x: px(f, c.u, 0), z: pz(f, c.u, 0), nx: f.nx, nz: f.nz, w: dw });
         placed++;
       }
@@ -934,12 +1401,12 @@ class NearBuilder {
 
     // windows, storey by storey
     const storeys = Math.max(1, Math.floor((b.h + 0.4) / STOREY));
-    const spacing = ((landmark ? 3.4 : 3.0) + hashU(this.seed, i, 0x31) * 1.4) * this.density;
+    const spacing = ((landmark ? 3.4 : 3.0) + hashU(this.seed, i, 0x31) * 1.4) * this.density * (loop ? 1.45 : 1);
     const skipP = landmark ? 0.05 : 0.14;
     const archWin = landmark || (hall && rng() < 0.6);
-    for (let fi = 0; fi < 4; fi++) {
+    for (let fi = 0; fi < nf; fi++) {
       const f = faces[fi];
-      if (hid[fi] || f.len < 2) continue;
+      if (hid[fi] || !straight[fi] || f.len < 2) continue;
       let cols = Math.floor((f.len - 0.6) / spacing);
       if (cols < 1) cols = 1;
       for (let k = 0; k < storeys; k++) {
@@ -981,32 +1448,56 @@ class NearBuilder {
     if (room) for (const hs of holes) for (const h of hs) if (!h.through) h.d = Math.min(h.d, room.t - 0.06);
     w.mat = wallMat;
     w.tint = this.tintByte(b.tint);
-    for (let fi = 0; fi < 4; fi++) if (!hid[fi] || (room && room.door.fi === fi)) wallFace(w, faces[fi], FOOT, top, holes[fi]);
-    // the walkable roof, exactly at h
-    w.mat = landmark || gate ? MAT.stone : MAT.roof;
-    w.quad(L.x0, b.h, L.z0, L.x1, b.h, L.z0, L.x1, b.h, L.z1, L.x0, b.h, L.z1, 0, 1, 0);
-    w.mat = wallMat;
-    if (L.pb > 0) this.parapet(L.x0, L.z0, L.x1, L.z1, b.h, L, faces);
+    if (loop) {
+      // the parapet rises a little at the rounded corners: hand-smoothed, never quite level
+      const n = loop.x.length;
+      const bump = L.style === 'corner' ? L.pm - L.pb : 0.08 + 0.1 * hashU(this.seed, i, 0x3a);
+      const yt = loop.x.map((_, v) => (loop!.side[v] < 0 && loop!.side[(v + n - 1) % n] < 0 ? top + bump : top));
+      loopWalls(w, loop, faces, hid, FOOT, yt, holes);
+
+      w.mat = MAT.roof;
+      capLoop(w, loop, b.h);
+      w.mat = wallMat;
+      if (L.pb > 0) loopParapet(w, loop, faces, b.h, yt, 0.3, 0.07);
+      // plaster bands: under the roof line, and on the storey line of taller houses
+      const bandR = hashU(this.seed, i, 0x3b);
+      if (bandR < 0.16 && b.h >= 3) loopBand(w, loop, faces, hid, b.h - 0.42, b.h - 0.18, 0.06);
+      else if (bandR > 0.84 && b.h >= 6) loopBand(w, loop, faces, hid, STOREY - 0.2, STOREY + 0.04, 0.06);
+      for (const fr of frames) this.archFrame(fr.f, fr.h);
+      if (b.roof === 'dome') {
+        w.mat = MAT.roof;
+        softCrown(w, bodyOf(b)!, b.h, b.crown, crownKind(this.seed, i), false);
+        w.mat = wallMat;
+      }
+    } else {
+      for (let fi = 0; fi < 4; fi++) if (!hid[fi]) wallFace(w, faces[fi], FOOT, top, holes[fi]);
+      // the walkable roof, exactly at h
+      w.mat = landmark || gate ? MAT.stone : MAT.roof;
+      w.quad(L.x0, b.h, L.z0, L.x1, b.h, L.z0, L.x1, b.h, L.z1, L.x0, b.h, L.z1, 0, 1, 0);
+      w.mat = wallMat;
+      if (L.pb > 0) this.parapet(L.x0, L.z0, L.x1, L.z1, b.h, L, faces);
+    }
 
     // roof-line details
     if (!gate && !landmark) {
       const r = rng();
-      if (r < 0.28 && L.pb < 0.75) this.beams(b, faces, hid, holes, rng);
-      else if (r < 0.62) this.spouts(b, L, faces, hid, rng);
+      if (r < 0.28 && L.pb < 0.75) this.beams(b, faces, hid, holes, straight, rng);
+      else if (r < 0.62) this.spouts(b, L, faces, hid, straight, rng);
       if (b.h <= 9.6) this.awnings(b, faces, hid, holes, arcadeFace, rng);
+      if (loop && !L.block && !L.tower && b.roof !== 'dome') this.roofClutter(b, L, i, rng);
     }
 
-    if (L.block) this.terraceBlock(b, L, rng, litChance);
+    if (L.block) this.terraceBlock(b, L, rng, litChance, loop ? radii : null);
     if (L.dome) this.domeCrown(b, L, rng);
-    if (L.tower) this.windTower(b, L);
+    if (L.tower) this.windTower(b, L, loop !== null);
     if (L.spire) this.spireCrown(b, L);
     if (L.turrets) this.turrets(b, L);
   }
 
   /** A cloth hung in a doorway: a valance under the lintel and the two halves drawn back to the jambs. */
-  private curtain(f: Face, room: Room, rng: () => number): void {
+  private curtain(f: Face, room: Room, rng: () => number, shift = 0): void {
     const c = this.cloth;
-    const d = room.door;
+    const d = { ...room.door, u0: room.door.u0 - shift, u1: room.door.u1 - shift };
     const spring = d.top - d.arch;
     const off = -Math.min(0.12, room.t * 0.3);
     c.mat = MAT.cloth;
@@ -1077,13 +1568,14 @@ class NearBuilder {
     }
   }
 
-  private beams(b: Building, faces: Face[], hid: boolean[], holes: Hole[][], rng: () => number): void {
+  private beams(b: Building, faces: Face[], hid: boolean[], holes: Hole[][], straight: boolean[], rng: () => number): void {
     const w = this.w;
     w.mat = MAT.wood;
     const y = b.h - 0.5;
     let done = 0;
-    for (let fi = 0; fi < 4 && done < 2; fi++) {
+    for (let fi = 0; fi < faces.length && done < 2; fi++) {
       const f = faces[fi];
+      if (!straight[fi]) continue;
       if (hid[fi] || rng() < 0.4) continue;
       for (let u = 0.7; u < f.len - 0.5; u += 1.35) {
         if (this.nb(f, u) > y - 0.5 || overlaps(holes[fi], u - 0.12, u + 0.12, y, y + 0.22, 0.1)) continue;
@@ -1094,11 +1586,12 @@ class NearBuilder {
     w.mat = MAT.plaster;
   }
 
-  private spouts(b: Building, L: Layout, faces: Face[], hid: boolean[], rng: () => number): void {
+  private spouts(b: Building, L: Layout, faces: Face[], hid: boolean[], straight: boolean[], rng: () => number): void {
     const w = this.w;
     const n = 1 + Math.floor(rng() * 2);
+    const sides = faces.map((_, fi) => fi).filter((fi) => straight[fi]);
     for (let k = 0; k < n; k++) {
-      const fi = Math.floor(rng() * 4);
+      const fi = sides[Math.floor(rng() * sides.length)];
       const f = faces[fi];
       if (hid[fi] || f.len < 2) continue;
       const u = 0.8 + rng() * (f.len - 1.6);
@@ -1113,7 +1606,7 @@ class NearBuilder {
   /** Cloth awnings over the ground floor on avenue fronts. */
   private awnings(b: Building, faces: Face[], hid: boolean[], holes: Hole[][], arcade: boolean[], rng: () => number): void {
     const c = this.cloth;
-    for (let fi = 0; fi < 4; fi++) {
+    for (let fi = 0; fi < faces.length; fi++) {
       const f = faces[fi];
       if (hid[fi] || arcade[fi] || f.len < 3.5) continue;
       if (this.street(f, f.len / 2, 7) < 6 || rng() < 0.62) continue;
@@ -1147,27 +1640,55 @@ class NearBuilder {
     }
   }
 
-  private terraceBlock(b: Building, L: Layout, rng: () => number, litChance: number): void {
+  private terraceBlock(b: Building, L: Layout, rng: () => number, litChance: number, radii: number[] | null): void {
     const B = L.block!;
     const w = this.w;
-    const faces = rectFaces(B.x0, B.z0, B.x1, B.z1);
     const top = B.h;
+    // which of the house's corners the block shares, (+x,-z) (+x,+z) (-x,+z) (-x,-z)
+    const own = [B.x1 === L.x1 && B.z0 === L.z0, B.x1 === L.x1 && B.z1 === L.z1, B.x0 === L.x0 && B.z1 === L.z1, B.x0 === L.x0 && B.z0 === L.z0];
+    let loop: Loop | null = null;
+    let faces: Face[];
+    if (radii) {
+      // a slumped house's block keeps the house's corner where it shares it and is rounded elsewhere
+      const rcB = Math.min(0.8, 0.3 * Math.min(B.x1 - B.x0, B.z1 - B.z0));
+      const body: Body = { cx: (B.x0 + B.x1) / 2, cz: (B.z0 + B.z1) / 2, hw: (B.x1 - B.x0) / 2, hd: (B.z1 - B.z0) / 2, rot: 0, rc: rcB };
+      loop = roundedLoop(body, own.map((o, k) => (o ? radii[k] : rcB)), 2);
+      faces = loopFaces(loop);
+    } else {
+      faces = rectFaces(B.x0, B.z0, B.x1, B.z1);
+    }
+    const sideOf = (fi: number): number => (loop ? loop.side[fi] : fi);
     // a face is flush when it lies on the building's outer wall
-    const flush = [B.x1 === L.x1, B.x0 === L.x0, B.z1 === L.z1, B.z0 === L.z0];
+    const flushSide = [B.x1 === L.x1, B.x0 === L.x0, B.z1 === L.z1, B.z0 === L.z0];
+    const flush = faces.map((_, fi) => sideOf(fi) >= 0 && flushSide[sideOf(fi)]);
     const stairFace = (() => {
       const steps = Math.ceil((top - b.h) / 0.32);
       const need = steps * 0.32 + 0.6;
       const roomX = (L.x1 - L.x0) - (B.x1 - B.x0) - 0.3;
       const roomZ = (L.z1 - L.z0) - (B.z1 - B.z0) - 0.3;
-      for (let fi = 0; fi < 4; fi++) {
-        if (flush[fi] || faces[fi].len < need) continue;
-        const room = fi < 2 ? roomX : roomZ;
+      for (let fi = 0; fi < faces.length; fi++) {
+        if (sideOf(fi) < 0 || flush[fi] || faces[fi].len < need) continue;
+        const room = sideOf(fi) < 2 ? roomX : roomZ;
         if (room >= 1.2) return fi;
       }
       return -1;
     })();
-    for (let fi = 0; fi < 4; fi++) {
+    const n = faces.length;
+    for (let fi = 0; fi < n; fi++) {
       const f = faces[fi];
+      if (loop && loop.side[fi] < 0) {
+        // a corner arc: from the parapet top where it rounds the house's own corner
+        const j = (fi + 1) % n;
+        const mx = (loop.x[fi] + loop.x[j]) / 2 - loop.cx, mz = (loop.z[fi] + loop.z[j]) / 2 - loop.cz;
+        const corner = mx >= 0 ? (mz < 0 ? 0 : 1) : mz >= 0 ? 2 : 3;
+        const y0 = own[corner] ? b.h + L.pb : b.h;
+        quadN(
+          w,
+          [loop.x[fi], y0, loop.z[fi], loop.x[j], y0, loop.z[j], loop.x[j], top, loop.z[j], loop.x[fi], top, loop.z[fi]],
+          [loop.nx[fi], 0, loop.nz[fi], loop.nx[j], 0, loop.nz[j], loop.nx[j], 0, loop.nz[j], loop.nx[fi], 0, loop.nz[fi]],
+        );
+        continue;
+      }
       const y0 = flush[fi] ? b.h + L.pb : b.h;
       const holes: Hole[] = [];
       if (fi !== stairFace && top - b.h >= 2.4) {
@@ -1176,29 +1697,34 @@ class NearBuilder {
         const cols = Math.max(1, Math.floor((f.len - 0.6) / 2.8));
         for (let c = 0; c < cols; c++) {
           const uc = ((c + 0.5) * f.len) / cols;
-          if (rng() < 0.3 || y1 - sill < 0.5) continue;
+          if (rng() < 0.3 || y1 - sill < 0.5 || uc < 0.5 || uc > f.len - 0.5) continue;
           if (flush[fi] && this.nbSpan(f, uc - 0.35, uc + 0.35) > sill - 0.3) continue;
           const s = rng() < litChance ? 1 + Math.floor(rng() * 254) : 0;
-          holes.push({ u0: uc - 0.35, u1: uc + 0.35, y0: sill, y1, d: 0.3, back: MAT.opening, seed: s, arch: 0, k: 3, point: 0 });
+          holes.push({ u0: uc - 0.35, u1: uc + 0.35, y0: sill, y1, d: 0.3, back: MAT.opening, seed: s, arch: loop ? 0.35 : 0, k: 3, point: 0 });
           if (s > 0) this.windowGlow(f, uc, (sill + y1) / 2, s);
         }
         if (!flush[fi] && f.len >= 2.4 && rng() < 0.7) {
           const uc = f.len * (0.3 + 0.4 * rng());
           if (!overlaps(holes, uc - 0.5, uc + 0.5, b.h, b.h + 2.1, 0.3)) {
-            holes.push({ u0: uc - 0.45, u1: uc + 0.45, y0: b.h, y1: Math.min(b.h + 2.1, top - 0.4), d: 0.35, back: MAT.wood, seed: 0, arch: 0, k: 3, point: 0 });
+            holes.push({ u0: uc - 0.45, u1: uc + 0.45, y0: b.h, y1: Math.min(b.h + 2.1, top - 0.4), d: 0.35, back: MAT.wood, seed: 0, arch: loop ? 0.45 : 0, k: 3, point: 0 });
           }
         }
       }
       wallFace(w, f, y0, top, holes);
     }
     w.mat = MAT.roof;
-    w.quad(B.x0, top, B.z0, B.x1, top, B.z0, B.x1, top, B.z1, B.x0, top, B.z1, 0, 1, 0);
+    if (loop) capLoop(w, loop, top);
+    else w.quad(B.x0, top, B.z0, B.x1, top, B.z0, B.x1, top, B.z1, B.x0, top, B.z1, 0, 1, 0);
     w.mat = MAT.plaster;
     // a thin lip round the block's roof
     const lip = 0.25;
-    for (const f of faces) {
-      faceBox(w, f, 0, f.len, top, top + lip, -0.2, 0, 1 | 2);
-      faceQuad(w, { ...f, nx: -f.nx, nz: -f.nz }, 0.2, f.len - 0.2, top, top + lip, 0.2);
+    if (loop) {
+      loopParapet(w, loop, faces, top, loop.x.map(() => top + lip), 0.2, 0.06);
+    } else {
+      for (const f of faces) {
+        faceBox(w, f, 0, f.len, top, top + lip, -0.2, 0, 1 | 2);
+        faceQuad(w, { ...f, nx: -f.nx, nz: -f.nz }, 0.2, f.len - 0.2, top, top + lip, 0.2);
+      }
     }
     if (stairFace >= 0) {
       const f = faces[stairFace];
@@ -1261,15 +1787,38 @@ class NearBuilder {
     w.mat = MAT.plaster;
   }
 
-  private windTower(b: Building, L: Layout): void {
+  private windTower(b: Building, L: Layout, soft: boolean): void {
     const T = L.tower!;
     const w = this.w;
     const h2 = T.s / 2;
     const capT = 0.25;
     const top = T.top - capT;
-    const faces = rectFaces(T.cx - h2, T.cz - h2, T.cx + h2, T.cz + h2);
     const slotH = Math.min(1.8, (top - b.h) * 0.35);
     w.mat = MAT.plaster;
+    if (soft) {
+      // a round-cornered shaft with slots on its flat sides, under a rounded cap
+      const rc = T.s * 0.28;
+      const loop = roundedLoop({ cx: T.cx, cz: T.cz, hw: h2, hd: h2, rot: 0, rc }, [rc, rc, rc, rc], 2);
+      const faces = loopFaces(loop);
+      const holes = faces.map((f, fi) => {
+        const hs: Hole[] = [];
+        if (loop.side[fi] < 0) return hs;
+        const n = f.len >= 1.6 ? 2 : 1;
+        for (let k = 0; k < n; k++) {
+          const uc = ((k + 0.5) * f.len) / n;
+          hs.push({ u0: uc - 0.15, u1: uc + 0.15, y0: top - 0.25 - slotH, y1: top - 0.25, d: 0.35, back: MAT.opening, seed: 0, arch: 0.15, k: 2, point: 0.2 });
+        }
+        return hs;
+      });
+      const open = faces.map(() => false);
+      loopWalls(w, loop, faces, open, b.h, loop.x.map(() => T.top), holes);
+      w.mat = MAT.roof;
+      loopBand(w, loop, faces, open, T.top - 0.25, T.top + 0.05, 0.14);
+      capLoop(w, loop, T.top + 0.05);
+      w.mat = MAT.plaster;
+      return;
+    }
+    const faces = rectFaces(T.cx - h2, T.cz - h2, T.cx + h2, T.cz + h2);
     for (const f of faces) {
       const holes: Hole[] = [];
       const n = T.s >= 2.4 ? 3 : 2;
@@ -1346,6 +1895,445 @@ class NearBuilder {
       dome(w, x + s / 2, z + s / 2, s * 0.42, top, s * 0.55, 12, 5, 0.3);
     }
     w.mat = MAT.plaster;
+  }
+
+  // ---------------------------------------------------------------- adobe details
+
+  /** A raised plaster surround round an arched doorway: two jambs and a band following the arch. */
+  private archFrame(f: Face, h: Hole): void {
+    const w = this.w;
+    const t = 0.13, o = 0.05;
+    if (h.arch <= 0 || h.u0 - t < 0.05 || h.u1 + t > f.len - 0.05) return;
+    const ys = h.y1 - h.arch;
+    faceBox(w, f, h.u0 - t, h.u0, h.y0, ys, 0, o, 1 | 8);
+    faceBox(w, f, h.u1, h.u1 + t, h.y0, ys, 0, o, 1 | 16);
+    const K = h.k, hw = (h.u1 - h.u0) / 2, p = h.point, uc = h.u0 + hw;
+    const iu: number[] = [], iy: number[] = [], ou: number[] = [], oy: number[] = [];
+    for (let k = 0; k <= 2 * K; k++) {
+      const left = k <= K;
+      const q = left ? k / K : (2 * K - k) / K;
+      const a = q * Math.PI * 0.5;
+      const du = hw * ((1 - p) * (1 - Math.cos(a)) + p * q);
+      const u = k === K ? uc : left ? h.u0 + du : h.u1 - du;
+      const y = k === K ? h.y1 : ys + h.arch * ((1 - p) * Math.sin(a) + p * q);
+      const l = Math.hypot(u - uc, y - ys) || 1;
+      iu.push(u);
+      iy.push(y);
+      ou.push(u + ((u - uc) / l) * t);
+      oy.push(y + ((y - ys) / l) * t);
+    }
+    for (let k = 0; k < 2 * K; k++) {
+      w.quad(
+        px(f, iu[k], o), iy[k], pz(f, iu[k], o), px(f, iu[k + 1], o), iy[k + 1], pz(f, iu[k + 1], o),
+        px(f, ou[k + 1], o), oy[k + 1], pz(f, ou[k + 1], o), px(f, ou[k], o), oy[k], pz(f, ou[k], o),
+        f.nx, 0, f.nz,
+      );
+    }
+  }
+
+  /** A water tank or a capped vent or two on a slumped house's roof, clear of its parapet. */
+  private roofClutter(b: Building, L: Layout, i: number, rng: () => number): void {
+    const r = hashU(this.seed, i, 0x5c);
+    if (r > 0.16) return;
+    const B = bodyOf(b)!;
+    const m = (L.pb > 0.25 ? 0.3 : 0) + 1.0;
+    if (B.hw - m < 0.5 || B.hd - m < 0.5) return;
+    const c = Math.cos(B.rot), s = Math.sin(B.rot);
+    const w = this.w;
+    const n = r < 0.06 ? 2 : 1;
+    for (let k = 0; k < n; k++) {
+      const lx = (rng() * 2 - 1) * (B.hw - m), lz = (rng() * 2 - 1) * (B.hd - m);
+      const x = B.cx + c * lx - s * lz, z = B.cz + s * lx + c * lz;
+      if (rng() < 0.55 && Math.min(B.hw, B.hd) > 2.2) {
+        // a round water tank with a domed lid
+        const tr = 0.4 + rng() * 0.22, th = 0.8 + rng() * 0.45;
+        w.mat = MAT.plaster;
+        cylinder(w, x, z, tr, b.h, b.h + th, 8);
+        w.mat = MAT.roof;
+        dome(w, x, z, tr + 0.04, b.h + th, tr * 0.45, 8, 2, 0);
+      } else {
+        // a vent: a stub under a mushroom cap
+        const vr = 0.16 + rng() * 0.1, vh = 0.4 + rng() * 0.35;
+        w.mat = MAT.plaster;
+        cylinder(w, x, z, vr, b.h, b.h + vh, 5);
+        w.mat = MAT.roof;
+        annulus(w, x, z, vr, vr * 1.8, b.h + vh, 5, false);
+        dome(w, x, z, vr * 1.8, b.h + vh, vr * 1.1, 5, 1, 0);
+      }
+    }
+    w.mat = MAT.plaster;
+  }
+
+  // ---------------------------------------------------------------- round buildings
+
+  private roundBuilding(b: Building, rng: () => number, i: number): void {
+    const w = this.w;
+    w.tint = this.tintByte(b.tint);
+    const litChance = clamp(0.15 + 0.5 * hashU(this.seed, i, 0x77), 0, 0.75);
+    const lit = (): number => (rng() < litChance ? 1 + Math.floor(rng() * 254) : 0);
+    switch (shapeOf(b)) {
+      case 'dome':
+        this.domeHouse(b, rng, i, lit);
+        break;
+      case 'mound':
+        this.moundHut(b, rng, lit);
+        break;
+      case 'tower':
+        this.roundTower(b, rng, i, lit);
+        break;
+      default:
+        this.tieredHall(b, rng, lit);
+    }
+    w.mat = MAT.plaster;
+  }
+
+  /** Faces of a round outline best placed for a door (open ground in front), the most open first, spread round. */
+  private roundDoors(faces: Face[], minLen: number, want: number, rng: () => number): number[] {
+    const c: Array<{ fi: number; s: number }> = [];
+    for (let fi = 0; fi < faces.length; fi++) {
+      const f = faces[fi];
+      if (f.len < minLen) continue;
+      const st = this.street(f, f.len / 2, 6);
+      if (st >= 2) c.push({ fi, s: st + rng() * 1.5 });
+    }
+    c.sort((a, b) => b.s - a.s);
+    const out: number[] = [];
+    const n = faces.length;
+    for (const k of c) {
+      if (out.length >= want) break;
+      if (out.some((o) => Math.min(Math.abs(o - k.fi), n - Math.abs(o - k.fi)) < n / 4)) continue;
+      out.push(k.fi);
+    }
+    return out;
+  }
+
+  /** Small windows round a round wall, a few per storey on the sides that look onto open ground. */
+  private roundWindows(faces: Face[], holes: Hole[][], y0: number, top: number, p: number, rng: () => number, lit: () => number): void {
+    const storeys = Math.max(1, Math.floor((top - y0 + 0.4) / STOREY));
+    for (let st = 0; st < storeys; st++) {
+      const yb = y0 + st * STOREY;
+      const ww = 0.5, wh = st === 0 && y0 <= 0 ? 0.6 : 0.85;
+      const sill = yb + (st === 0 && y0 <= 0 ? 1.35 : 0.95);
+      if (sill + wh > top - 0.45) continue;
+      for (let fi = 0; fi < faces.length; fi++) {
+        const f = faces[fi];
+        if (f.len < ww + 0.4 || rng() > p / this.density) continue;
+        const u0 = (f.len - ww) / 2;
+        if (overlaps(holes[fi], u0, u0 + ww, sill, sill + wh, 0.3)) continue;
+        if (this.nbSpan(f, u0, u0 + ww) > sill - 0.3) continue;
+        const sd = lit();
+        holes[fi].push({ u0, u1: u0 + ww, y0: sill, y1: sill + wh, d: 0.3, back: MAT.opening, seed: sd, arch: rng() < 0.6 ? ww * 0.5 : 0, k: 2, point: 0.2 });
+        if (sd > 0) this.windowGlow(f, f.len / 2, sill + wh / 2, sd);
+      }
+    }
+  }
+
+  /** A house on a round or stadium-shaped base under a smooth dome. */
+  private domeHouse(b: Building, rng: () => number, i: number, lit: () => number): void {
+    const w = this.w;
+    const B = bodyOf(b)!;
+    const loop = roundedLoop(B, [B.rc, B.rc, B.rc, B.rc], B.rc > 2.4 ? 3 : 2);
+    const faces = loopFaces(loop);
+    const open = faces.map(() => false);
+    const holes: Hole[][] = faces.map(() => []);
+    const hall = b.role === 'hall';
+    const frames: Array<{ f: Face; h: Hole }> = [];
+    for (const fi of this.roundDoors(faces, 1.2, hall ? 2 : 1, rng)) {
+      const f = faces[fi];
+      const dw = Math.min(hall ? 1.6 : 1.05, f.len - 0.3);
+      const dh = Math.min(hall ? 2.9 : 2.3, b.h - 0.45);
+      if (dh < 1.9) continue;
+      const u0 = (f.len - dw) / 2;
+      const hole: Hole = { u0, u1: u0 + dw, y0: 0, y1: dh, d: 0.45, back: rng() < 0.55 ? MAT.wood : MAT.opening, seed: rng() < 0.2 ? lit() : 0, arch: dw * 0.5, k: 3, point: 0.2 };
+      holes[fi].push(hole);
+      frames.push({ f, h: hole });
+      this.doors.push({ x: px(f, f.len / 2, 0), z: pz(f, f.len / 2, 0), nx: f.nx, nz: f.nz, w: dw });
+    }
+    this.roundWindows(faces, holes, 0, b.h, 0.18, rng, lit);
+    w.mat = MAT.plaster;
+    loopWalls(w, loop, faces, open, FOOT, loop.x.map(() => b.h), holes);
+    if (hashU(this.seed, i, 0x3c) < 0.35) loopBand(w, loop, faces, open, b.h - 0.38, b.h - 0.12, 0.07);
+    for (const fr of frames) this.archFrame(fr.f, fr.h);
+    w.mat = MAT.roof;
+    capLoop(w, loop, b.h);
+    const rx = B.hw * 0.9, rz = B.hd * 0.9;
+    const hgt = clamp(b.crown, 0.8, 1.15 * Math.min(rx, rz));
+    const big = Math.max(rx, rz) > 4;
+    const point = hashU(this.seed, i, 0x3e) < 0.3 ? 0.22 : 0;
+    domeE(w, B.cx, B.cz, rx, rz, b.h, hgt, big ? 16 : 12, big ? 5 : 4, point);
+    const top = b.h + hgt;
+    if (point > 0) {
+      w.mat = MAT.wood;
+      taper(w, B.cx, B.cz, 0.06, 0, top - 0.05, top + 0.5, 4, 0);
+    } else if (hashU(this.seed, i, 0x3f) < 0.5) {
+      // a little vent at the crown
+      w.mat = MAT.plaster;
+      cylinder(w, B.cx, B.cz, 0.22, top - 0.12, top + 0.3, 6);
+      w.mat = MAT.roof;
+      dome(w, B.cx, B.cz, 0.32, top + 0.3, 0.18, 6, 2, 0);
+    }
+  }
+
+  /** A low earth hut: half an ellipsoid with a flat top at h, entered through a short vaulted tunnel. */
+  private moundHut(b: Building, rng: () => number, lit: () => number): void {
+    const w = this.w;
+    const lot = rectFaces(b.x - b.w / 2, b.z - b.d / 2, b.x + b.w / 2, b.z + b.d / 2);
+    // the tunnel leaves on the side with the most open ground (the longer way on a tie)
+    let side = 0, best = -1;
+    for (let k = 0; k < 4; k++) {
+      const sc = this.street(lot[k], lot[k].len / 2, 6) + (k < 2 ? b.w : b.d) * 0.01;
+      if (sc > best) {
+        best = sc;
+        side = k;
+      }
+    }
+    const dx = side === 0 ? 1 : side === 1 ? -1 : 0, dz = side === 2 ? 1 : side === 3 ? -1 : 0;
+    const E = (dx !== 0 ? b.w : b.d) / 2, Eo = (dx !== 0 ? b.d : b.w) / 2;
+    const back = 0.45, rt = E - 0.55, ro = Eo - 0.12;
+    const mx = b.x - dx * back, mz = b.z - dz * back;
+    const rx = dx !== 0 ? rt : ro, rz = dx !== 0 ? ro : rt;
+    const topT = 0.7;
+    const hgt = (b.h - FOOT * 0.6) / Math.sin(topT * Math.PI * 0.5);
+    const segs = Math.max(rx, rz) > 3.5 ? 16 : 12;
+    w.mat = MAT.plaster;
+    // the mound starts a little below the plateau, so the terrain blend never shows a seam
+    domeE(w, mx, mz, rx, rz, FOOT * 0.6, hgt, segs, 3, 0, topT);
+    // a smoke vent on the flat top
+    cylinder(w, mx, mz, 0.26, b.h - 0.05, b.h + 0.4, 6);
+    w.mat = MAT.roof;
+    annulus(w, mx, mz, 0.12, 0.26, b.h + 0.4, 6, true);
+    w.mat = MAT.plaster;
+    // the tunnel: straight walls under a half-round vault, from inside the mound out to a portal
+    const tx = -dz, tz = dx; // along the portal, so that its normal (tz, -tx) points out along (dx, dz)
+    const wallH = 1.3, vr = 0.74, pd = 0.28;
+    const s1 = E - 0.02, s0 = -back + rt * 0.55, se = s1 - pd;
+    const at = (sAlong: number, sAcross: number): [number, number] => [b.x + dx * sAlong + tx * sAcross, b.z + dz * sAlong + tz * sAcross];
+    if (se > s0 + 0.1) {
+      for (const sg of [-1, 1]) {
+        const [ax, az] = at(s0, sg * vr), [bx, bz] = at(se, sg * vr);
+        w.quad(ax, FOOT, az, bx, FOOT, bz, bx, wallH, bz, ax, wallH, az, tx * sg, 0, tz * sg);
+      }
+      const K = 5;
+      for (let k = 0; k < K; k++) {
+        const p0 = (k / K) * Math.PI, p1 = ((k + 1) / K) * Math.PI;
+        const c0 = Math.cos(p0), s0v = Math.sin(p0), c1 = Math.cos(p1), s1v = Math.sin(p1);
+        const [a0x, a0z] = at(s0, c0 * vr), [b0x, b0z] = at(se, c0 * vr);
+        const [a1x, a1z] = at(s0, c1 * vr), [b1x, b1z] = at(se, c1 * vr);
+        quadN(
+          w,
+          [a0x, wallH + s0v * vr, a0z, b0x, wallH + s0v * vr, b0z, b1x, wallH + s1v * vr, b1z, a1x, wallH + s1v * vr, a1z],
+          [tx * c0, s0v, tz * c0, tx * c0, s0v, tz * c0, tx * c1, s1v, tz * c1, tx * c1, s1v, tz * c1],
+        );
+      }
+    }
+    // the portal: a thick slab with the arched door through it
+    const pw = vr + 0.12, ph = wallH + vr + 0.22;
+    const [fx0, fz0] = at(s1, -pw);
+    const front: Face = { ox: fx0, oz: fz0, tx, tz, nx: dx, nz: dz, len: 2 * pw };
+    const door: Hole = { u0: pw - 0.5, u1: pw + 0.5, y0: 0, y1: Math.min(2.0, ph - 0.2), d: pd + 0.4, back: rng() < 0.6 ? MAT.wood : MAT.opening, seed: rng() < 0.25 ? lit() : 0, arch: 0.5, k: 3, point: 0.1 };
+    wallFace(w, front, FOOT, ph, [door]);
+    faceBox(w, front, 0, 2 * pw, FOOT, ph, -pd, 0, 2 | 8 | 16);
+    if (rng() < 0.35) this.archFrame(front, door);
+    const [cxF, czF] = at(s1, 0);
+    this.doors.push({ x: cxF, z: czF, nx: dx, nz: dz, w: 1.0 });
+  }
+
+  /** A round tower narrowing in steps behind ring bands, with slit windows, under a dome or a lantern. */
+  private roundTower(b: Building, rng: () => number, i: number, lit: () => number): void {
+    const w = this.w;
+    const R = towerRadius(b);
+    const cx = b.x, cz = b.z;
+    const landmark = b.role === 'landmark';
+    const wallMat = landmark ? MAT.stone : MAT.plaster;
+    const n = clamp(Math.round(b.h / 6.5), 1, 6);
+    const shrink = n > 1 ? 0.2 : 0.06;
+    const rAt = (k: number): number => R * (1 - (shrink * k) / Math.max(1, n - 1));
+    const sides = R < 2.2 ? 10 : R < 3.6 ? 12 : 16;
+    const band = 0.18;
+    const slitP = (landmark ? 0.3 : 0.24) / this.density;
+    for (let k = 0; k < n; k++) {
+      const r = rAt(k);
+      const y0 = k === 0 ? FOOT : (b.h * k) / n;
+      const y1 = (b.h * (k + 1)) / n;
+      const loop = circleLoop(cx, cz, r, sides);
+      const faces = loopFaces(loop);
+      const holes: Hole[][] = faces.map(() => []);
+      if (k === 0) {
+        for (const fi of this.roundDoors(faces, 1.1, 1, rng)) {
+          const f = faces[fi];
+          const dw = Math.min(landmark ? 1.6 : 1.05, f.len - 0.25);
+          const dh = Math.min(landmark ? 3.0 : 2.3, y1 - 0.6);
+          if (dh < 1.9) continue;
+          const u0 = (f.len - dw) / 2;
+          const hole: Hole = { u0, u1: u0 + dw, y0: 0, y1: dh, d: 0.5, back: MAT.wood, seed: 0, arch: dw * 0.5, k: 3, point: 0.35 };
+          holes[fi].push(hole);
+          this.doors.push({ x: px(f, f.len / 2, 0), z: pz(f, f.len / 2, 0), nx: f.nx, nz: f.nz, w: dw });
+        }
+      }
+      // slits, about half way up each step
+      const sh = Math.min(1.3, (y1 - Math.max(0, y0)) * 0.4);
+      const ys = Math.max(0.9, y0) + (y1 - Math.max(0, y0) - sh) * 0.45;
+      if (sh >= 0.6) {
+        for (let fi = 0; fi < faces.length; fi++) {
+          const f = faces[fi];
+          if (rng() > slitP) continue;
+          const u0 = f.len / 2 - 0.11;
+          if (overlaps(holes[fi], u0, u0 + 0.22, ys, ys + sh, 0.3)) continue;
+          if (this.nbSpan(f, u0, u0 + 0.22) > ys - 0.3) continue;
+          const sd = rng() < 0.5 ? lit() : 0;
+          holes[fi].push({ u0, u1: u0 + 0.22, y0: ys, y1: ys + sh, d: 0.4, back: MAT.opening, seed: sd, arch: 0.11, k: 1, point: 0.4 });
+          if (sd > 0) this.windowGlow(f, f.len / 2, ys + sh / 2, sd);
+        }
+      }
+      w.mat = wallMat;
+      loopWalls(w, loop, faces, faces.map(() => false), y0, faces.map(() => y1), holes);
+      // the ring band where the tower steps in (at the top it stands up as a low parapet)
+      const last = k === n - 1;
+      const rb = r + band;
+      const yb1 = last ? y1 + 0.55 : y1;
+      cylinder(w, cx, cz, rb, y1 - 0.32, yb1, sides);
+      annulus(w, cx, cz, r, rb, y1 - 0.32, sides, false);
+      if (!last) annulus(w, cx, cz, rAt(k + 1), rb, y1, sides, true);
+      else {
+        annulus(w, cx, cz, r - 0.15, rb, yb1, sides, true);
+        cylinderIn(w, cx, cz, r - 0.15, y1, yb1, sides);
+        w.mat = MAT.roof;
+        polyCap(w, cx, cz, r - 0.15, y1, sides, 0);
+      }
+    }
+    const rTop = rAt(n - 1) - 0.15;
+    if (b.roof === 'spire') {
+      // a lantern chamber under a pointed dome and a needle
+      const rl = rTop * 0.72;
+      const lh = clamp(rl * 1.4, 1.8, 4);
+      const l0 = b.h, l1 = b.h + lh;
+      const loop = circleLoop(cx, cz, rl, sides);
+      const faces = loopFaces(loop);
+      const holes = faces.map((f, fi) => {
+        const hw = f.len * 0.28;
+        return fi % 2 === 0 && hw > 0.12
+          ? [{ u0: f.len / 2 - hw, u1: f.len / 2 + hw, y0: l0 + 0.35, y1: l1 - 0.3, d: 0.25, back: MAT.lantern, seed: 0, arch: hw, k: 2, point: 0.4 }]
+          : [];
+      });
+      w.mat = wallMat;
+      loopWalls(w, loop, faces, faces.map(() => false), l0, faces.map(() => l1), holes);
+      cylinder(w, cx, cz, rl + 0.2, l1 - 0.1, l1 + 0.15, sides);
+      annulus(w, cx, cz, rl, rl + 0.2, l1 - 0.1, sides, false);
+      annulus(w, cx, cz, rl * 0.9, rl + 0.2, l1 + 0.15, sides, true);
+      const fin = clamp(rl * 0.45, 0.8, 2.2);
+      const hgt = Math.max(1.2, Math.min(b.crown - lh - 0.15 - fin, rl * 2.6));
+      w.mat = landmark ? MAT.dome : MAT.roof;
+      dome(w, cx, cz, rl + 0.05, l1 + 0.15, hgt, Math.max(12, sides), landmark ? 8 : 6, 0.45);
+      const dt = l1 + 0.15 + hgt;
+      w.mat = wallMat;
+      finial(w, cx, dt - 0.05, cz, fin);
+      if (b.h + b.crown > dt + fin * 1.6 + 0.5) taper(w, cx, cz, 0.1, 0, dt + fin * 1.4, b.h + b.crown, 4, Math.PI / 4);
+      this.glows.add(cx, (l0 + l1) / 2, cz, Math.max(0.9, rl * 1.1), GLOW.lantern, 0.3, 1.0);
+    } else {
+      // a dome cap, round or a little pointed
+      const point = hashU(this.seed, i, 0x4e) < 0.5 ? 0.3 : 0;
+      w.mat = MAT.roof;
+      dome(w, cx, cz, rTop - 0.1, b.h, Math.max(0.8, b.crown), sides, 5, point);
+      if (point > 0) {
+        w.mat = MAT.wood;
+        taper(w, cx, cz, 0.07, 0, b.h + b.crown * 0.97, b.h + b.crown + 0.6, 4, 0);
+      }
+    }
+  }
+
+  /** A great round hall of stacked drums, each flaring out under the next, crowned with a dome. */
+  private tieredHall(b: Building, rng: () => number, lit: () => number): void {
+    const w = this.w;
+    const cx = b.x, cz = b.z;
+    const R0 = tierRadius(b);
+    const crown = Math.max(8, b.crown);
+    const c1 = Math.max(3.5, crown * 0.3), c2 = Math.max(3, crown * 0.22);
+    const tiers = [
+      { r: R0, y0: FOOT, y1: b.h, fl: 0.6, sides: 40 },
+      { r: R0 * 0.7, y0: b.h, y1: b.h + c1, fl: 0.45, sides: 32 },
+      { r: R0 * 0.46, y0: b.h + c1, y1: b.h + c1 + c2, fl: 0.35, sides: 24 },
+    ];
+    const fin = clamp(R0 * 0.08, 1.2, 2.5);
+    const domeR = tiers[2].r * 0.95;
+    const domeH = Math.max(2.5, crown - c1 - c2 - fin);
+    for (let k = 0; k < tiers.length; k++) {
+      const T = tiers[k];
+      const loop = circleLoop(cx, cz, T.r, T.sides);
+      const faces = loopFaces(loop);
+      const holes: Hole[][] = faces.map(() => []);
+      const wallTop = T.y1 - 0.6;
+      if (k === 0) {
+        const sc = faces.map((f) => this.street(f, f.len / 2, 8));
+        let main = 0;
+        for (let fi = 1; fi < faces.length; fi++) if (sc[fi] > sc[main]) main = fi;
+        const opp = (main + faces.length / 2) % faces.length;
+        const portals = sc[opp] >= 4 ? [main, opp] : [main];
+        for (const fi of portals) {
+          const f = faces[fi];
+          const pw = Math.min(f.len - 0.35, 3.4);
+          const ph = Math.min(b.h * 0.6, 6.5, wallTop - 1);
+          const u0 = (f.len - pw) / 2;
+          holes[fi].push({ u0, u1: u0 + pw, y0: 0, y1: ph, d: 2.0, back: MAT.opening, seed: lit(), arch: pw * 0.55, k: 6, point: 0.4 });
+          this.doors.push({ x: px(f, f.len / 2, 0), z: pz(f, f.len / 2, 0), nx: f.nx, nz: f.nz, w: pw });
+        }
+        // an arcade on the open sides, and arched windows above it
+        const bayH = Math.min(3.0, wallTop - 1.2);
+        for (let fi = 0; fi < faces.length; fi++) {
+          const f = faces[fi];
+          if (holes[fi].length > 0) continue;
+          const nearPortal = portals.some((p) => Math.min(Math.abs(p - fi), faces.length - Math.abs(p - fi)) <= 1);
+          if (fi % 2 === 0 && !nearPortal && sc[fi] >= 2 && bayH >= 2.2) {
+            const bw = Math.min(f.len - 0.5, 2.0);
+            const u0 = (f.len - bw) / 2;
+            holes[fi].push({ u0, u1: u0 + bw, y0: 0, y1: bayH, d: 0.9, back: MAT.opening, seed: rng() < 0.25 ? lit() : 0, arch: bw * 0.5, k: 4, point: 0.3 });
+          }
+        }
+      }
+      // arched windows in the upper storeys of every drum
+      const step = k === 0 ? 2 : k === 1 ? 2 : 3;
+      const ys0 = k === 0 ? STOREY + 0.9 : T.y0 + (T.y1 - T.y0) * 0.3;
+      const wh = Math.min(1.5, (wallTop - ys0) * 0.55);
+      if (wh >= 0.8) {
+        for (let fi = k === 0 ? 1 : 0; fi < faces.length; fi += step) {
+          const f = faces[fi];
+          const ww = Math.min(0.8, f.len * 0.4);
+          const u0 = (f.len - ww) / 2;
+          if (overlaps(holes[fi], u0, u0 + ww, ys0, ys0 + wh, 0.3)) continue;
+          if (k === 0 && this.nbSpan(f, u0, u0 + ww) > ys0 - 0.3) continue;
+          const sd = lit();
+          holes[fi].push({ u0, u1: u0 + ww, y0: ys0, y1: ys0 + wh, d: 0.45, back: MAT.opening, seed: sd, arch: ww * 0.5, k: 3, point: 0.35 });
+          if (sd > 0) this.windowGlow(f, f.len / 2, ys0 + wh / 2, sd);
+        }
+      }
+      w.mat = MAT.stone;
+      loopWalls(w, loop, faces, faces.map(() => false), T.y0, faces.map(() => wallTop), holes);
+      // the flared lip, and the flat ring roof out to it (the lowest one is the walkable roof at h)
+      frustum(w, cx, cz, T.r, T.r + T.fl, wallTop, T.y1, T.sides);
+      cylinder(w, cx, cz, T.r + T.fl, T.y1, T.y1 + 0.12, T.sides);
+      const inner = k < tiers.length - 1 ? tiers[k + 1].r : domeR * 0.9;
+      annulus(w, cx, cz, inner, T.r + T.fl, T.y1 + (k === 0 ? 0 : 0.12), T.sides, true);
+      if (k === 0) annulus(w, cx, cz, T.r + T.fl - 0.3, T.r + T.fl, T.y1 + 0.12, T.sides, true);
+    }
+    // small domed kiosks on the lowest roof
+    const rk = (tiers[0].r + tiers[1].r) / 2;
+    const kr = clamp(R0 * 0.06, 0.9, 1.5);
+    const kh = 2.6 + R0 * 0.03;
+    for (let q = 0; q < 4; q++) {
+      const a = Math.PI / 4 + (q * Math.PI) / 2;
+      const x = cx + Math.cos(a) * rk, z = cz + Math.sin(a) * rk;
+      w.mat = MAT.stone;
+      cylinder(w, x, z, kr, b.h, b.h + kh, 10);
+      cylinder(w, x, z, kr + 0.12, b.h + kh - 0.25, b.h + kh, 10);
+      annulus(w, x, z, kr, kr + 0.12, b.h + kh - 0.25, 10, false);
+      w.mat = MAT.dome;
+      dome(w, x, z, kr + 0.1, b.h + kh, kr * 1.1, 10, 4, 0.3);
+    }
+    const y = tiers[2].y1 + 0.12;
+    w.mat = MAT.dome;
+    dome(w, cx, cz, domeR, y, domeH, 32, 10, 0.3);
+    w.mat = MAT.stone;
+    finial(w, cx, y + domeH * 0.985, cz, fin);
+    this.glows.add(cx, y + domeH + 0.6, cz, 0.9, GLOW.lantern, 0.5, 0.8);
   }
 
   // ---------------------------------------------------------------- ramparts
@@ -1605,14 +2593,14 @@ function buildFar(plan: CityPlan): { w: Writer; glows: Glows } {
   const glows = new Glows();
   const gs = plan.gridSize | 0;
   const gh = plan.gridHalf;
-  const grid = plan.grid;
+  const occ = occlusionGrid(plan);
   const seed = plan.site.seed | 0;
-  const H = (x: number, z: number): number => {
+  const at = (g: Float32Array, x: number, z: number): number => {
     const i = Math.floor(x + gh), j = Math.floor(z + gh);
     if (i < 0 || j < 0 || i >= gs || j >= gs) return 0;
-    return grid[j * gs + i] || 0;
+    return g[j * gs + i] || 0;
   };
-  const nb = (f: Face, u: number): number => H(px(f, u, 0.5), pz(f, u, 0.5));
+  const nb = (f: Face, u: number): number => at(occ, px(f, u, 0.5), pz(f, u, 0.5));
   const hidden = (f: Face, top: number): boolean => {
     for (let u = 0.5; u < f.len; u += 1) if (nb(f, u) < top - 0.01) return false;
     return true;
@@ -1629,11 +2617,46 @@ function buildFar(plan: CityPlan): { w: Writer; glows: Glows } {
     const b = bs[i];
     if (!b.solid || b.roof === 'canopy' || b.roof === 'none') continue;
     const L = layoutOf(plan, b, i);
-    const tall = b.h + Math.max(0, b.crown) >= FAR_MIN_H;
-    const keep = tall || b.role === 'landmark' || b.role === 'gate' || (b.role === 'wall' && hill) || L.dome !== null || L.spire !== null;
+    const shape = shapeOf(b);
+    // a slumped house's low rounded roof does not make it part of the skyline
+    const tall = b.h + (shape === 'slump' ? 0 : Math.max(0, b.crown)) >= FAR_MIN_H;
+    const keep =
+      tall || b.role === 'landmark' || b.role === 'gate' || (b.role === 'wall' && hill) || L.dome !== null || L.spire !== null ||
+      shape === 'tower' || shape === 'tiered';
     w.tint = clamp(Math.round(b.tint * 255), 0, 255);
     const stoneish = b.role === 'landmark' || b.role === 'gate' || b.role === 'wall';
-    if (keep) {
+    if (keep && isRound(b)) {
+      farRound(w, glows, b);
+    } else if (keep && shape === 'slump') {
+      // the body's rectangle, turned like the near house (its rounded corners are too small to see from here)
+      const top = b.h + L.pb;
+      const B = bodyOf(b)!;
+      const loop = roundedLoop(B, [0, 0, 0, 0], 1);
+      const faces = loopFaces(loop);
+      // a lot side walled in by neighbours hides the wall behind it (the gap a turn leaves is too thin to see from afar)
+      const lotHid = rectFaces(L.x0, L.z0, L.x1, L.z1).map((f) => hidden(f, top));
+      w.mat = MAT.plaster;
+      for (let fi = 0; fi < faces.length; fi++) {
+        const f = faces[fi];
+        if (loop.side[fi] >= 0 && lotHid[loop.side[fi]]) continue;
+        faceQuad(w, f, 0, f.len, FOOT, top, 0);
+      }
+      w.mat = MAT.roof;
+      w.quad(loop.x[0], top, loop.z[0], loop.x[1], top, loop.z[1], loop.x[2], top, loop.z[2], loop.x[3], top, loop.z[3], 0, 1, 0);
+      // domed roofs show on the skyline; a barrel vault's low ridge does not
+      if (b.roof === 'dome') softCrown(w, B, b.h, b.crown, crownKind(seed, i), true);
+      if (L.block) {
+        const Bk = L.block;
+        w.mat = MAT.plaster;
+        w.box(Bk.x0, b.h, Bk.z0, Bk.x1, Bk.h, Bk.z1, 1 | 2 | 4 | 16 | 32);
+      }
+      if (L.tower) {
+        const T = L.tower;
+        w.mat = MAT.plaster;
+        taper(w, T.cx, T.cz, T.s * 0.62, T.s * 0.62, b.h, T.top, 6, Math.PI / 6);
+        polyCap(w, T.cx, T.cz, T.s * 0.62, T.top, 6, Math.PI / 6);
+      }
+    } else if (keep) {
       const top = b.h + (L.style === 'crenel' ? (L.pb + L.pm) / 2 : L.pb);
       w.mat = stoneish ? MAT.stone : MAT.plaster;
       const faces = rectFaces(L.x0, L.z0, L.x1, L.z1);
@@ -1715,6 +2738,61 @@ function buildFar(plan: CityPlan): { w: Writer; glows: Glows } {
     glows.add(L.x, L.y, L.z, 1.6, GLOW.lamp, s, 1.0 + 0.3 * s);
   }
   return { w, glows };
+}
+
+/** Low-poly skyline of a round building, after NearBuilder.roundBuilding. */
+function farRound(w: Writer, glows: Glows, b: Building): void {
+  const shape = shapeOf(b);
+  const cx = b.x, cz = b.z;
+  if (shape === 'dome') {
+    const B = bodyOf(b)!;
+    const k = B.hd / B.hw;
+    w.mat = MAT.plaster;
+    // a six-sided drum, squashed to the stadium's proportions
+    const v0 = w.nv;
+    taper(w, cx, cz, B.hw, B.hw, FOOT, b.h, 6, 0);
+    for (let v = v0; v < w.nv; v++) w.pos[v * 3 + 2] = cz + (w.pos[v * 3 + 2] - cz) * k;
+    w.mat = MAT.roof;
+    domeE(w, cx, cz, B.hw * 0.95, B.hd * 0.95, b.h, clamp(b.crown, 0.8, 1.15 * Math.min(B.hw, B.hd) * 0.9), 6, 1, 0);
+  } else if (shape === 'mound') {
+    w.mat = MAT.plaster;
+    domeE(w, cx, cz, b.w / 2 - 0.3, b.d / 2 - 0.3, FOOT, b.h - FOOT + 0.3, 8, 2, 0);
+  } else if (shape === 'tower') {
+    const R = towerRadius(b);
+    const rTop = R * (b.h >= 9.75 ? 0.8 : 0.94);
+    const landmark = b.role === 'landmark';
+    w.mat = landmark ? MAT.stone : MAT.plaster;
+    taper(w, cx, cz, R + 0.1, rTop + 0.1, FOOT, b.h + 0.5, 5, 0);
+    if (b.roof === 'spire') {
+      const rl = (rTop - 0.15) * 0.72;
+      const lh = clamp(rl * 1.4, 1.8, 4);
+      taper(w, cx, cz, rl + 0.2, rl + 0.2, b.h, b.h + lh, 5, 0);
+      w.mat = landmark ? MAT.dome : MAT.roof;
+      taper(w, cx, cz, rl + 0.25, 0, b.h + lh, b.h + Math.max(lh + 1, b.crown), 5, 0);
+      glows.add(cx, b.h + lh / 2, cz, Math.max(0.9, rl * 1.1), GLOW.lantern, 0.3, 1.0);
+    } else {
+      w.mat = MAT.roof;
+      dome(w, cx, cz, rTop + 0.1, b.h + 0.5, Math.max(0.8, b.crown), 5, 1, 0.2);
+    }
+  } else {
+    const R0 = tierRadius(b);
+    const crown = Math.max(8, b.crown);
+    const c1 = Math.max(3.5, crown * 0.3), c2 = Math.max(3, crown * 0.22);
+    const fin = clamp(R0 * 0.08, 1.2, 2.5);
+    w.mat = MAT.stone;
+    taper(w, cx, cz, R0 + 0.3, R0 + 0.3, FOOT, b.h, 12, 0);
+    polyCap(w, cx, cz, R0 + 0.3, b.h, 12, 0);
+    taper(w, cx, cz, R0 * 0.7 + 0.2, R0 * 0.7 + 0.2, b.h, b.h + c1, 12, 0);
+    polyCap(w, cx, cz, R0 * 0.7 + 0.2, b.h + c1, 12, 0);
+    taper(w, cx, cz, R0 * 0.46 + 0.15, R0 * 0.46 + 0.15, b.h + c1, b.h + c1 + c2, 12, 0);
+    const y = b.h + c1 + c2;
+    const domeH = Math.max(2.5, crown - c1 - c2 - fin);
+    w.mat = MAT.dome;
+    dome(w, cx, cz, R0 * 0.46 * 0.95 + 0.1, y, domeH, 12, 3, 0.3);
+    w.mat = MAT.stone;
+    taper(w, cx, cz, 0.35, 0, y + domeH * 0.98, y + domeH + fin, 4, 0);
+    glows.add(cx, y + domeH + 0.6, cz, 1.0, GLOW.lantern, 0.5, 0.8);
+  }
 }
 
 // ------------------------------------------------------------------ public API

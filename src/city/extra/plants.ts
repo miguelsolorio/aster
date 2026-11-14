@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { BED_SOIL, POOL_LEVEL, Writer } from '../build';
 import { MAT, createMasonryMaterial } from '../cityShaders';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
+import { bodyFaces } from '../shape';
 import type { Building, CityKind, CityPlan, Spot } from '../types';
 
 // Vegetation for the cities: tall fan-crowned trees (a slender ringed trunk, an onion-shaped
@@ -523,14 +524,9 @@ interface Face {
   len: number;
 }
 
+/** The building's straight walls as drawn (turned and inset for a slumped house; none on a round one). */
 function facesOf(b: Building): Face[] {
-  const x0 = b.x - b.w / 2, x1 = b.x + b.w / 2, z0 = b.z - b.d / 2, z1 = b.z + b.d / 2;
-  return [
-    { ox: x1, oz: z0, tx: 0, tz: 1, nx: 1, nz: 0, len: z1 - z0 },
-    { ox: x0, oz: z1, tx: 0, tz: -1, nx: -1, nz: 0, len: z1 - z0 },
-    { ox: x1, oz: z1, tx: -1, tz: 0, nx: 0, nz: 1, len: x1 - x0 },
-    { ox: x0, oz: z0, tx: 1, tz: 0, nx: 0, nz: -1, len: x1 - x0 },
-  ];
+  return bodyFaces(b);
 }
 
 /** Clear ground between a trunk (its edge) and the nearest person at a spot. */
@@ -883,6 +879,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   for (const b of plan.buildings) {
     if (!b.solid || (b.role !== 'house' && b.role !== 'hall') || b.h < 3) continue;
     const fs = facesOf(b);
+    if (fs.length === 0) continue; // round: nothing to hang a vine or stand a pot against
     const r = rng();
     if (nVines < vineWant && r < T.vineP * 2) {
       for (const f of fs) {
