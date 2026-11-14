@@ -658,6 +658,7 @@ function start() {
   // cave roofs (only ever overhead down at the feet).
   const obstacle = (x: number, z: number, y: number) => Math.max(cities.roofAt(x, z, y), discoveries.topAt(x, z, y), props.topAt(x, z, y));
   const collisionDebug = new CollisionOverlay(scene, obstacle, (x, z) => world.height(x, z));
+  player.beast = (x, z) => fauna.beastAt(x, z) || caravans.beastAt(x, z);
   people.solid = fauna.solid = wildlife.solid = caravans.solid = obstacle;
   // Under an open cavern the deep has floors of its own, one over another: where it has the
   // say, the terrain (and every roof above) is not asked.

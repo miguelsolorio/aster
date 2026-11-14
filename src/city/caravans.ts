@@ -1768,6 +1768,15 @@ export class Caravans {
         const r = p.type === 5 ? 1.7 : p.type === 4 || p.type === 10 ? 1.0 : p.type === 1 || p.type === 2 || p.type === 9 ? 0.7 : 0;
         if (r > 0 && Math.hypot(p.x - x, p.z - z) < r * p.scale) return true;
       }
+    }
+    return this.beastAt(x, z);
+  }
+
+  /** A camel stands at (x, z): one in a party, a pen, or left loose. The ridden one is not counted. */
+  beastAt(x: number, z: number): boolean {
+    for (let i = 0; i < this.live.length; i++) {
+      const g = this.live[i];
+      if (!g.active || Math.hypot(g.ax - x, g.az - z) > g.reach + 80) continue;
       for (let k = 0; k < g.agents.length; k++) {
         const a = g.agents[k];
         if (a.animal && a.free === 0 && this.under(a, x, z)) return true;
