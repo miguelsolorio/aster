@@ -3,7 +3,7 @@ import './touch.css';
 export interface TouchHooks {
   /** Camera drag in CSS pixels since the last event. */
   onLook(dx: number, dy: number): void;
-  /** Pinch: >1 means fingers moved apart since the last event. */
+  /** Pinch (photo mode only): >1 means fingers moved apart since the last event. */
   onZoom(factor: number): void;
   /** Fly button pressed down. */
   onJump(): void;
@@ -312,7 +312,9 @@ export class TouchControls {
     s.x = x;
     s.y = y;
 
-    if (this.slots[0].id >= 0 && this.slots[1].id >= 0) {
+    // Pinch only zooms in photo mode. While playing it would push the eye in on the wanderer, so a
+    // second finger on the look side keeps turning the view instead.
+    if (this.mode === 'photo' && this.slots[0].id >= 0 && this.slots[1].id >= 0) {
       const d = this.slotDist();
       if (this.pinchDist > 0 && d > 0) {
         const f = d / this.pinchDist;
