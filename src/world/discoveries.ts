@@ -1316,7 +1316,7 @@ function buildHamlet(c: Ctx): void {
 const WAY_W = 4.2;
 const CLIMB_W = 3.4;
 /** Metres the road is laid above the ground, so it never sinks into the dunes. */
-const WAY_LIFT = 0.28;
+const WAY_LIFT = 0.1;
 /** Points of the way in one chunk of road (a chunk is built and dropped as a whole). */
 const FROST_CHUNK = 34;
 /** Keys of the frost sites count down from here, clear of every other kind. */
@@ -1328,12 +1328,13 @@ const FROST_WAKE = 9500;
 function frostTorch(c: Ctx, u: number, v: number, tall = 1): void {
   const st = c.stone;
   const g = c.g(u, v);
-  st.set(0.5, 0.36, 0.24, 2, 0.02);
+  st.set(0.42, 0.3, 0.21, 2, 0.02);
   c.prim(UNIT_BOX, u, g + 1.05 * tall, v, 0.16, 2.1 * tall, 0.16);
+  c.prim(UNIT_BOX, u, g + 0.2, v, 0.5, 0.4, 0.5, 0.6);
   st.set(0.2, 0.18, 0.17, 1, 0.02);
   c.prim(UNIT_CYL, u, g + 2.18 * tall, v, 0.3, 0.2, 0.3);
   st.set(1, 1, 1, 3, 0);
-  c.prim(UNIT_BLOB, u, g + 2.42 * tall, v, 0.17, 0.3, 0.17);
+  c.prim(UNIT_CONE, u, g + 2.55 * tall, v, 0.15, 0.5, 0.15, 0.6);
   c.glow(u, g + 2.5 * tall, v, 1.7);
 }
 
@@ -1365,37 +1366,77 @@ function frostBoulder(c: Ctx, u: number, v: number, s: number): void {
   c.prim(UNIT_BLOB, u, g + sy * 0.95, v, s * 0.78, sy * 0.45, s * 0.7, c.rng() * 3);
 }
 
-/** The tall gate where the road crosses into the snow: two stone pillars, a snowy lintel, braziers. */
+/** A slab of snow lying on a flat roof (or a ledge), w by d, its top a little uneven. */
+function frostSnowCap(c: Ctx, u: number, v: number, y: number, w: number, d: number, ry: number, deep = 0.34): void {
+  const st = c.stone;
+  st.set(1.22, 1.24, 1.28, 1, 0.07);
+  c.solid = false;
+  c.prim(UNIT_BOX, u, y + deep / 2, v, w, deep, d, ry);
+  c.solid = true;
+}
+
+/** The teeth along a parapet, as on the towns' walls: one at each corner and along the long sides. (Tx, Tz) is the long axis. */
+function frostMerlons(c: Ctx, u: number, v: number, y: number, w: number, d: number, Tx: number, Tz: number): void {
+  const ry = -Math.atan2(Tz, Tx);
+  const n = Math.max(2, Math.round(w / 1.5));
+  c.solid = false;
+  for (const sz of [-1, 1]) {
+    for (let k = 0; k < n; k++) {
+      const lx = -w / 2 + 0.3 + (k / (n - 1)) * (w - 0.6);
+      const lz = sz * (d / 2 - 0.2);
+      c.prim(UNIT_BOX, u + Tx * lx - Tz * lz, y + 0.22, v + Tz * lx + Tx * lz, 0.6, 0.45, 0.4, ry);
+    }
+  }
+  c.solid = true;
+}
+
+/**
+ * The gate where the road crosses into the snow: two battered mud-brick pylons with toothed
+ * heads, like a town gate standing alone, a beam between them, braziers on top.
+ */
 function frostGate(c: Ctx, p: FrostPoint, ang: number): void {
   const st = c.stone;
   const u0 = p.x - c.x;
   const v0 = p.z - c.z;
-  const nx = -Math.sin(ang);
-  const nz = Math.cos(ang);
-  const half = WAY_W / 2 + 2.2;
+  const Tx = Math.cos(ang);
+  const Tz = Math.sin(ang);
+  const half = WAY_W / 2 + 2.6;
   const ry = -ang;
   const g0 = c.g(u0, v0);
+  const wt = 1.03;
   for (const side of [-1, 1]) {
-    const u = u0 + nx * half * side;
-    const v = v0 + nz * half * side;
+    const u = u0 - Tz * half * side;
+    const v = v0 + Tx * half * side;
     const g = c.g(u, v);
-    st.set(0.72, 0.68, 0.64, 1, 0.1);
-    c.prim(UNIT_BOX, u, g + 2.6, v, 1.2, 6.2, 1.2, ry);
-    st.set(0.55, 0.52, 0.5, 1, 0.1);
-    c.prim(UNIT_BOX, u, g + 0.5, v, 1.7, 1.4, 1.7, ry);
-    st.set(1.25, 1.27, 1.3, 1, 0.08);
-    c.prim(UNIT_BOX, u, g + 5.85, v, 1.5, 0.5, 1.5, ry);
+    // stepped in as it rises
+    st.set(wt * 0.88, wt * 0.84, wt * 0.76, 2, 0.08);
+    c.prim(UNIT_BOX, u, g + 0.7, v, 3.2, 2.6, 3.2, ry);
+    st.set(wt, wt * 0.96, wt * 0.87, 2, 0.06);
+    c.prim(UNIT_BOX, u, g + 3.6, v, 2.5, 4.4, 2.5, ry);
+    c.prim(UNIT_BOX, u, g + 6.4, v, 2.0, 1.6, 2.0, ry);
+    c.prim(UNIT_BOX, u, g + 7.3, v, 2.5, 0.45, 2.5, ry);
+    frostMerlons(c, u, v, g + 7.5, 2.5, 2.5, Tx, Tz);
+    frostSnowCap(c, u, v, g + 7.52, 1.5, 1.5, ry, 0.3);
+    frostSnowCap(c, u, v, g + 2.0, 3.0, 3.0, ry, 0.22);
+    // a slot on the face that meets the traveller
+    st.set(0.16, 0.12, 0.1, 2, 0);
+    c.solid = false;
+    c.prim(UNIT_BOX, u - Tx * 1.26, g + 4.2, v - Tz * 1.26, 0.12, 1.6, 0.5, ry);
+    c.solid = true;
     st.set(0.2, 0.18, 0.17, 1, 0.02);
-    c.prim(UNIT_CYL, u, g + 6.3, v, 0.55, 0.3, 0.55);
+    c.prim(UNIT_CYL, u, g + 8.0, v, 0.6, 0.35, 0.6);
     st.set(1, 1, 1, 3, 0);
-    c.prim(UNIT_BLOB, u, g + 6.75, v, 0.3, 0.5, 0.3);
-    c.glow(u, g + 6.9, v, 3.6);
+    c.prim(UNIT_CONE, u, g + 8.75, v, 0.38, 1.2, 0.38, 0.6);
+    c.glow(u, g + 8.7, v, 3.8);
   }
-  const top = g0 + 5.2;
-  st.set(0.66, 0.62, 0.58, 1, 0.1);
-  c.prim(UNIT_BOX, u0, top, v0, 1, 0.9, half * 2 + 0.8, ry + Math.PI / 2);
-  st.set(1.25, 1.27, 1.3, 1, 0.08);
-  c.prim(UNIT_BOX, u0, top + 0.6, v0, 0.8, 0.4, half * 2 + 0.2, ry + Math.PI / 2);
+  // the beam across, of dark timber, with snow along it
+  const top = g0 + 6.3;
+  st.set(0.46, 0.33, 0.23, 2, 0.04);
+  c.solid = false;
+  c.prim(UNIT_BOX, u0, top, v0, 0.5, 0.55, half * 2, ry);
+  c.prim(UNIT_BOX, u0, top - 0.75, v0, 0.3, 0.3, half * 2 - 2, ry);
+  c.solid = true;
+  frostSnowCap(c, u0, v0, top + 0.27, 0.6, half * 2 - 2.2, ry, 0.2);
 }
 
 /**
@@ -1413,34 +1454,39 @@ function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): voi
     const b = way[Math.min(way.length - 1, i + 1)];
     return Math.atan2(b.z - a.z, b.x - a.x);
   };
-  // the ribbon: cut into short strips so it hugs the dunes and the mountain's flank
+  // the road itself: a strip of the ground's own surface laid just over it and drawn by the
+  // ground's shader as trodden (see vCave in terrainFrag), so it is worn sand on the desert,
+  // packed snow in the frostland, and fades out at its edges like the routes between the towns
   const SUB = 3;
+  const smp: SurfaceSample = { h: 0, rock: 0, salt: 0 };
+  const nrm = new THREE.Vector3();
+  const LANES = [-1, -0.5, 0.5, 1];
+  const WORN = [0, 1, 1, 0];
+  type RV = [number, number, number, number, number, number, number, number, number];
   for (let i = i0; i < i1; i++) {
     const a = way[i];
     const b = way[i + 1];
-    const cover = frostCover(region, (a.x + b.x) / 2, (a.z + b.z) / 2);
-    const hw = (i >= layout.climbAt ? CLIMB_W : WAY_W) / 2;
-    // pale packed sand on the desert side, dark trodden gravel in the snow
-    const k = 1 - cover;
-    const m = 0.06 * Math.sin(i * 1.7);
-    st.set(0.4 + 0.4 * k + m, 0.4 + 0.36 * k + m, 0.42 + 0.26 * k + m, 1, 0.03);
+    const hw = (i >= layout.climbAt ? CLIMB_W : WAY_W) / 2 + 1.1;
     const aa = dirAt(i);
     let ab = dirAt(i + 1);
     ab = aa + Math.atan2(Math.sin(ab - aa), Math.cos(ab - aa));
-    const edge = (t: number, s: number): [number, number, number] => {
+    const row = (t: number): RV[] => {
       const ang = aa + (ab - aa) * t;
-      const x = a.x + (b.x - a.x) * t - Math.sin(ang) * hw * s;
-      const z = a.z + (b.z - a.z) * t + Math.cos(ang) * hw * s;
-      return [x - c.x, w.height(x, z) - c.baseY + WAY_LIFT, z - c.z];
+      return LANES.map((s, k) => {
+        const x = a.x + (b.x - a.x) * t - Math.sin(ang) * hw * s;
+        const z = a.z + (b.z - a.z) * t + Math.cos(ang) * hw * s;
+        w.sample(x, z, smp);
+        w.normal(x, z, nrm);
+        return [x - c.x, smp.h - c.baseY + WAY_LIFT, z - c.z, nrm.x, nrm.y, nrm.z, smp.rock, smp.salt, -WORN[k]];
+      });
     };
-    let a0 = edge(0, -1);
-    let a1 = edge(0, 1);
+    let r0 = row(0);
     for (let j = 1; j <= SUB; j++) {
-      const b0 = edge(j / SUB, -1);
-      const b1 = edge(j / SUB, 1);
-      for (const q of [a0, b0, a1, a1, b0, b1]) st.vert(q[0], q[1], q[2]);
-      a0 = b0;
-      a1 = b1;
+      const r1 = row(j / SUB);
+      for (let k = 0; k < 3; k++) {
+        for (const q of [r0[k], r1[k], r0[k + 1], r0[k + 1], r1[k], r1[k + 1]]) c.rock.vert(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8]);
+      }
+      r0 = r1;
     }
   }
   // the torches, and the gate
@@ -1518,64 +1564,96 @@ function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
       hi = Math.max(hi, gh);
     }
     const floor = hi + 0.15;
-    // footing: a stone plinth carries the house level over the slope
-    st.set(0.6, 0.57, 0.55, 1, 0.1);
-    c.prim(UNIT_BOX, hx, (lo - 1.2 + floor) / 2, hz, w + 0.7, floor - lo + 1.2, d + 0.7, ry);
-    // walls: timber, with a darker stone course at the foot
-    st.set(0.5, 0.39, 0.31, 2, 0.05);
+    const wt = c.r(0.96, 1.08); // each house its own shade of the same earth
+    const face = -side; // the side that looks onto the road
+    // footing: a battered plinth of darker brick carries the house level over the slope
+    st.set(wt * 0.86, wt * 0.82, wt * 0.74, 2, 0.08);
+    c.prim(UNIT_BOX, hx, (lo - 1.2 + floor) / 2, hz, w + 0.9, floor - lo + 1.2, d + 0.9, ry);
+    // walls of the towns' own mud brick, and the parapet lip round a flat roof
+    st.set(wt, wt * 0.96, wt * 0.87, 2, 0.06);
     c.prim(UNIT_BOX, hx, floor + wallH / 2, hz, w, wallH, d, ry);
-    // roof: two snow-laden slopes meeting at a ridge along the road
-    const th = 0.62;
-    const half = d / 2 + 0.55;
-    const run = half / Math.cos(th);
-    const ridge = floor + wallH + 0.1 + half * Math.tan(th) * 0.5;
-    for (const s of [-1, 1]) {
-      const [u, v] = at(0, s * (half / 2));
-      st.set(1.18, 1.2, 1.24, 1, 0.06);
-      c.prim(UNIT_BOX, u, ridge, v, w + 1.1, 0.34, run, ry, s * th);
+    c.prim(UNIT_BOX, hx, floor + wallH + 0.12, hz, w + 0.45, 0.5, d + 0.45, ry);
+    const top = floor + wallH + 0.37;
+    const style = c.rng();
+    if (style < 0.3) {
+      // a dome, as on the desert hamlets, under a cap of snow
+      const rd = Math.min(w, d) * 0.4;
+      const [u, v] = at(-w * 0.1, 0);
+      c.prim(UNIT_BLOB, u, top - 0.2, v, rd, 1.7, rd, c.rng() * 6);
+      st.set(1.22, 1.24, 1.28, 1, 0.08);
+      c.prim(UNIT_BLOB, u, top + 0.55, v, rd * 0.8, 1.05, rd * 0.8, c.rng() * 6);
+      frostSnowCap(c, hx, hz, top, w - 0.2, d - 0.2, ry, 0.22);
+    } else if (style < 0.6) {
+      // a second, smaller storey set back from the road, with its own roof
+      const w2 = w * 0.55;
+      const d2 = d * 0.6;
+      const [u, v] = at(-w * 0.2, -face * d * 0.18);
+      const h2 = c.r(2.2, 2.7);
+      c.prim(UNIT_BOX, u, top + h2 / 2 - 0.3, v, w2, h2, d2, ry);
+      c.prim(UNIT_BOX, u, top + h2 - 0.2, v, w2 + 0.4, 0.45, d2 + 0.4, ry);
+      frostMerlons(c, u, v, top + h2 + 0.02, w2 + 0.4, d2 + 0.4, Tx, Tz);
+      frostSnowCap(c, u, v, top + h2 + 0.03, w2 - 0.2, d2 - 0.2, ry);
+      frostSnowCap(c, hx, hz, top, w - 0.2, d - 0.2, ry, 0.26);
+      // its one dark window
+      const [wu, wv] = at(-w * 0.2, -face * d * 0.18 + face * (d2 / 2 + 0.03));
+      st.set(0.16, 0.12, 0.1, 2, 0);
+      c.solid = false;
+      c.prim(UNIT_BOX, wu, top + h2 * 0.5 - 0.2, wv, 0.6, 0.9, 0.14, ry);
+      c.solid = true;
+      if (c.rng() < 0.6) c.glow(wu, top + h2 * 0.5 - 0.2, wv, 1.0);
+    } else {
+      // a plain flat roof behind a toothed parapet, deep in snow
+      frostMerlons(c, hx, hz, top, w + 0.45, d + 0.45, Tx, Tz);
+      frostSnowCap(c, hx, hz, top, w - 0.2, d - 0.2, ry, 0.42);
     }
-    st.set(0.46, 0.34, 0.24, 2, 0.04);
+    // a smoke stack like a small wind tower
     {
-      const [u, v] = at(0, 0);
-      c.prim(UNIT_BOX, u, floor + wallH + 0.1 + half * Math.tan(th) + 0.08, v, w + 1.1, 0.22, 0.4, ry);
+      const [u, v] = at(w * 0.3, -face * d * 0.22);
+      st.set(wt * 0.94, wt * 0.9, wt * 0.82, 2, 0.05);
+      c.prim(UNIT_BOX, u, top + 0.9, v, 0.9, 1.9, 0.9, ry);
+      c.prim(UNIT_BOX, u, top + 1.95, v, 1.15, 0.25, 1.15, ry);
+      st.set(1.22, 1.24, 1.28, 1, 0.06);
+      c.prim(UNIT_BLOB, u, top + 2.12, v, 0.55, 0.22, 0.55);
     }
-    // chimney
-    {
-      const [u, v] = at(w * 0.28, -side * d * 0.12);
-      st.set(0.6, 0.57, 0.55, 1, 0.08);
-      c.prim(UNIT_BOX, u, floor + wallH + 1.4, v, 0.8, 2.2, 0.8, ry);
-      st.set(1.25, 1.27, 1.3, 1, 0.06);
-      c.prim(UNIT_BOX, u, floor + wallH + 2.6, v, 1, 0.3, 1, ry);
-    }
-    // the door and two lit windows on the side that faces the road
-    const face = -side;
+    // the dark doorway and two deep window slots toward the road; lamps burn behind some at night
     {
       const [u, v] = at(0, face * (d / 2 + 0.02));
-      st.set(0.14, 0.1, 0.08, 2, 0);
+      st.set(0.16, 0.12, 0.1, 2, 0);
       c.solid = false;
-      c.prim(UNIT_BOX, u, floor + 1.0, v, 1.2, 2.0, 0.3, ry);
+      c.prim(UNIT_BOX, u, floor + 0.95, v, 1.15, 1.9, 0.4, ry);
       c.solid = true;
     }
-    for (const wx of [-w * 0.3, w * 0.3]) {
-      const [u, v] = at(wx, face * (d / 2 + 0.05));
-      st.set(1, 1, 1, 3, 0);
+    for (const wx of [-w * 0.31, w * 0.31]) {
+      const [u, v] = at(wx, face * (d / 2 + 0.02));
+      st.set(0.16, 0.12, 0.1, 2, 0);
       c.solid = false;
-      c.prim(UNIT_BOX, u, floor + 1.7, v, 0.8, 0.7, 0.2, ry);
+      c.prim(UNIT_BOX, u, floor + 1.75, v, 0.55, 0.85, 0.3, ry);
       c.solid = true;
-      c.glow(u, floor + 1.7, v, 1.3);
+      if (c.rng() < 0.75) c.glow(u, floor + 1.75, v, 1.15);
+    }
+    // snow drifted against the foot of the walls
+    for (let q = 0; q < 3; q++) {
+      const lx = c.r(-w / 2, w / 2);
+      const [u, v] = at(lx, -face * (d / 2 + 0.3) * (q === 0 ? -1 : 1) + (q === 0 ? face * 0.5 : 0));
+      if (q === 0 && Math.abs(lx) < 1.4) continue; // not across the door
+      st.set(1.2, 1.22, 1.27, 1, 0.1);
+      c.solid = false;
+      c.prim(UNIT_BLOB, u, c.g(u, v) + 0.1, v, c.r(1.2, 2.2), c.r(0.45, 0.8), c.r(0.8, 1.2), ry + c.r(-0.3, 0.3));
+      c.solid = true;
     }
     // a lamp by the door
     {
       const [u, v] = at(w * 0.5 + 0.7, face * (d / 2 + 0.9));
       frostTorch(c, u, v, 0.9);
     }
-    // a stack of logs at the back
+    // a stack of logs at the back, under snow
     if (c.rng() < 0.7) {
       const [u, v] = at(-w * 0.2, -face * (d / 2 + 0.7));
-      st.set(0.42, 0.3, 0.2, 2, 0.05);
-      c.prim(UNIT_BOX, u, floor + 0.45, v, 2.4, 0.9, 0.9, ry);
-      st.set(1.25, 1.27, 1.3, 1, 0.06);
-      c.prim(UNIT_BOX, u, floor + 0.98, v, 2.5, 0.22, 1, ry);
+      const gl = c.g(u, v);
+      st.set(0.5, 0.36, 0.25, 2, 0.05);
+      c.prim(UNIT_BOX, u, gl + 0.45, v, 2.4, 0.9, 0.9, ry);
+      st.set(1.22, 1.24, 1.28, 1, 0.08);
+      c.prim(UNIT_BLOB, u, gl + 0.95, v, 1.3, 0.3, 0.6, ry);
     }
   }
   // a fire pit beside the road, ringed with stone
@@ -1589,7 +1667,7 @@ function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
       c.prim(UNIT_BOX, fu + Math.cos(a) * 1.3, g + 0.35, fv + Math.sin(a) * 1.3, 0.8, 0.7, 0.7, -a);
     }
     st.set(1, 1, 1, 3, 0);
-    c.prim(UNIT_BLOB, fu, g + 0.7, fv, 0.5, 0.7, 0.5);
+    c.prim(UNIT_CONE, fu, g + 1.0, fv, 0.5, 1.3, 0.5, 0.5);
     c.glow(fu, g + 1.0, fv, 4.5);
   }
   // pines among the houses
@@ -1599,25 +1677,39 @@ function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
     const off = side * c.r(19, 34);
     frostPine(c, ox + Tx * a + Nx * off, oz + Tz * a + Nz * off, c.r(0.9, 1.5));
   }
-  // the hold at the head of the road: a stone tower with a great brazier
+  // the hold at the head of the road: a mud-brick watchtower like the towns', with a great brazier
   if (village.kind === 'high') {
     const end = way[way.length - 1];
-    const eu = end.x - c.x + Tx * 7;
-    const ev = end.z - c.z + Tz * 7;
+    const eu = end.x - c.x + Tx * 8;
+    const ev = end.z - c.z + Tz * 8;
     const g = c.g(eu, ev);
-    st.set(0.66, 0.62, 0.58, 1, 0.12);
-    c.prim(UNIT_BOX, eu, g + 0.8, ev, 6.2, 3.2, 6.2, ry);
-    c.prim(UNIT_BOX, eu, g + 5.5, ev, 4.2, 8.6, 4.2, ry);
-    st.set(0.54, 0.5, 0.48, 1, 0.1);
-    c.prim(UNIT_BOX, eu, g + 10.1, ev, 5, 0.7, 5, ry);
-    st.set(1.25, 1.27, 1.3, 1, 0.08);
-    c.prim(UNIT_BOX, eu, g + 10.6, ev, 5.2, 0.4, 5.2, ry);
+    const wt = c.r(0.98, 1.06);
+    st.set(wt * 0.9, wt * 0.87, wt * 0.8, 2, 0.07);
+    c.prim(UNIT_BOX, eu, g + 0.9, ev, 7.4, 3.6, 7.4, ry);
+    st.set(wt, wt * 0.96, wt * 0.87, 2, 0.06);
+    c.prim(UNIT_BOX, eu, g + 6.2, ev, 4.6, 10, 4.6, ry);
+    c.prim(UNIT_BOX, eu, g + 11.3, ev, 5.4, 0.6, 5.4, ry);
+    frostMerlons(c, eu, ev, g + 11.6, 5.4, 5.4, Tx, Tz);
+    frostSnowCap(c, eu, ev, g + 11.62, 4.3, 4.3, ry);
+    frostSnowCap(c, eu, ev, g + 2.72, 7, 7, ry, 0.3);
+    // slots up the faces, lit from inside at night
+    for (const [lx, lz] of [[0, 2.32], [0, -2.32], [2.32, 0], [-2.32, 0]] as const) {
+      for (const y of [4.2, 7.6]) {
+        const u = eu + Tx * lx - Tz * lz;
+        const v = ev + Tz * lx + Tx * lz;
+        st.set(0.16, 0.12, 0.1, 2, 0);
+        c.solid = false;
+        c.prim(UNIT_BOX, u, g + y, v, lz === 0 ? 0.12 : 0.5, 1.5, lz === 0 ? 0.5 : 0.12, ry);
+        c.solid = true;
+        c.glow(u, g + y, v, 1.0);
+      }
+    }
     st.set(0.2, 0.18, 0.17, 1, 0.02);
-    c.prim(UNIT_CYL, eu, g + 11.2, ev, 1.1, 0.5, 1.1);
+    c.prim(UNIT_CYL, eu, g + 12.0, ev, 1.1, 0.5, 1.1);
     st.set(1, 1, 1, 3, 0);
-    c.prim(UNIT_BLOB, eu, g + 12.1, ev, 0.8, 1.2, 0.8);
-    c.glow(eu, g + 12.3, ev, 9);
-    c.glow(eu, g + 12.0, ev, 5);
+    c.prim(UNIT_CONE, eu, g + 13.1, ev, 0.7, 1.9, 0.7, 0.6);
+    c.glow(eu, g + 13.0, ev, 9);
+    c.glow(eu, g + 12.8, ev, 5);
   }
 }
 

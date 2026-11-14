@@ -136,7 +136,7 @@ uniform float uLower;      // metres to sink this level (0 for the finest)
 varying vec3 vW;
 varying vec3 vN;
 varying vec4 vMask; // rock, salt, signed distance to the river (m), river presence 0..1
-varying float vCave; // 1 under a cave roof, rising to 2 deep in a cavern where no daylight reaches
+varying float vCave; // 1 under a cave roof, rising to 2 deep in a cavern where no daylight reaches; below 0, a laid road (how trodden)
 
 void main() {
   vec2 xz = uLevelCenter + position.xz * uCell;
@@ -354,6 +354,10 @@ void main() {
   // to the finds, on sand and salt alike
   float track = 0.0;
   if (sandW + salt > 0.01) track = max(routePaths(p.xz, fwXZ, dist), footPaths(p.xz, fwXZ, dist)) * (sandW + 0.75 * salt);
+  // a strip of road laid over the ground (the frostland's): it says how trodden it is in vCave, below zero
+  float paved = clamp(-vCave, 0.0, 1.0);
+  paved = paved * paved * (3.0 - 2.0 * paved);
+  track = max(track, paved * (1.0 - 0.5 * rock));
 
   // ---- base normal: mesh near, heightmap far
   vec2 huv = (p.xz - uRect.xy) / max(uRect.z, 1.0);
@@ -549,6 +553,11 @@ void main() {
   if (p.y > SNOW_LINE - 50.0 || inFrost(p)) {
     float snow = snowAt(p, n.y);
     col = mix(col, mix(uSnowShade * (0.85 + 0.15 * ambS), uSnowLit, l), snow);
+    // where the road runs through it the snow is packed down: greyer, bluer, scuffed close by
+    if (paved > 0.001) {
+      float scuff = 0.9 + 0.2 * (vnoise(p.xz * 2.3) * 0.6 + vnoise(p.xz * 7.0) * 0.4);
+      col = mix(col, col * vec3(0.7, 0.75, 0.83) * scuff, paved * snow * 0.9);
+    }
   }
   // terrace walls: a slightly darker dressed stone, a light cap along the lip, a shadow at the foot
   col *= 1.0 - 0.1 * stone;
