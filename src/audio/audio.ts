@@ -24,6 +24,7 @@ export interface AudioFrame {
   night: number; // 0 day .. 1 full night
   speed: number; // player horizontal speed m/s (walk ~5, run ~9, sliding up to ~25)
   sliding: boolean;
+  rock?: boolean; // sliding over rock, not sand: a lower, duller scrape
   grounded: boolean;
   gust: number; // 0..1 slow-varying wind strength
   altitude: number; // metres above the local base level, roughly 0..400
@@ -1476,8 +1477,8 @@ export class AudioEngine {
     g.whistleBP.frequency.setTargetAtTime(700 + 500 * gust + 400 * alt + 200 * breathe, now, 2.5);
 
     const sand = f.sliding && f.grounded ? clamp01((f.speed - 2) / 16) : 0;
-    g.hissGain.gain.setTargetAtTime(0.045 * sand, now, sand > 0 ? 0.25 : 0.6);
-    g.hissBP.frequency.setTargetAtTime(4500 + 2500 * sand, now, 0.5);
+    g.hissGain.gain.setTargetAtTime((f.rock ? 0.03 : 0.045) * sand, now, sand > 0 ? 0.25 : 0.6);
+    g.hissBP.frequency.setTargetAtTime(f.rock ? 1700 + 900 * sand : 4500 + 2500 * sand, now, f.rock ? 0.15 : 0.5);
 
     // Night: more reverb, less dry pluck.
     g.padRev.gain.setTargetAtTime(0.42 + 0.25 * wn, now, 3);
