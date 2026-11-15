@@ -406,6 +406,40 @@ export function meshGrid(g: SpanGrid, vb: VB, o: MeshOpts): number {
   // neighbours: +u, -u, +v, -v; the edge shared with each as two corners (offsets from i, j), and how the wall looks
   const DI = [1, -1, 0, 0];
   const DJ = [0, 0, 1, -1];
+  const snap = (y: number): number => yBase + qz(y) / YQ;
+  /** How many treads a stair that climbs `rise` across one cell is cut into. */
+  const treads = (rise: number): number => Math.min(8, Math.max(1, Math.round(rise / TREAD)));
+  /** Whether direction d is off the side of span k's stair, not along its run. */
+  const beside = (k: number, d: number): boolean => (Math.abs(su[k]) >= Math.abs(sv[k])) === d >= 2;
+  /**
+   * The top of the rock under span k (of cell i, j) at corner (ci, cj), as the cell in direction d
+   * meets it. A floor's own height, but for the head of a stair: its last tread lies half a rise
+   * under the ramp, and that is as high as the rock there goes.
+   */
+  const solidC = (k: number, i: number, j: number, ci: number, cj: number, d: number): number => {
+    const y = floorC(k, i, j, ci, cj);
+    if ((fl[k] & STEPS) === 0 || beside(k, d)) return y;
+    const alongU = d < 2;
+    const sl = alongU ? su[k] : sv[k];
+    if (sl * (DI[d] + DJ[d]) <= 0) return y;
+    const rise = Math.abs(sl) * (alongU ? cu : cv);
+    return y - rise / (2 * treads(rise));
+  };
+  /** The floor that stands past the edge of cell (i, j) in direction d, for a face there from y up: Infinity where it is rock. */
+  const beyond = (k: number, i: number, j: number, d: number, y: number): number => {
+    const ni = i + DI[d];
+    const nj = j + DJ[d];
+    if (ni < 0 || nj < 0 || ni >= nu || nj >= nv) return Infinity;
+    const nci = ni + nj * nu;
+    const top = ceilOf(k);
+    for (let t = 0; t < n[nci]; t++) {
+      const nk = nci * K + t;
+      if (ceilOf(nk) - y < 0.011) continue;
+      const g = (solidC(nk, ni, nj, i + EA[d][0], j + EA[d][1], d ^ 1) + solidC(nk, ni, nj, i + EB[d][0], j + EB[d][1], d ^ 1)) * 0.5;
+      return g < top ? g : Infinity;
+    }
+    return Infinity;
+  };
   const EA = [[1, 0], [0, 0], [0, 1], [0, 0]];
   const EB = [[1, 1], [0, 1], [1, 1], [1, 0]];
   const EO = [1, 0, 3, 2];
@@ -429,7 +463,7 @@ export function meshGrid(g: SpanGrid, vb: VB, o: MeshOpts): number {
           const alongU = Math.abs(su[k]) >= Math.abs(sv[k]);
           const sl = alongU ? su[k] : sv[k];
           const len = alongU ? cu : cv;
-          const nt = Math.min(8, Math.max(1, Math.round((Math.abs(sl) * len) / TREAD)));
+          const nt = treads(Math.abs(sl) * len);
           const paint = fp[k];
           const face = sl < 0 ? 1 : -1; // risers look down the stair
           const a0 = alongU ? ua : va;
@@ -438,23 +472,28 @@ export function meshGrid(g: SpanGrid, vb: VB, o: MeshOpts): number {
             if (alongU) push4(at, yLo, va, at, yLo, vb2, at, yHi, vb2, at, yHi, va, face, 0, 0, paint);
             else push4(ua, yLo, at, ub, yLo, at, ub, yHi, at, ua, yHi, at, 0, 0, face, paint);
           };
-          const eLo = f[k] - sl * len * 0.5; // the ramp at the low-coordinate edge
-          const eHi = f[k] + sl * len * 0.5;
+          // The riser on an edge of the cell, between the ramp there (e) and the end tread (h). It
+          // is cut to what the walls leave: a wall or the next flight's riser stands in the same
+          // plane, and two faces in one plane flicker. All of it on the lattice, as the walls are.
+          const endRiser = (at: number, d: number, e: number, h: number): void => {
+            const past = beyond(k, i, j, d, Math.min(e, h));
+            if (h > e) {
+              // the foot: the first tread's face, down to the ramp or to a floor that meets it higher
+              if (past < h) riser(at, Math.max(snap(past), e), h);
+            } else if (past > h) riser(at, h, Math.min(snap(past), e)); // the head: up to the floor beyond
+          };
+          const eLo = snap(f[k] - sl * len * 0.5); // the ramp at the low-coordinate edge
+          const eHi = snap(f[k] + sl * len * 0.5);
           let prev = 0;
           for (let t = 0; t < nt; t++) {
             const p0 = a0 + (t / nt) * len;
             const p1 = a0 + ((t + 1) / nt) * len;
-            const h = f[k] + sl * (((t + 0.5) / nt - 0.5) * len);
+            const h = snap(f[k] + sl * (((t + 0.5) / nt - 0.5) * len));
             if (alongU) push4(p0, h, va, p0, h, vb2, p1, h, vb2, p1, h, va, 0, 1, 0, paint);
             else push4(ua, h, p0, ub, h, p0, ub, h, p1, ua, h, p1, 0, 1, 0, paint);
-            if (t === 0) {
-              if (sl < 0) riser(p0, h, eLo);
-              else riser(p0, eLo - SKIRT, h);
-            } else riser(p0, Math.min(prev, h), Math.max(prev, h));
-            if (t === nt - 1) {
-              if (sl < 0) riser(p1, eHi - SKIRT, h);
-              else riser(p1, h, eHi);
-            }
+            if (t === 0) endRiser(p0, alongU ? 1 : 3, eLo, h);
+            else riser(p0, Math.min(prev, h), Math.max(prev, h));
+            if (t === nt - 1) endRiser(p1, alongU ? 0 : 2, eHi, h);
             prev = h;
           }
         } else if ((flags & FD) === 0) {
@@ -475,8 +514,10 @@ export function meshGrid(g: SpanGrid, vb: VB, o: MeshOpts): number {
 
         // walls: wherever this span's air has rock beside it
         const top = ceilOf(k);
-        const skirt = sloped && flags & STEPS ? SKIRT : 0;
+        const stair = sloped && (flags & STEPS) !== 0;
         for (let d = 0; d < 4; d++) {
+          // the skirt and the curb run along a stair's sides; its ends are closed by its risers
+          const skirt = stair && beside(k, d) ? SKIRT : 0;
           const ni = i + DI[d];
           const nj = j + DJ[d];
           const ai = i + EA[d][0];
@@ -496,14 +537,16 @@ export function meshGrid(g: SpanGrid, vb: VB, o: MeshOpts): number {
             for (let t = 0; t < n[nci]; t++) {
               const nk = nb + t;
               const bc = ceilOf(nk);
-              const ga = floorC(nk, ni, nj, ai, aj);
-              const gb = floorC(nk, ni, nj, bi, bj);
+              const ga = solidC(nk, ni, nj, ai, aj, d ^ 1);
+              const gb = solidC(nk, ni, nj, bi, bj, d ^ 1);
               // air on both sides at once, by more than a hair? otherwise this span opens nothing here
               if (Math.min(bc, top) - Math.max((ga + gb) * 0.5, (loA + loB) * 0.5) < 0.011) continue;
               const hiA = Math.min(ga, top);
               const hiB = Math.min(gb, top);
-              if (hiA > loA || hiB > loB) {
-                const curb = fl[nk] & STEPS ? CURB : 0;
+              // (told apart on the lattice: two flights of one stair meet at the same height but for
+              // rounding, and a hair's difference would stand a sliver of wall across the stair)
+              if (qz(hiA) > qz(loA) || qz(hiB) > qz(loB)) {
+                const curb = fl[nk] & STEPS && beside(nk, d) ? CURB : 0;
                 const sk = first ? skirt : 0;
                 wall(ai, aj, bi, bj, loA - sk, hiA + curb, loB - sk, hiB + curb, EO[d]);
               }
