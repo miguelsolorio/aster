@@ -1,13 +1,13 @@
 // What the wanderer has been given and who they have met. One versioned key in
 // localStorage; the world itself is seeded, so only the changes are stored.
 //
-// Testing: ?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope grants tools for this visit without saving them,
+// Testing: ?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather grants tools for this visit without saving them,
 // and ?reset clears the save and the saved spawn before the game starts.
 
 import { isFindKind, type FindKind } from './finds';
 
-export type Tool = 'board' | 'carpet' | 'pick' | 'spyglass' | 'flute' | 'bedroll' | 'rod' | 'chart' | 'rope';
-export const TOOLS: Tool[] = ['board', 'carpet', 'pick', 'spyglass', 'flute', 'bedroll', 'rod', 'chart', 'rope'];
+export type Tool = 'board' | 'carpet' | 'pick' | 'spyglass' | 'flute' | 'bedroll' | 'rod' | 'chart' | 'rope' | 'boots' | 'feather';
+export const TOOLS: Tool[] = ['board', 'carpet', 'pick', 'spyglass', 'flute', 'bedroll', 'rod', 'chart', 'rope', 'boots', 'feather'];
 
 /** Small things carried for a while, shown on the figure. */
 export type Item = 'lamp' | 'relic';
@@ -114,7 +114,7 @@ export function clearProgress(): void {
 
 const fresh = (): SaveData => ({
   v: 1,
-  tools: { board: false, carpet: false, pick: false, spyglass: false, flute: false, bedroll: false, rod: false, chart: false, rope: false },
+  tools: { board: false, carpet: false, pick: false, spyglass: false, flute: false, bedroll: false, rod: false, chart: false, rope: false, boots: false, feather: false },
   talked: false,
   items: { lamp: false, relic: false },
   roles: { miner: 0, weaver: 0 },

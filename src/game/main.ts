@@ -16,7 +16,7 @@ import { Props } from '../world/props';
 import { blockedAt } from '../world/avoid';
 import { Cities } from '../city/cities';
 import { FootpathNet } from '../city/footpaths';
-import { Caravans, ROLE_HERDER, ROLE_KEEPER, ROLE_PILGRIM } from '../city/caravans';
+import { Caravans, ROLE_CLIMBER, ROLE_HERDER, ROLE_KEEPER, ROLE_PILGRIM, ROLE_VILLAGER, ROLE_WATCHER } from '../city/caravans';
 import { Waymarks } from '../city/waymarks';
 import { People } from '../city/people';
 import { Figure } from './figure';
@@ -36,7 +36,7 @@ import { Massifs } from '../world/massifs';
 import { Save, loadSpawn, saveSpawn, clearSpawn, clearProgress } from './save';
 import { findName, isFindKind } from './finds';
 import { Talk, type Speaker } from './talk';
-import { FOUND, HERDER, KEEPER, MINER, PILGRIM, SAND, TOWNSFOLK, TRAVELLER, WEAVER, type Line } from './lines';
+import { CLIMBER, FOUND, HERDER, KEEPER, MINER, PILGRIM, SAND, SNOWFOLK, TOWNSFOLK, TRAVELLER, VILLAGER, WATCHER, WEAVER, type Line } from './lines';
 import { CavernHints } from './hints';
 import { offeringAt } from './offerings';
 import { Marks } from './marks';
@@ -206,6 +206,20 @@ function start() {
   // Each waking stone lengthens the climb, with less to gain from every one after the first.
   const setLift = () => (player.lift = 1 + 1.5 * (1 - Math.pow(0.9, discoveries.wokenCount)));
   setLift();
+  // (testing) ?village starts you in the street of the nearest mountain village, and ?village=snow
+  // on the road through the nearest snow village. With ?x=&z= it is the nearest to that point.
+  if (import.meta.env.DEV && qs.has('village')) {
+    const want = qs.get('village') === 'snow' ? 'snow-village' : 'mountain-village';
+    const p = player.state.pos;
+    const near = discoveries
+      .sitesNear(p.x, p.z, 12000, [])
+      .filter((s) => s.kind === want)
+      .sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z))[0];
+    if (near) {
+      player.place(near.x, near.z);
+      cities.setFocus(near.x, near.z);
+    }
+  }
   discoveries.onGround = () => bake.invalidate();
   // The faint footpaths from the towns and their routes out to the finds, laid to finds not built yet too.
   const footpaths = new FootpathNet(world, cities.routes, (x, z, r, out) => discoveries.surfaceSitesNear(x, z, r, out));
@@ -225,6 +239,7 @@ function start() {
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, cities.routes, u);
   caravans.landmarks = (out) => discoveries.landmarks(out);
+  caravans.villages = (out) => discoveries.villages(out);
   caravans.pens = (out) => cities.pens(out); // the beasts in the pens outside each city
   const fauna = new Fauna(world, u);
   fauna.landmarks = (out) => discoveries.landmarks(out);
@@ -260,6 +275,8 @@ function start() {
     figure.chart = save.has('chart');
     figure.rope = save.has('rope');
     player.rope = figure.rope;
+    player.boots = figure.boots = save.has('boots');
+    player.feather = figure.feather = save.has('feather');
   };
   wear();
   // The places marked through the spyglass: a thread of light over each, until it is reached.
@@ -515,6 +532,8 @@ function start() {
     syncKnown();
   };
   let herderAsked = false;
+  /** What the village people have sent the wanderer after this visit: said in full once, and shortly after that. */
+  const sent = new Set<'rope' | 'boots' | 'feather'>();
 
   // ---- talking: anyone in reach can be spoken to. Travellers give the board to someone on foot.
   const pick = <T,>(list: T[], avoid: T | null): T => {
@@ -523,16 +542,28 @@ function start() {
     return v;
   };
   const text = (l: Line) => (typeof l === 'string' ? l : touch.used ? l.touch : l.keys);
+  /** After dark, as the people out of doors reckon it. */
+  const dark = () => day.day < 0.22 || day.day > 0.78;
+  /** How far off a mountain's cave or summit may be and still be worth sending someone to (m). */
+  const STRAY_R = 6000;
   let lastLine: string | null = null;
-  const trav = { ref: null as unknown, x: 0, y: 0, z: 0, h: 1, sit: 0, seed: 0, role: 0, camp: false };
+  const trav = { ref: null as unknown, x: 0, y: 0, z: 0, h: 1, sit: 0, seed: 0, role: 0, camp: false, snow: false };
   const folk = { id: -1, x: 0, z: 0, h: 1, sit: 0, stall: false };
   const setTraveller = (out: Speaker) => {
-    out.kind = trav.role === ROLE_PILGRIM ? 'pilgrim' : trav.role === ROLE_KEEPER ? 'keeper' : trav.role === ROLE_HERDER ? 'herder' : 'traveller';
+    out.kind =
+      trav.role === ROLE_PILGRIM ? 'pilgrim'
+      : trav.role === ROLE_KEEPER ? 'keeper'
+      : trav.role === ROLE_HERDER ? 'herder'
+      : trav.role === ROLE_VILLAGER ? 'villager'
+      : trav.role === ROLE_WATCHER ? 'watcher'
+      : trav.role === ROLE_CLIMBER ? 'climber'
+      : 'traveller';
     out.ref = trav.ref;
     out.x = trav.x;
     out.z = trav.z;
     out.y = trav.y + (1.72 - 0.62 * trav.sit) * trav.h;
-    out.pitch = 120 + trav.seed * 110;
+    // (a child's voice is high)
+    out.pitch = trav.h < 0.8 ? 320 + trav.seed * 80 : 120 + trav.seed * 110;
   };
   // ---- the miner, one in every city: wants a lamp fetched, and gives the pick for it
   const minerP = { x: 0, z: 0, h: 1, sit: 1 };
@@ -659,7 +690,7 @@ function start() {
         setMiner(s);
         return true;
       }
-      if (s.kind === 'traveller' || s.kind === 'pilgrim' || s.kind === 'keeper' || s.kind === 'herder') {
+      if (s.kind !== 'townsfolk') {
         caravans.hold(s.ref);
         caravans.personAt(s.ref, trav);
         setTraveller(s);
@@ -682,6 +713,40 @@ function start() {
           lines: KEEPER.gift.map(text),
           done: () => given('spyglass'),
         };
+      }
+      // The watcher under a village's tower knows where a rope lies, out by the great bones.
+      if (s.kind === 'watcher') {
+        const rope = save.has('rope') ? null : discoveries.ropeSpot(s.x, s.z, 2500);
+        if (rope) {
+          if (sent.has('rope')) return { lines: [directions(WATCHER.pending, s.x, s.z, rope.x, rope.z)] };
+          return { lines: WATCHER.ask.map((l) => directions(text(l), s.x, s.z, rope.x, rope.z)), done: () => void sent.add('rope') };
+        }
+        const pool = [...WATCHER.after, ...(dark() ? [...WATCHER.night, ...WATCHER.night] : []), ...(save.has('rope') ? [...WATCHER.rope, ...WATCHER.rope] : [])];
+        return { lines: [(lastLine = pick(pool, lastLine))] };
+      }
+      // The climber by a village's fire sends the wanderer up the mountain: for the boots in its cave, then a feather from its top.
+      if (s.kind === 'climber') {
+        const want = !save.has('boots') ? 'boots' : !save.has('feather') ? 'feather' : null;
+        const at = want && discoveries.straySpot(want, s.x, s.z, STRAY_R);
+        if (want && at) {
+          const pending = want === 'boots' ? CLIMBER.bootsPending : CLIMBER.featherPending;
+          if (sent.has(want)) return { lines: [directions(pending, s.x, s.z, at.x, at.z)] };
+          return { lines: CLIMBER[want].map((l) => directions(text(l), s.x, s.z, at.x, at.z)), done: () => void sent.add(want) };
+        }
+        return { lines: [(lastLine = pick(CLIMBER.after, lastLine))] };
+      }
+      // Everyone else in a village has a line about the place, the hour, and who to ask.
+      if (s.kind === 'villager') {
+        const lines = caravans.personAt(s.ref, trav) && trav.snow ? SNOWFOLK : VILLAGER;
+        if (trav.h < 0.8) return { lines: [(lastLine = pick(lines.child, lastLine))] };
+        const d = day.day;
+        const hour = dark() ? [...lines.night, ...lines.night] : lines === VILLAGER && d < 0.32 ? VILLAGER.dawn : lines === VILLAGER && d > 0.7 ? VILLAGER.dusk : [];
+        const pool = [...lines.any, ...hour];
+        if (!save.has('rope')) pool.push(...lines.askWatcher, ...lines.askWatcher);
+        if (!save.has('boots') || !save.has('feather')) pool.push(...lines.askClimber, ...lines.askClimber);
+        if (save.has('boots')) pool.push(...lines.boots);
+        if (save.has('feather')) pool.push(...lines.feather);
+        return { lines: [(lastLine = pick(pool, lastLine))] };
       }
       // A goat herder gives the flute to someone who has ridden a wild animal.
       if (s.kind === 'herder') {
@@ -1951,6 +2016,13 @@ function start() {
         figure.relic = true;
         pickedUp(st.pos.x, st.pos.y + 1, st.pos.z);
       }
+      for (const k of ['boots', 'feather'] as const) {
+        if (!discoveries.strayNear(k, st.pos.x, st.pos.y, st.pos.z, 1.5)) continue;
+        discoveries.setStray(k, null);
+        given(k);
+        pickedUp(st.pos.x, st.pos.y + 0.4, st.pos.z);
+        found(k);
+      }
       if (discoveries.ropeNear(st.pos.x, st.pos.y, st.pos.z, 1.5)) {
         discoveries.setRope(null);
         given('rope');
@@ -2004,6 +2076,8 @@ function start() {
       discoveries.setLamps(at);
       // A rope and hook lies beside the nearest great bones, until it is picked up.
       discoveries.setRope(save.has('rope') ? null : discoveries.ropeSpot(st.pos.x, st.pos.z, 2500));
+      // The climber's boots lie at the back of the nearest mountain cave, and a feather on the nearest summit.
+      for (const k of ['boots', 'feather'] as const) discoveries.setStray(k, save.has(k) ? null : discoveries.straySpot(k, st.pos.x, st.pos.z, 2500));
     }
     // Over a sealed cavern the sand drifts slowly, where everywhere else the wind takes it.
     {

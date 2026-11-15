@@ -18,6 +18,11 @@ const HOVER_SINK = 4.5; // sink with no direction held: he stops and settles dow
 const MAX_SPEED = 60;
 export const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
 const REACH = 0.38; // how far ahead of the feet a wall is felt
+const BOOTS = 1.25; // nailed boots are this much quicker over rock
+const BOOTS_GRIP = 1.5; // and hold on rock this steep (rise over run) before it is a cliff; bare feet give up at CLIFF
+const BOOTS_STEEP = 4.2; // the most they make (m/s over the ground) on rock that bare feet could not stand on
+const CLIFF = 1.15;
+const FEATHER = 0.6; // an eagle's feather in the hood: the glide sinks this much as fast
 const CARPET = 1.6; // a carpet flies this much faster, and climbs for twice as long
 
 /** Forward speed in flight, metres a second: a carpet is faster at the glide and at the boost alike. */
@@ -100,6 +105,10 @@ export class Player {
   rope = false;
   /** Climbing a face on the rope this step. */
   roping = false;
+  /** Wears nailed boots: quicker on rock, and sure on steeper rock. */
+  boots = false;
+  /** Has an eagle's feather: the glide sinks slower. */
+  feather = false;
 
   private n = new THREE.Vector3();
   private s: SurfaceSample = { h: 0, rock: 0, salt: 0 };
@@ -234,19 +243,23 @@ export class Player {
         st.sliding = false;
         const climb = this.wish.x * gx + this.wish.y * gz;
         // Sand gives underfoot: a dune face is slower going up than rock of the same pitch.
+        const shod = rock && this.boots;
         const factor = rock ? Math.min(1.2, Math.max(0.35, 1 - climb * 0.9)) : Math.min(1.12, Math.max(0.3, 1 - climb * 1.3));
-        const target = (input.run ? (rock ? RUN : RUN_SAND) : WALK) * factor;
+        let target = (input.run ? (rock ? RUN : RUN_SAND) : WALK) * factor * (shod ? BOOTS : 1);
+        // Nailed boots hold where bare feet slide off, but nobody runs up such a face.
+        const cliff = shod ? BOOTS_GRIP : CLIFF;
+        if (shod && slope > CLIFF) target = Math.min(target, BOOTS_STEEP);
         const rate = 1 - Math.exp(-dt * 6);
         vel.x += (this.wish.x * target - vel.x) * rate;
         vel.z += (this.wish.y * target - vel.z) * rate;
         // Cliffs are barriers: cancel motion into them. With a rope and hook they are climbed
         // instead: slowly, hand over hand, and held wherever the climbing stops.
-        if (slope > 1.15 && this.rope) {
+        if (slope > cliff && this.rope) {
           const sp = wishing ? ROPE_CLIMB / Math.sqrt(1 + slope * slope) : 0;
           vel.x = this.wish.x * sp;
           vel.z = this.wish.y * sp;
           this.roping = wishing && climb > 0;
-        } else if (slope > 1.15) {
+        } else if (slope > cliff) {
           const up = (vel.x * gx + vel.z * gz) / slope;
           if (up > 0) {
             vel.x -= (gx / slope) * up;
@@ -507,7 +520,7 @@ export class Player {
         const near = Math.min(1, this.alt / 1.5);
         // Hovering in place comes down faster than a forward glide, but still gently.
         const still = 1 - Math.min(1, hs / 6);
-        const target = -(GLIDE_SINK + (HOVER_SINK - GLIDE_SINK) * still) * (0.6 + 0.4 * near) + ridge * (1 - still);
+        const target = -(GLIDE_SINK + (HOVER_SINK - GLIDE_SINK) * still) * (this.feather ? FEATHER : 1) * (0.6 + 0.4 * near) + ridge * (1 - still);
         if (vy > target) vy = Math.max(target, vy - GRAVITY * 0.5 * dt); // float over the top
         else vy += (target - vy) * (1 - Math.exp(-dt * 3.5)); // catch a fall
       } else {

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { PlayerState, Uniforms } from './contract';
 import { strideLength } from './player';
 import { STYLE_GLSL } from '../render/styleGlsl';
-import { CHOSEN, TRIM, bedrollGeometry, boardGeometry, carpetGeometry, chartGeometry, fluteGeometry, lampGeometry, pickGeometry, relicGeometry, rodGeometry, rollGeometry, ropeCoilGeometry, rugMaterial, solidMaterial, spyglassGeometry, trimGeometry } from './equipment';
+import { CHOSEN, TRIM, bedrollGeometry, boardGeometry, bootGeometry, featherGeometry, carpetGeometry, chartGeometry, fluteGeometry, lampGeometry, pickGeometry, relicGeometry, rodGeometry, rollGeometry, ropeCoilGeometry, rugMaterial, solidMaterial, spyglassGeometry, trimGeometry } from './equipment';
 
 // The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
 // legs, a plain white face and a round hood.
@@ -311,6 +311,9 @@ export class Figure {
   rod = false;
   chart = false;
   rope = false;
+  /** Nailed boots on the feet, and an eagle's feather standing in the hood. */
+  boots = false;
+  feather = false;
   /** 0..1 the flute is at the lips. */
   piping = 0;
   /** 0..1 the rod is held out in both hands, and how far its tip is pulled down (0..1). */
@@ -327,6 +330,8 @@ export class Figure {
   private rodMesh: THREE.Mesh;
   private chartMesh: THREE.Mesh;
   private ropeMesh: THREE.Mesh;
+  private bootMeshes: THREE.Mesh[] = [];
+  private featherMesh: THREE.Mesh;
 
   constructor(u: Uniforms) {
     this.group.rotation.order = 'YXZ';
@@ -414,7 +419,16 @@ export class Figure {
     this.chartMesh = add(t, chartGeometry(), solid);
     // (the coil is made lying flat; worn, it hangs on edge from the belt)
     this.ropeMesh = add(t, ropeCoilGeometry().translate(0, -0.058, 0).scale(0.8, 0.8, 0.8), solid);
-    for (const m of [this.glassMesh, this.fluteMesh, this.bedMesh, this.rodMesh, this.chartMesh, this.ropeMesh]) m.visible = false;
+    // boots over the bare feet, and the feather behind the right ear, leaning back
+    for (const knee of this.knees) {
+      const boot = add(knee, bootGeometry(), solid);
+      boot.position.set(0, -SHIN - 0.008, 0.005);
+      this.bootMeshes.push(boot);
+    }
+    this.featherMesh = add(t, featherGeometry(), solid);
+    this.featherMesh.position.set(0.105, HOOD_Y - HIP + 0.075, HOOD_Z - 0.03);
+    this.featherMesh.rotation.set(-0.5, 0.5, -0.32, 'YXZ');
+    for (const m of [this.glassMesh, this.fluteMesh, this.bedMesh, this.rodMesh, this.chartMesh, this.ropeMesh, this.featherMesh, ...this.bootMeshes]) m.visible = false;
     this.boardBack.visible = this.boardFoot.visible = this.rug.visible = this.roll.visible = this.pickMesh.visible = false;
     this.setBoard(CHOSEN.board);
     this.setCarpet(CHOSEN.carpet);
@@ -620,6 +634,10 @@ export class Figure {
       this.chartMesh.position.set(-0.22, 0.16, -0.1);
       this.chartMesh.rotation.set(-0.55 + sw * 0.1, 0, 0.3);
     }
+    for (const m of this.bootMeshes) m.visible = this.boots;
+    this.featherMesh.visible = this.feather;
+    // (it swells like the rest when it is new)
+    if (this.feather) this.featherMesh.scale.setScalar(pop);
     this.ropeMesh.visible = this.rope;
     if (this.rope) {
       this.ropeMesh.position.set(0.27, 0.1, -0.07);

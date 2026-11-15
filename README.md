@@ -10,7 +10,7 @@ A calm desert to wander, glide and fly through. It runs in the browser, there's 
 
 ## What's out there
 
-You start on foot in open sand with a city somewhere in sight. The rest is yours to find: dune seas, salt pans, river gorges, walled towns, caravans on the road between them, and a snow-capped mountain on most horizons. Out on the sand there are empty hamlets round their wells and lone watchtowers with a fire lit at night. Most mountains have a village or two at their foot, with garden terraces, a tower and goats grazing outside. One of those mountains has a road to it: follow the torches out of the desert, through a stone gate where the sand turns to snow, and up the flank to three villages and a lantern hold at the top. The sun rises and sets while you walk, so the same ridge looks different every time you come back to it.
+You start on foot in open sand with a city somewhere in sight. The rest is yours to find: dune seas, salt pans, river gorges, walled towns, caravans on the road between them, and a snow-capped mountain on most horizons. Out on the sand there are empty hamlets round their wells and lone watchtowers with a fire lit at night. Most mountains have a village or two at their foot, with garden terraces, a tower and goats grazing outside. People live in them: stop and talk. The watcher under the tower, in blue, and the old climber by the fire, in green, each know where something useful was left. One of those mountains has a road to it: follow the torches out of the desert, through a stone gate where the sand turns to snow, and up the flank to three villages and a lantern hold at the top. The sun rises and sets while you walk, so the same ridge looks different every time you come back to it.
 
 | | |
 |---|---|
@@ -60,7 +60,7 @@ The dev server has a few extra pages that aren't part of the build:
 - `/characters.html` and `/equipment.html` show the figures, boards, carpets and picks
 - `/social.html` runs the game in a 1200 × 630 frame for capturing screenshots like the ones above
 
-Two URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope` lends you the tools for one visit, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), and `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start).
+A few URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather` lends you the tools for one visit, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start), and on the dev server `?village` starts you in the nearest mountain village (`?village=snow` for the nearest snow village).
 
 ## Built with
 
