@@ -322,32 +322,36 @@ export class AudioEngine {
   private clock = 0;
   private hideTimer: ReturnType<typeof setTimeout> | null = null;
   private readonly onVisibility = (): void => this.handleVisibility();
+  private readonly onGesture = (): void => this.unlock();
 
   constructor() {
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', this.onVisibility);
+      // Kept for the engine's whole life: a phone can suspend the context again at any time
+      // (a call, the app switcher), and only a gesture brings it back.
+      for (const type of UNLOCK_EVENTS) window.addEventListener(type, this.onGesture, UNLOCK_OPTS);
     }
   }
 
-  /** Must be called from a user gesture. Creates/resumes the context and fades in over ~4 s. */
-  async start(): Promise<void> {
+  /**
+   * Creates/resumes the context and fades in over ~4 s. Best called from a user gesture; when it
+   * is not, the sound begins on the first one after it.
+   */
+  start(): void {
     if (this.disposed) return;
     if (!this.ctx) {
       const Ctor =
         window.AudioContext ??
         (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!Ctor) return;
+      playThroughSilentSwitch();
       this.ctx = new Ctor();
       this.g = this.build(this.ctx);
     }
     const ctx = this.ctx;
-    if (ctx.state !== 'running') {
-      try {
-        await ctx.resume();
-      } catch {
-        /* resume can reject outside a gesture; a later start() retries */
-      }
-    }
+    // Not awaited: outside a gesture a phone leaves this pending until unlock() gets one, and
+    // the score must be set up by then. Nothing below plays while the context is suspended.
+    if (ctx.state !== 'running') void ctx.resume().catch(() => undefined);
     if (!this.started && this.g) {
       this.started = true;
       const now = ctx.currentTime;
@@ -359,6 +363,23 @@ export class AudioEngine {
       this.nextPluck = now + rand(4, 8);
       this.nextDrone = now + rand(20, 40);
     }
+  }
+
+  /**
+   * Called on every real user gesture. Browsers only let a context run after one, and the game
+   * can begin without one (the title card puts itself away), so this is what makes sound on a
+   * phone. Does nothing while the context is running.
+   */
+  private unlock(): void {
+    const ctx = this.ctx;
+    if (!ctx || this.disposed || document.hidden || ctx.state === 'running') return;
+    void ctx.resume().then(
+      () => {
+        if (this.ctx !== ctx || !this.g || document.hidden) return;
+        this.g.hide.gain.setTargetAtTime(1, ctx.currentTime, 0.6);
+      },
+      () => undefined,
+    );
   }
 
   setVolume(v: number): void {
@@ -1149,6 +1170,7 @@ export class AudioEngine {
     this.disposed = true;
     if (typeof document !== 'undefined') {
       document.removeEventListener('visibilitychange', this.onVisibility);
+      for (const type of UNLOCK_EVENTS) window.removeEventListener(type, this.onGesture, UNLOCK_OPTS);
     }
     if (this.hideTimer) clearTimeout(this.hideTimer);
     const ctx = this.ctx;
@@ -2706,6 +2728,27 @@ export class AudioEngine {
 }
 
 // ----------------------------------------------------------- free helpers
+
+/**
+ * The events that count as a user gesture for audio. On a touch screen the start of a touch
+ * (pointerdown, touchstart) does not; only its end does.
+ */
+const UNLOCK_EVENTS = ['pointerup', 'touchend', 'click', 'keydown'] as const;
+const UNLOCK_OPTS = { capture: true, passive: true } as const;
+
+/**
+ * On an iPhone, Web Audio is silenced by the ring/silent switch unless the page says it is
+ * playing media. The game has its own volume controls, so it asks to be heard.
+ */
+function playThroughSilentSwitch(): void {
+  const session = (navigator as Navigator & { audioSession?: { type: string } }).audioSession;
+  if (!session) return;
+  try {
+    session.type = 'playback';
+  } catch {
+    /* not supported here: the switch keeps its say */
+  }
+}
 
 function disconnectAll(...nodes: AudioNode[]): void {
   for (const n of nodes) {
