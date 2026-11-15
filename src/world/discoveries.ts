@@ -498,8 +498,7 @@ class Ctx {
   /** Where a relic lies, local. */
   relic: [number, number, number] | null = null;
   /** A temple's marks, local: the stair's foot, the avenue's end, the way out, and where keepers stand (x, y, z, yaw). */
-  temple: { foot: [number, number, number]; end: [number, number, number]; yaw: number; keep: [number, number, number, number][] } | null =
-    null;
+  temple: { foot: [number, number, number]; end: [number, number, number]; yaw: number; keep: [number, number, number, number][] } | null = null;
   /** What the wanderer walks into and stands on: one shape per stone, drum and length of bone. */
   readonly solids = new Solids();
   /** Off while building things you pass straight through (scrub, paving flush with the ground). */
@@ -690,18 +689,7 @@ function buildRuins(c: Ctx): void {
         while (y < g + h - 0.3) {
           const dh = Math.min(c.r(1.3, 1.9), g + h - y);
           const rr = rad * (1 - 0.05 * (j / 8)) * c.r(0.95, 1.02);
-          c.prim(
-            UNIT_CYL,
-            u + c.r(-0.08, 0.08),
-            y + dh / 2,
-            v + c.r(-0.08, 0.08),
-            rr,
-            dh * 0.98,
-            rr,
-            c.rng() * 3,
-            c.r(-0.02, 0.02),
-            c.r(-0.02, 0.02),
-          );
+          c.prim(UNIT_CYL, u + c.r(-0.08, 0.08), y + dh / 2, v + c.r(-0.08, 0.08), rr, dh * 0.98, rr, c.rng() * 3, c.r(-0.02, 0.02), c.r(-0.02, 0.02));
           y += dh;
           j++;
         }
@@ -749,16 +737,7 @@ function buildRuins(c: Ctx): void {
       let y = g - 1.5;
       while (y < g + H) {
         const bh = c.r(1.2, 1.8);
-        c.prim(
-          UNIT_BOX,
-          u + c.r(-0.12, 0.12),
-          y + bh / 2,
-          c.r(-0.12, 0.12),
-          pw * c.r(0.95, 1.05),
-          bh * 0.98,
-          pd * c.r(0.95, 1.05),
-          c.r(-0.04, 0.04),
-        );
+        c.prim(UNIT_BOX, u + c.r(-0.12, 0.12), y + bh / 2, c.r(-0.12, 0.12), pw * c.r(0.95, 1.05), bh * 0.98, pd * c.r(0.95, 1.05), c.r(-0.04, 0.04));
         y += bh;
       }
       tops.push(y);
@@ -939,18 +918,10 @@ function addPalm(c: Ctx, bu: number, bv: number, la: number): void {
       const fb = c.fronds;
       const V = (i: number, j: number) => fb.vert(cross[i * 3 + j], i / S, ph, shadeK);
       for (let i = 0; i < S; i++) {
-        V(i, 0);
-        V(i, 1);
-        V(i + 1, 0);
-        V(i, 1);
-        V(i + 1, 1);
-        V(i + 1, 0);
-        V(i, 1);
-        V(i, 2);
-        V(i + 1, 1);
-        V(i, 2);
-        V(i + 1, 2);
-        V(i + 1, 1);
+        V(i, 0); V(i, 1); V(i + 1, 0);
+        V(i, 1); V(i + 1, 1); V(i + 1, 0);
+        V(i, 1); V(i, 2); V(i + 1, 1);
+        V(i, 2); V(i + 1, 2); V(i + 1, 1);
       }
     }
   }
@@ -1067,27 +1038,15 @@ function buildRoof(c: Ctx, face: (u: number, v: number, out: Face) => Face, floo
     for (let j = 0; j < NV; j++) {
       const va = -HALF + (j / NV) * 2 * HALF;
       const vb = -HALF + ((j + 1) / NV) * 2 * HALF;
-      top(ua, va);
-      top(ua, vb);
-      top(ub, va);
-      top(ub, va);
-      top(ua, vb);
-      top(ub, vb);
-      low(ua, va);
-      low(ub, va);
-      low(ua, vb);
-      low(ub, va);
-      low(ub, vb);
-      low(ua, vb);
+      top(ua, va); top(ua, vb); top(ub, va);
+      top(ub, va); top(ua, vb); top(ub, vb);
+      low(ua, va); low(ub, va); low(ua, vb);
+      low(ub, va); low(ub, vb); low(ua, vb);
       if (i === 0) {
         const ya = face(ua, va, F).y + 0.05;
         const yb = face(ua, vb, F).y + 0.05;
-        brow(ua, va, lowY(ua, va));
-        brow(ua, vb, lowY(ua, vb));
-        brow(ua, va, ya);
-        brow(ua, va, ya);
-        brow(ua, vb, lowY(ua, vb));
-        brow(ua, vb, yb);
+        brow(ua, va, lowY(ua, va)); brow(ua, vb, lowY(ua, vb)); brow(ua, va, ya);
+        brow(ua, va, ya); brow(ua, vb, lowY(ua, vb)); brow(ua, vb, yb);
       }
     }
   }
@@ -1159,18 +1118,7 @@ function buildBalancing(c: Ctx): void {
     const big = c.r(6, 9) * scale;
     const hang = c.r(0.5, 2.5) * scale;
     const ha = c.rng() * Math.PI * 2;
-    c.prim(
-      UNIT_BLOB,
-      ou + Math.cos(ha) * hang,
-      y + big * 0.72,
-      ov + Math.sin(ha) * hang,
-      big * 1.3,
-      big * 0.85,
-      big,
-      c.rng() * 6,
-      c.r(-0.2, 0.2),
-      c.r(-0.2, 0.2),
-    );
+    c.prim(UNIT_BLOB, ou + Math.cos(ha) * hang, y + big * 0.72, ov + Math.sin(ha) * hang, big * 1.3, big * 0.85, big, c.rng() * 6, c.r(-0.2, 0.2), c.r(-0.2, 0.2));
   };
   stack(0, 0, 1);
   if (c.rng() < 0.6) stack(c.r(18, 28), c.r(-8, 8), c.r(0.45, 0.7));
@@ -1282,7 +1230,7 @@ function buildBones(c: Ctx): void {
     const t = i / nV;
     if (t < 0.16 || t > 0.78) continue;
     const sp = spine[i];
-    const rr = R * (0.55 + 0.45 * Math.sin((Math.PI * (t - 0.1)) / 0.75));
+    const rr = R * (0.55 + 0.45 * Math.sin(Math.PI * (t - 0.1) / 0.75));
     for (const side of [-1, 1]) {
       if (c.rng() < 0.1) continue;
       const broken = c.rng() < 0.25;
@@ -1360,13 +1308,7 @@ function mudHouse(c: Ctx, hu: number, hv: number, ang: number, face: number, w: 
   const at = (lx: number, lz: number): [number, number] => [hu + Tx * lx + Nx * lz, hv + Tz * lx + Nz * lz];
   let lo = Infinity;
   let hi = -Infinity;
-  for (const [lx, lz] of [
-    [-w / 2, -d / 2],
-    [w / 2, -d / 2],
-    [-w / 2, d / 2],
-    [w / 2, d / 2],
-    [0, 0],
-  ] as const) {
+  for (const [lx, lz] of [[-w / 2, -d / 2], [w / 2, -d / 2], [-w / 2, d / 2], [w / 2, d / 2], [0, 0]] as const) {
     const [u, v] = at(lx, lz);
     const gh = c.g(u, v);
     lo = Math.min(lo, gh);
@@ -1681,13 +1623,7 @@ function mudTower(c: Ctx, u: number, v: number, ang: number, H: number, wt: numb
   const ry = -ang;
   let lo = Infinity;
   let hi = -Infinity;
-  for (const [a, b] of [
-    [-3, -3],
-    [3, -3],
-    [-3, 3],
-    [3, 3],
-    [0, 0],
-  ] as const) {
+  for (const [a, b] of [[-3, -3], [3, -3], [-3, 3], [3, 3], [0, 0]] as const) {
     const gh = c.g(u + a, v + b);
     lo = Math.min(lo, gh);
     hi = Math.max(hi, gh);
@@ -1935,17 +1871,7 @@ function buildWatchtower(c: Ctx): void {
   mudTower(c, 0, 0, face, c.r(13, 17.5), wt);
   // the hut, off to one side of the door
   const ha = face + (c.rng() < 0.5 ? -1 : 1) * c.r(1.2, 1.7);
-  mudHouse(
-    c,
-    Math.cos(ha) * 7.6,
-    Math.sin(ha) * 7.6,
-    ha + Math.PI / 2,
-    -1,
-    c.r(4.6, 5.6),
-    c.r(3.6, 4.2),
-    c.r(2.4, 2.8),
-    wt * c.r(0.95, 1.04),
-  );
+  mudHouse(c, Math.cos(ha) * 7.6, Math.sin(ha) * 7.6, ha + Math.PI / 2, -1, c.r(4.6, 5.6), c.r(3.6, 4.2), c.r(2.4, 2.8), wt * c.r(0.95, 1.04));
   // the ring wall, with gaps where it has gone
   const R = c.r(12.5, 15);
   const segs = 18;
@@ -2153,8 +2079,7 @@ function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): voi
     for (let j = 1; j <= SUB; j++) {
       const r1 = row(j / SUB);
       for (let k = 0; k < 3; k++) {
-        for (const q of [r0[k], r1[k], r0[k + 1], r0[k + 1], r1[k], r1[k + 1]])
-          c.rock.vert(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8]);
+        for (const q of [r0[k], r1[k], r0[k + 1], r0[k + 1], r1[k], r1[k + 1]]) c.rock.vert(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7], q[8]);
       }
       r0 = r1;
     }
@@ -2227,13 +2152,7 @@ function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
     const at = (lx: number, lz: number): [number, number] => [hx + Tx * lx + Nx * lz, hz + Tz * lx + Nz * lz];
     let lo = Infinity;
     let hi = -Infinity;
-    for (const [lx, lz] of [
-      [-w / 2, -d / 2],
-      [w / 2, -d / 2],
-      [-w / 2, d / 2],
-      [w / 2, d / 2],
-      [0, 0],
-    ] as const) {
+    for (const [lx, lz] of [[-w / 2, -d / 2], [w / 2, -d / 2], [-w / 2, d / 2], [w / 2, d / 2], [0, 0]] as const) {
       const [u, v] = at(lx, lz);
       const gh = c.g(u, v);
       lo = Math.min(lo, gh);
@@ -2369,12 +2288,7 @@ function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
     frostSnowCap(c, eu, ev, g + 11.62, 4.3, 4.3, ry);
     frostSnowCap(c, eu, ev, g + 2.72, 7, 7, ry, 0.3);
     // slots up the faces, lit from inside at night
-    for (const [lx, lz] of [
-      [0, 2.32],
-      [0, -2.32],
-      [2.32, 0],
-      [-2.32, 0],
-    ] as const) {
+    for (const [lx, lz] of [[0, 2.32], [0, -2.32], [2.32, 0], [-2.32, 0]] as const) {
       for (const y of [4.2, 7.6]) {
         const u = eu + Tx * lx - Tz * lz;
         const v = ev + Tz * lx + Tx * lz;
@@ -2442,12 +2356,7 @@ function buildLantern(c: Ctx): void {
   // lantern housing: four posts, a cap, and the light
   st.set(0.45, 0.38, 0.3, 2, 0);
   const hw = 0.55;
-  for (const [a, b] of [
-    [-1, -1],
-    [1, -1],
-    [-1, 1],
-    [1, 1],
-  ]) {
+  for (const [a, b] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
     c.prim(UNIT_BOX, tu + a * hw, topY + 0.8, tv + b * hw, 0.12, 1.6, 0.12);
   }
   c.prim(UNIT_BOX, tu, topY + 0.05, tv, hw * 2.4, 0.2, hw * 2.4);
@@ -2498,30 +2407,18 @@ function buildSundial(c: Ctx, onSalt: boolean): void {
   st.set(tk * 0.95, tk * 0.93, tk * 0.9, 0, 0.08);
   const corners: number[] = [];
   for (const vv of [-th, th]) {
-    for (const [u, y] of [
-      [0, g0 - 0.6],
-      [Lb, gB - 0.6],
-      [0, g0 + Ht],
-    ]) {
+    for (const [u, y] of [[0, g0 - 0.6], [Lb, gB - 0.6], [0, g0 + Ht]]) {
       c.at(u, vv);
       corners.push(c.lx, y, c.lz);
     }
   }
   const C = (i: number) => st.vert(corners[i * 3], corners[i * 3 + 1], corners[i * 3 + 2]);
   const quad = (a: number, b: number, d: number, e: number) => {
-    C(a);
-    C(b);
-    C(d);
-    C(a);
-    C(d);
-    C(e);
+    C(a); C(b); C(d);
+    C(a); C(d); C(e);
   };
-  C(0);
-  C(1);
-  C(2);
-  C(3);
-  C(5);
-  C(4);
+  C(0); C(1); C(2);
+  C(3); C(5); C(4);
   quad(0, 3, 4, 1);
   quad(1, 4, 5, 2);
   quad(2, 5, 3, 0);
@@ -2898,27 +2795,15 @@ function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: F
   };
   for (let i = 0; i < NU; i++) {
     for (let j = 0; j < NV; j++) {
-      top(i, j);
-      top(i, j + 1);
-      top(i + 1, j);
-      top(i + 1, j);
-      top(i, j + 1);
-      top(i + 1, j + 1);
-      low(i, j);
-      low(i + 1, j);
-      low(i, j + 1);
-      low(i + 1, j);
-      low(i + 1, j + 1);
-      low(i, j + 1);
+      top(i, j); top(i, j + 1); top(i + 1, j);
+      top(i + 1, j); top(i, j + 1); top(i + 1, j + 1);
+      low(i, j); low(i + 1, j); low(i, j + 1);
+      low(i + 1, j); low(i + 1, j + 1); low(i, j + 1);
       if (i === 0) {
         const ya = face(u0, vAt(u0, j), F).y + lift(0, j);
         const yb = face(u0, vAt(u0, j + 1), F).y + lift(0, j + 1);
-        brow(j, lowY(0, j));
-        brow(j + 1, lowY(0, j + 1));
-        brow(j, ya);
-        brow(j, ya);
-        brow(j + 1, lowY(0, j + 1));
-        brow(j + 1, yb);
+        brow(j, lowY(0, j)); brow(j + 1, lowY(0, j + 1)); brow(j, ya);
+        brow(j, ya); brow(j + 1, lowY(0, j + 1)); brow(j + 1, yb);
       }
     }
   }
@@ -2929,11 +2814,7 @@ function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: F
     const ua = u0 - 2.5 + k * 1.2;
     const ub = u0 + 5 + k * 4;
     const w = cv.half - 0.4;
-    const cols: Array<[number, number]> = [
-      [-w, 0],
-      [0, 1],
-      [w, 0],
-    ];
+    const cols: Array<[number, number]> = [[-w, 0], [0, 1], [w, 0]];
     for (let q = 0; q < 2; q++) {
       const [va, fa] = cols[q];
       const [vb, fb] = cols[q + 1];
@@ -2946,20 +2827,13 @@ function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: F
       const yb = rampY(ub) + 0.1;
       const um = ua + (ub - ua) * 0.35;
       const ym = ya + (yb - ya) * 0.35;
-      P(ua, va, ya, 0);
-      P(ua, vb, ya, 0);
-      P(um, va, ym, fa);
-      P(um, va, ym, fa);
-      P(ua, vb, ya, 0);
-      P(um, vb, ym, fb);
-      P(um, va, ym, fa);
-      P(um, vb, ym, fb);
-      P(ub, va, yb, 0);
-      P(ub, va, yb, 0);
-      P(um, vb, ym, fb);
-      P(ub, vb, yb, 0);
+      P(ua, va, ya, 0); P(ua, vb, ya, 0); P(um, va, ym, fa);
+      P(um, va, ym, fa); P(ua, vb, ya, 0); P(um, vb, ym, fb);
+      P(um, va, ym, fa); P(um, vb, ym, fb); P(ub, va, yb, 0);
+      P(ub, va, yb, 0); P(um, vb, ym, fb); P(ub, vb, yb, 0);
     }
   }
+
 }
 
 // ------------------------------------------------------------------ the system
@@ -3248,25 +3122,11 @@ export class Discoveries {
       for (let k = 0; k < spots * ways; k++) {
         const spot = Math.floor(k / ways);
         // (the first eight spots lie round the cell's own; the rest are anywhere in it)
-        const x = Math.fround(
-          spot < 8
-            ? x0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 40 + spot) - 0.5) * 240)
-            : (cx + 0.12 + 0.76 * hash4(cx, cz, s, (spot < 24 ? 60 : 120) + spot)) * CELL,
-        );
-        const z = Math.fround(
-          spot < 8
-            ? z0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 50 + spot) - 0.5) * 240)
-            : (cz + 0.12 + 0.76 * hash4(cx, cz, s, (spot < 24 ? 90 : 190) + spot)) * CELL,
-        );
+        const x = Math.fround(spot < 8 ? x0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 40 + spot) - 0.5) * 240) : (cx + 0.12 + 0.76 * hash4(cx, cz, s, (spot < 24 ? 60 : 120) + spot)) * CELL);
+        const z = Math.fround(spot < 8 ? z0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 50 + spot) - 0.5) * 240) : (cz + 0.12 + 0.76 * hash4(cx, cz, s, (spot < 24 ? 90 : 190) + spot)) * CELL);
         if (k % ways === 0) {
           w.sample(x, z, q);
-          if (
-            q.rock > 0.08 ||
-            q.salt > 0.25 ||
-            this.riverAt(x, z) < RIVER_CLEAR ||
-            cityNear(x, z) ||
-            (shared && Math.hypot(x - sx, z - sz) < siteClear)
-          ) {
+          if (q.rock > 0.08 || q.salt > 0.25 || this.riverAt(x, z) < RIVER_CLEAR || cityNear(x, z) || (shared && Math.hypot(x - sx, z - sz) < siteClear)) {
             k += ways - 1;
             continue;
           }
@@ -3279,8 +3139,7 @@ export class Discoveries {
           // the spot to dig lies some way down the ramp, and must be close to level, or the mark on it could not be seen
           const px = x + dx * 15;
           const pz = z + dz * 15;
-          if (Math.max(Math.abs(w.height(px + 6, pz) - w.height(px - 6, pz)), Math.abs(w.height(px, pz + 6) - w.height(px, pz - 6))) > tilt)
-            continue;
+          if (Math.max(Math.abs(w.height(px + 6, pz) - w.height(px - 6, pz)), Math.abs(w.height(px, pz + 6) - w.height(px, pz - 6))) > tilt) continue;
         }
         let lo = Infinity;
         let hi = -Infinity;
@@ -3324,24 +3183,7 @@ export class Discoveries {
         return {
           key,
           // (the spot to dig is 40% of the way down the ramp: well inside the open sinkhole, short of the roof)
-          cav: {
-            x,
-            z,
-            spot: 2 + ramp * 0.4,
-            dx,
-            dz,
-            top,
-            floor,
-            half,
-            bend: 0,
-            bulge,
-            len,
-            ramp,
-            roof: 2 + ramp * a,
-            hole,
-            open,
-            dimple: DIMPLE,
-          },
+          cav: { x, z, spot: 2 + ramp * 0.4, dx, dz, top, floor, half, bend: 0, bulge, len, ramp, roof: 2 + ramp * a, hole, open, dimple: DIMPLE },
           kind,
           u1: room.u1,
           v0: room.v0,
@@ -3409,8 +3251,7 @@ export class Discoveries {
    * to start a long way down.
    */
   private roomLid(hx: number, hz: number, dx: number, dz: number, room: { u1: number; v0: number; v1: number }, y: number): number | null {
-    const w = this.world as World &
-      Partial<{ uncarved(x: number, z: number): number; cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>;
+    const w = this.world as World & Partial<{ uncarved(x: number, z: number): number; cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>;
     const ground = w.uncarved ? w.uncarved.bind(w) : w.height.bind(w);
     const STEP = 10;
     const nu = Math.ceil((room.u1 + 2 * STEP) / STEP);
@@ -3785,11 +3626,7 @@ export class Discoveries {
         const d = Math.hypot(cv.x - x, cv.z - z);
         if (d < cd) {
           cd = d;
-          cave = {
-            x: cv.x + cv.dx * (TERRAIN.caveRoofFrom + 3) - cv.dz * 2.5,
-            z: cv.z + cv.dz * (TERRAIN.caveRoofFrom + 3) + cv.dx * 2.5,
-            kind: 'cave',
-          };
+          cave = { x: cv.x + cv.dx * (TERRAIN.caveRoofFrom + 3) - cv.dz * 2.5, z: cv.z + cv.dz * (TERRAIN.caveRoofFrom + 3) + cv.dx * 2.5, kind: 'cave' };
         }
       }
     }
@@ -3811,8 +3648,7 @@ export class Discoveries {
   lampNear(x: number, y: number, z: number, reach: number): boolean {
     for (let i = 0; i < this.lampAt.length; i++) {
       const a = this.lampAt[i];
-      if (this.isBuilt(LAMP_KEY - i) && Math.hypot(a.x - x, a.z - z) < reach && Math.abs(this.world.height(a.x, a.z) - y) < 2.5)
-        return true;
+      if (this.isBuilt(LAMP_KEY - i) && Math.hypot(a.x - x, a.z - z) < reach && Math.abs(this.world.height(a.x, a.z) - y) < 2.5) return true;
     }
     return false;
   }
@@ -4021,8 +3857,7 @@ export class Discoveries {
           if (cs.cav.open < 1 || d >= bd) continue;
           bd = d;
           const y = cs.cav.floor;
-          if (cs.deep!.glowAt(cs.hx, y - 1, cs.hz, g) && Math.hypot(g[0] - cs.hx, g[1] - y, g[2] - cs.hz) < 12)
-            glowU.set(g[0], g[1], g[2], g[3]);
+          if (cs.deep!.glowAt(cs.hx, y - 1, cs.hz, g) && Math.hypot(g[0] - cs.hx, g[1] - y, g[2] - cs.hz) < 12) glowU.set(g[0], g[1], g[2], g[3]);
           else glowU.set(cs.hx + cs.cav.dx * 1.5, y - 2.2, cs.hz + cs.cav.dz * 1.5, 7);
         }
       }
@@ -4118,12 +3953,12 @@ export class Discoveries {
           // the frame's u axis runs into the mountain
           const ctx = new Ctx(this.world, cv.x, cv.z, this.world.height(cv.x, cv.z), mulberry32(seed ^ 0x5f3a), Math.atan2(-cv.dz, cv.dx));
           ctx.stone.salt = (id * 7) & 1023;
-          buildRoof(ctx, this.faceOf(ctx), (u) => ctx.g(u, 0), {
-            half: TERRAIN.caveHalf,
-            from: TERRAIN.caveRoofFrom - 2,
-            len: TERRAIN.caveLen,
-            height: TERRAIN.caveHeight,
-          });
+          buildRoof(
+            ctx,
+            this.faceOf(ctx),
+            (u) => ctx.g(u, 0),
+            { half: TERRAIN.caveHalf, from: TERRAIN.caveRoofFrom - 2, len: TERRAIN.caveLen, height: TERRAIN.caveHeight },
+          );
           buildCairn(ctx, TERRAIN.caveLen - 7, 0);
           this.finishSite(caveKey, 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6, ctx.baseY, ctx);
           return true;
@@ -4147,16 +3982,14 @@ export class Discoveries {
           const sp = springs[k];
           const key = -(id * 16 + 3 + k);
           if (this.isBuilt(key) || Math.hypot(sp.x - px, sp.z - pz) >= BUILD_R) continue;
-          const ctx = new Ctx(
-            this.world,
-            sp.x,
-            sp.z,
-            this.world.height(sp.x, sp.z),
-            mulberry32(seed ^ (0x9a1 + k)),
-            Math.atan2(-sp.dz, sp.dx),
-          );
+          const ctx = new Ctx(this.world, sp.x, sp.z, this.world.height(sp.x, sp.z), mulberry32(seed ^ (0x9a1 + k)), Math.atan2(-sp.dz, sp.dx));
           ctx.stone.salt = (id * 13 + k) & 1023;
-          buildRoof(ctx, this.faceOf(ctx), (u) => ctx.g(u, 0), { half: sp.half, from: 0, len: sp.len, height: TERRAIN.springHeight });
+          buildRoof(
+            ctx,
+            this.faceOf(ctx),
+            (u) => ctx.g(u, 0),
+            { half: sp.half, from: 0, len: sp.len, height: TERRAIN.springHeight },
+          );
           this.caps.set(key, sp);
           this.finishSite(key, 'spring', sp.x, sp.z, ctx.baseY, ctx);
           return true;
@@ -4264,10 +4097,7 @@ export class Discoveries {
 
   /** The uncut rock at a point of a site's frame, for buildRoof: height, normal, rock and salt. */
   private faceOf(ctx: Ctx): (u: number, v: number, out: Face) => Face {
-    const w = this.world as Partial<{
-      uncarved(x: number, z: number): number;
-      uncarvedSample(x: number, z: number, out: SurfaceSample): SurfaceSample;
-    }>;
+    const w = this.world as Partial<{ uncarved(x: number, z: number): number; uncarvedSample(x: number, z: number, out: SurfaceSample): SurfaceSample }>;
     const s: SurfaceSample = { h: 0, rock: 0, salt: 0 };
     return (u, v, out) => {
       ctx.at(u, v);
@@ -4616,13 +4446,7 @@ export class Discoveries {
    * cells could reach within r of (x, z), with the key it is built under. `want` leaves out
    * kinds the caller has no use for, so springs (the dear ones to work out) are only found when asked for.
    */
-  private eachMassifSite(
-    x: number,
-    z: number,
-    r: number,
-    want: (kind: string) => boolean,
-    each: (key: number, kind: string, sx: number, sz: number) => void,
-  ): void {
+  private eachMassifSite(x: number, z: number, r: number, want: (kind: string) => boolean, each: (key: number, kind: string, sx: number, sz: number) => void): void {
     const w = this.world as Partial<{ massif(gi: number, gj: number): Massif | null; cave(gi: number, gj: number): Cave | null }>;
     if (!w.massif || !w.cave) return;
     const gi0 = Math.floor((x - r) / CITY_CELL) - 1;
@@ -4688,15 +4512,9 @@ export class Discoveries {
         }
       }
     }
-    this.eachMassifSite(
-      x,
-      z,
-      r,
-      () => true,
-      (key, kind, sx, sz) => {
-        if (Math.hypot(sx - x, sz - z) <= r) this.pushRef(out, key, kind, sx, sz, key);
-      },
-    );
+    this.eachMassifSite(x, z, r, () => true, (key, kind, sx, sz) => {
+      if (Math.hypot(sx - x, sz - z) <= r) this.pushRef(out, key, kind, sx, sz, key);
+    });
     this.eachFrostVillage(x, z, (key, vx, vz) => {
       if (Math.hypot(vx - x, vz - z) <= r) this.pushRef(out, key, 'snow-village', vx, vz, key);
     });
@@ -4808,25 +4626,17 @@ export class Discoveries {
     else {
       const q = rng();
       kind =
-        q < 0.17
-          ? 'temple'
-          : q < 0.35
-            ? 'ruins'
-            : q < 0.51
-              ? 'bones'
-              : q < 0.62
-                ? 'shell'
-                : q < 0.73
-                  ? 'standing-stones'
-                  : q < 0.85
-                    ? 'lantern'
-                    : q < 0.92 && h < mean + 2
-                      ? 'oasis'
-                      : 'sundial';
+        q < 0.17 ? 'temple'
+        : q < 0.35 ? 'ruins'
+        : q < 0.51 ? 'bones'
+        : q < 0.62 ? 'shell'
+        : q < 0.73 ? 'standing-stones'
+        : q < 0.85 ? 'lantern'
+        : q < 0.92 && h < mean + 2 ? 'oasis'
+        : 'sundial';
     }
     // A temple wants open, fairly level sand: on a steep slope it would stand on a cliff of footing.
-    if (kind === 'temple' && Math.abs(w.height(x + 20, z) - w.height(x - 20, z)) + Math.abs(w.height(x, z + 20) - w.height(x, z - 20)) > 9)
-      kind = 'ruins';
+    if (kind === 'temple' && Math.abs(w.height(x + 20, z) - w.height(x - 20, z)) + Math.abs(w.height(x, z + 20) - w.height(x, z - 20)) > 9) kind = 'ruins';
     if (kind === 'oasis') {
       // settle into the lowest nearby ground
       let bh = w.height(x, z);
@@ -4858,12 +4668,8 @@ export class Discoveries {
     const ctx = new Ctx(w, x, z, baseY, rng, rng() * Math.PI * 2);
     ctx.stone.salt = (cx * 31 + cz * 17) & 1023;
     switch (kind) {
-      case 'ruins':
-        buildRuins(ctx);
-        break;
-      case 'oasis':
-        buildOasis(ctx);
-        break;
+      case 'ruins': buildRuins(ctx); break;
+      case 'oasis': buildOasis(ctx); break;
       case 'grove': {
         // bearing to the water, and a test for the damp bank, both in the site's own frame
         let toWater = 0;
@@ -4885,42 +4691,23 @@ export class Discoveries {
         buildGrove(ctx, onBank, toWater);
         break;
       }
-      case 'arch':
-        buildArch(ctx);
-        break;
-      case 'balancing-stones':
-        buildBalancing(ctx);
-        break;
-      case 'standing-stones':
-        buildStones(ctx, onSalt);
-        break;
-      case 'bones':
-        buildBones(ctx);
-        break;
-      case 'lantern':
-        buildLantern(ctx);
-        break;
-      case 'hamlet':
-        buildHamlet(ctx);
-        break;
-      case 'watchtower':
-        buildWatchtower(ctx);
-        break;
-      case 'sundial':
-        buildSundial(ctx, onSalt);
-        break;
-      case 'temple':
-        buildTemple(ctx);
-        break;
-      default:
-        buildShell(ctx);
-        break;
+      case 'arch': buildArch(ctx); break;
+      case 'balancing-stones': buildBalancing(ctx); break;
+      case 'standing-stones': buildStones(ctx, onSalt); break;
+      case 'bones': buildBones(ctx); break;
+      case 'lantern': buildLantern(ctx); break;
+      case 'hamlet': buildHamlet(ctx); break;
+      case 'watchtower': buildWatchtower(ctx); break;
+      case 'sundial': buildSundial(ctx, onSalt); break;
+      case 'temple': buildTemple(ctx); break;
+      default: buildShell(ctx); break;
     }
     this.finishSite(cellKey(cx, cz), kind, x, z, baseY, ctx);
   }
 
   /** Turns what a builder made into meshes and records the site. */
   private finishSite(key: number, kind: string, x: number, z: number, baseY: number, ctx: Ctx): void {
+
     const group = new THREE.Group();
     group.name = `site:${kind}`;
     group.position.set(ctx.x, baseY, ctx.z); // (x, z) is where the site counts as reached, which a cave puts inside it
