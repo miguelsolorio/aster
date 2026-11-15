@@ -18,11 +18,22 @@ import { CHOSEN, bedrollGeometry, carpetGeometry, chartGeometry, fluteGeometry, 
 import type { Offering } from '../game/offerings';
 import { isFindKind } from '../game/finds';
 import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types';
+import { type Lead, leadPoint } from './lead';
 
 const CELL = 900 * WORLD_SCALE;
 const MARGIN = 150; // keeps sites at least 300 m apart
 const SITE_P = 0.34;
-const BUILD_R = 2500;
+const now = (): number => (typeof performance !== 'undefined' ? performance.now() : Date.now());
+const DRAW_R = 2500; // a find is drawn inside this of the eye, dissolving in over the last FADE metres
+const FADE = 220;
+// Finds are built further out than they are drawn, and around the point the wanderer is heading
+// for rather than under their feet: BUILD_R - LEAD_MAX is still DRAW_R, so whatever is near enough
+// to draw is built whichever way they turn, and at a carpet's speed there are some eight seconds
+// to build what lies ahead before it starts to show.
+const BUILD_R = 2800;
+const LEAD_S = 5;
+const LEAD_MAX = BUILD_R - DRAW_R;
+const SCAN_MS = 4; // the most a scan spends building before it leaves the rest to the next frame
 const DROP_R = 3500;
 const SCAN_EVERY = 0.3;
 const GROVE_P = 0.7; // chance an otherwise empty cell beside a river holds a grove
@@ -102,6 +113,11 @@ float dvn(vec2 p) {
 }
 `;
 
+// At the far edge of what is drawn a find dissolves into view rather than appearing all at once
+// (as the props do at theirs). Declares `dist`, the distance from the eye.
+const DISSOLVE = /* glsl */ `float dist = length(vW - cameraPosition);
+  if (dist > ${DRAW_R.toFixed(1)} - ${FADE.toFixed(1)} * dh21(gl_FragCoord.xy)) discard;`;
+
 const stoneVert = /* glsl */ `
 attribute vec3 aTint;
 attribute float aKind;
@@ -143,6 +159,7 @@ varying float vKind;
 ${NOISE}
 ${STYLE_GLSL}
 void main() {
+  ${DISSOLVE}
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
   n = styleFacet(n, vW);
@@ -157,7 +174,6 @@ void main() {
   float m = dvn(vW.xz * 0.45 + vec2(vW.y * 0.6, -vW.y * 0.3)) * 0.6 + dvn(vW.xz * 1.7 + vW.y) * 0.4;
   col *= vTint * (0.88 + 0.24 * m);
   col += (uTop - col) * 0.06 * max(n.y, 0.0) * (1.0 - l);
-  float dist = length(vW - cameraPosition);
   float fogA = 1.0 - exp(-dist * uFog);
   if (dark > 0.5) {
     // in a cavern: nearly black, lit only by what glows there (as the rock around it is)
@@ -206,6 +222,7 @@ uniform float uDim; // 1 under the sky; lower for a pool underground, which has 
 varying vec3 vW;
 ${NOISE}
 void main() {
+  ${DISSOLVE}
   vec3 v = normalize(cameraPosition - vW);
   // barely-there ripples: the pool is meant to look still
   vec2 q = vW.xz * 0.35;
@@ -224,7 +241,6 @@ void main() {
   col += uSunCol * g * (1.0 - 0.6 * uNight) * 1.5;
   // underground: dark water that picks up a little of the mineral's light
   col = mix(vec3(0.3, 0.95, 0.82) * (0.1 + 0.25 * fres), col, uDim) * mix(0.55, 1.0, uDim);
-  float dist = length(vW - cameraPosition);
   col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));
   gl_FragColor = vec4(col, 1.0);
 }
@@ -261,8 +277,10 @@ uniform float uFog;
 varying vec3 vW;
 varying vec3 vN;
 varying float vK;
+${NOISE}
 ${STYLE_GLSL}
 void main() {
+  ${DISSOLVE}
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
   n = styleFacet(n, vW);
@@ -270,7 +288,6 @@ void main() {
   vec3 sh = uShade * vec3(0.42, 0.52, 0.34);
   vec3 li = uLit * vec3(0.46, 0.6, 0.3);
   vec3 col = mix(sh, li, l) * vK;
-  float dist = length(vW - cameraPosition);
   col = mix(col, uFogCol, 1.0 - exp(-dist * uFog));
   gl_FragColor = vec4(col, 1.0);
 }
@@ -309,6 +326,8 @@ void main() {
   float flick = 0.94 + 0.06 * sin(uTime * 3.1) * sin(uTime * 4.7 + 1.3);
   float k = mix(0.12 + 0.88 * smoothstep(0.1, 0.8, uNight), 1.0, uGlowDay) * flick;
   float fogA = (1.0 - exp(-vDist * uFog)) * 0.45;
+  // a light comes up out of the haze where the thing it burns on dissolves into view
+  k *= 1.0 - smoothstep(${(DRAW_R - FADE).toFixed(1)}, ${DRAW_R.toFixed(1)}, vDist);
   vec3 col = uGlowCol * a * k * (1.0 - fogA);
   gl_FragColor = vec4(col, 1.0);
 }
@@ -2926,6 +2945,8 @@ export class Discoveries {
   /** The rock caps over springs that are built now, by site key. */
   private readonly caps = new Map<number, Spring>();
   private scanT = 0;
+  private readonly lead: Lead = { x: 0, z: 0 };
+  private readonly want: { cx: number; cz: number; d2: number }[] = [];
 
   /** The sand over a cavern has finished draining away: it is open for good. */
   onOpened: ((key: number) => void) | null = null;
@@ -3670,7 +3691,7 @@ export class Discoveries {
    * The pool bank of every mountain fall within r of a point: where a lamp stands at each once
    * the miner has asked for one, so that any fall will do and not only the one that was named.
    */
-  fallLamps(x: number, z: number, r = BUILD_R): { x: number; z: number }[] {
+  fallLamps(x: number, z: number, r = DRAW_R): { x: number; z: number }[] {
     const out: { x: number; z: number }[] = [];
     const w = this.world as Partial<{ massif(gi: number, gj: number): Massif | null }>;
     if (!w.massif) return out;
@@ -4005,8 +4026,9 @@ export class Discoveries {
     const pz = f.player.pos.z;
     this.scanT -= f.dt;
     if (this.scanT <= 0) {
-      this.scanT = SCAN_EVERY;
-      this.scan(px, pz, this.sites.length === 0 ? 4 : 1);
+      const lead = leadPoint(px, pz, f.player.vel.x, f.player.vel.z, LEAD_S, LEAD_MAX, this.lead);
+      // while there is still something to build, look again on the very next frame
+      this.scanT = this.scan(px, pz, lead.x, lead.z, this.sites.length === 0 ? 60 : SCAN_MS) ? 0 : SCAN_EVERY;
     }
     // sand running out of a cavern that has just been broken into
     const dr = this.draining;
@@ -4067,8 +4089,8 @@ export class Discoveries {
       const dx = s.x - px;
       const dz = s.z - pz;
       const d2 = dx * dx + dz * dz;
-      // built out to DROP_R for hysteresis, but only drawn inside the build radius
-      s.group.visible = d2 < (BUILD_R + 200) * (BUILD_R + 200);
+      // built further out than this, but past it every fragment would be thrown away (see DISSOLVE)
+      s.group.visible = d2 < (DRAW_R + 200) * (DRAW_R + 200);
       if (inside || this.reached.has(s.key)) continue;
       if (d2 < s.reachR * s.reachR) {
         this.reached.add(s.key);
@@ -4077,7 +4099,12 @@ export class Discoveries {
     }
   }
 
-  private scan(px: number, pz: number, maxBuilds: number): void {
+  /**
+   * Lets go of what is far from the wanderer (px, pz) and builds what is missing around the point
+   * they are heading for (bx, bz), nearest first, for up to `ms` milliseconds (always one thing at
+   * least). Returns whether it built anything, in which case there may be more to do.
+   */
+  private scan(px: number, pz: number, bx: number, bz: number, ms: number): boolean {
     // drop far sites
     for (let i = this.sites.length - 1; i >= 0; i--) {
       const s = this.sites[i];
@@ -4088,34 +4115,36 @@ export class Discoveries {
         this.sites.splice(i, 1);
       }
     }
-    const pcx = Math.floor(px / CELL);
-    const pcz = Math.floor(pz / CELL);
+    // (the caverns shape the ground under the wanderer's feet, so they go by where the wanderer is)
+    if (this.scanCaverns(px, pz)) return true;
+    if (this.scanMassifs(bx, bz)) return true;
+    if (this.scanFrost(bx, bz)) return true;
+    const pcx = Math.floor(bx / CELL);
+    const pcz = Math.floor(bz / CELL);
     const span = Math.ceil(BUILD_R / CELL);
-    if (this.scanCaverns(px, pz)) return;
-    if (this.scanMassifs(px, pz)) return;
-    if (this.scanFrost(px, pz)) return;
-    for (let b = 0; b < maxBuilds; b++) {
-      let best = Infinity;
-      let bcx = 0;
-      let bcz = 0;
-      for (let dz = -span; dz <= span; dz++) {
-        for (let dx = -span; dx <= span; dx++) {
-          const cx = pcx + dx;
-          const cz = pcz + dz;
-          if (!this.cellSite(cx, cz)) continue;
-          const ddx = this.cellPos.x - px;
-          const ddz = this.cellPos.z - pz;
-          const d2 = ddx * ddx + ddz * ddz;
-          if (d2 > BUILD_R * BUILD_R || d2 >= best) continue;
-          if (this.isBuilt(cellKey(cx, cz))) continue;
-          best = d2;
-          bcx = cx;
-          bcz = cz;
-        }
+    // every cell in reach that has a find still to build, nearest last
+    const want = this.want;
+    want.length = 0;
+    for (let dz = -span; dz <= span; dz++) {
+      for (let dx = -span; dx <= span; dx++) {
+        const cx = pcx + dx;
+        const cz = pcz + dz;
+        if (!this.cellSite(cx, cz)) continue;
+        const ddx = this.cellPos.x - bx;
+        const ddz = this.cellPos.z - bz;
+        const d2 = ddx * ddx + ddz * ddz;
+        if (d2 > BUILD_R * BUILD_R || this.isBuilt(cellKey(cx, cz))) continue;
+        want.push({ cx, cz, d2 });
       }
-      if (best === Infinity) return;
-      this.buildSite(bcx, bcz);
     }
+    if (want.length === 0) return false;
+    want.sort((a, b) => b.d2 - a.d2);
+    const t0 = now();
+    do {
+      const c = want.pop()!;
+      this.buildSite(c.cx, c.cz);
+    } while (want.length > 0 && now() - t0 < ms);
+    return true;
   }
 
   /**
