@@ -2954,8 +2954,8 @@ const NOT_LANDMARKS = new Set(['cavern', 'lamp', 'summit', 'cave', 'spring', 'sn
 
 export class Discoveries {
   readonly group = new THREE.Group();
-  /** Called (at most once per site) when the player first comes within ~25 m of a site. */
-  onReach: ((kind: string, key: number) => void) | null = null;
+  /** Called (at most once per site) when the player first comes within ~25 m of a site: what it is, its key, and where it stands. */
+  onReach: ((kind: string, key: number, x: number, z: number) => void) | null = null;
 
   private readonly world: World;
   private readonly stoneMat: THREE.ShaderMaterial;
@@ -4184,7 +4184,7 @@ export class Discoveries {
         const c = deep.centre;
         if (Math.hypot(c[0] - px, c[1] - py, c[2] - pz) < 14) {
           this.reached.add(roofKey(cs));
-          this.onReach?.('cavern', refKey(roofKey(cs)));
+          this.onReach?.('cavern', refKey(roofKey(cs)), cs.hx, cs.hz);
         }
       }
     }
@@ -4222,7 +4222,7 @@ export class Discoveries {
       if (inside || this.reached.has(s.key)) continue;
       if (d2 < s.reachR * s.reachR) {
         this.reached.add(s.key);
-        if (this.onReach) this.onReach(s.kind, refKey(s.key));
+        if (this.onReach) this.onReach(s.kind, refKey(s.key), s.x, s.z);
       }
     }
   }

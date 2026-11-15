@@ -4,6 +4,7 @@
 // Testing: ?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather grants tools for this visit without saving them,
 // and ?reset clears the save and the saved spawn before the game starts.
 
+import { clearAtlas } from './atlas';
 import { isFindKind, type FindKind } from './finds';
 
 export type Tool = 'board' | 'carpet' | 'pick' | 'spyglass' | 'flute' | 'bedroll' | 'rod' | 'chart' | 'rope' | 'boots' | 'feather';
@@ -102,7 +103,7 @@ export function clearSpawn(): void {
   }
 }
 
-/** Forget the save and the spawn. Settings (volume, graphics, style) are left alone. */
+/** Forget the save, the spawn and the map. Settings (volume, graphics, style) are left alone. */
 export function clearProgress(): void {
   try {
     localStorage.removeItem(KEY);
@@ -110,6 +111,7 @@ export function clearProgress(): void {
     /* storage unavailable; nothing to clear */
   }
   clearSpawn();
+  clearAtlas();
 }
 
 const fresh = (): SaveData => ({

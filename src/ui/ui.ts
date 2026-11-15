@@ -114,7 +114,8 @@ function keyControls(k: Known): ControlSection[] {
   if (k.spyglass) act.push({ action: 'Spyglass', keys: ['F'], note: 'hold it up to look far' });
   if (k.flute) act.push({ action: 'Flute', keys: ['R'], note: 'play a tune' });
   if (k.bedroll) act.push({ action: 'Bedroll', keys: ['B'], note: 'lay it down, and sleep in it' });
-  if (act.length) out.push({ title: 'Interact', rows: act });
+  act.push({ action: 'Map', keys: ['M'], note: 'fills in as you explore' });
+  out.push({ title: 'Interact', rows: act });
   out.push({ title: 'Menu', rows: [{ action: 'Pause', keys: ['Esc'] }] });
   return out;
 }
@@ -146,7 +147,8 @@ function touchControls(k: Known): ControlSection[] {
   if (k.spyglass) act.push({ action: 'Spyglass', note: 'Tools button, then Spyglass' });
   if (k.flute) act.push({ action: 'Flute', note: 'Tools button, then Flute' });
   if (k.bedroll) act.push({ action: 'Bedroll', note: 'Tools button, then Bedroll. Lay it down, and sleep in it' });
-  if (act.length) out.push({ title: 'Interact', rows: act });
+  act.push({ action: 'Map', note: 'Map button. It fills in as you explore' });
+  out.push({ title: 'Interact', rows: act });
   out.push({ title: 'Menu', rows: [{ action: 'Pause', note: 'Pause button' }] });
   return out;
 }
