@@ -12,7 +12,7 @@ import { rockCapVert, terrainFrag } from '../render/terrainShaders';
 import { CITY_CELL } from '../city/placement';
 import { Solids, type SolidKind } from './solids';
 import { createDeep } from './deep/index';
-import { frostLayout, frostRegion, frostCover, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
+import { frostLayout, frostRegion, frostCover, frostWayMarks, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
 import { footVillages, type FootVillage } from './foothills';
 import { footVillageFolk, snowVillageFolk, type FolkMark, type FolkRole } from './villagers';
 import { CHOSEN, bedrollGeometry, bootGeometry, carpetGeometry, featherGeometry, chartGeometry, fluteGeometry, rodGeometry, ropeCoilGeometry, rugMaterial, solidMaterial } from '../game/equipment';
@@ -984,8 +984,11 @@ function buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: 
   }
 }
 
-/** A small cairn with a lantern on it: what waits at the back of a cave. */
-function buildCairn(c: Ctx, u: number, v: number): void {
+/**
+ * A small cairn with a lantern on it: what waits at the back of a cave, and what marks the road
+ * up the mountain. `halo` is how far its light carries; `snow` (0..1) lays snow on its cap.
+ */
+function buildCairn(c: Ctx, u: number, v: number, halo = 6, snow = 0): void {
   const st = c.stone;
   const tk = c.r(0.9, 1.05);
   let y = c.g(u, v) - 0.3;
@@ -1004,7 +1007,13 @@ function buildCairn(c: Ctx, u: number, v: number): void {
   st.set(1, 1, 1, 3, 0);
   c.prim(UNIT_BOX, u, y + 0.38, v, 0.3, 0.44, 0.3);
   c.glow(u, y + 0.38, v, 1.2);
-  c.glow(u, y + 0.38, v, 6);
+  c.glow(u, y + 0.38, v, halo);
+  if (snow > 0.35) {
+    st.set(1.22, 1.24, 1.28, 1, 0.06);
+    c.solid = false;
+    c.prim(UNIT_BLOB, u, y + 0.82, v, 0.36, 0.2, 0.36, c.rng() * 6);
+    c.solid = true;
+  }
 }
 
 /** Where a roof goes, in its site's frame: u runs into the rock from the opening. */
@@ -1800,7 +1809,8 @@ function buildMountainVillage(c: Ctx, vil: FootVillage): void {
       const d = c.r(4.8, 6.2);
       const [u, v] = P(x0 + i * gap + c.r(-1, 1), side * (2.6 + d / 2 + c.r(0.4, 1.6)));
       mudHouse(c, u, v, ang, -side, w, d, c.r(2.7, 3.4), wall * c.r(0.95, 1.06));
-      if (c.rng() < 0.35) {
+      // a lamp where the street begins and where it ends; the windows and the fire light the rest
+      if ((i === 0 && side === -1) || (i === slots - 1 && side === 1)) {
         const [tu, tv] = P(x0 + i * gap + w / 2 + 0.9, side * 2.4);
         frostTorch(c, tu, tv, 1.2);
       }
@@ -2059,7 +2069,8 @@ function frostGate(c: Ctx, p: FrostPoint, ang: number): void {
 }
 
 /**
- * A stretch of the road: the worn ribbon over the ground, a pair of torches every few paces,
+ * A stretch of the road: the worn ribbon over the ground, a lantern cairn now and then on one
+ * side or the other (as the waymarkers stand along the routes between the towns), the gate,
  * and pines and boulders along it where the snow lies (more of them the deeper it is).
  */
 function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): void {
@@ -2108,16 +2119,13 @@ function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): voi
       r0 = r1;
     }
   }
-  // the torches, and the gate
-  for (let i = i0; i <= i1; i++) {
-    const p = way[i];
-    const ang = dirAt(i);
-    if (i === layout.gateAt) frostGate(c, p, ang);
-    if (i % 3 !== 0 || Math.abs(i - layout.gateAt) < 3) continue;
-    const off = (i >= layout.climbAt ? CLIMB_W : WAY_W) / 2 + 1.2;
-    for (const side of [-1, 1]) {
-      frostTorch(c, px(p) - Math.sin(ang) * off * side, pz(p) + Math.cos(ang) * off * side);
-    }
+  // the gate, and the cairns; a point shared with the next stretch belongs to that one
+  if (layout.gateAt >= i0 && layout.gateAt < i1) frostGate(c, way[layout.gateAt], dirAt(layout.gateAt));
+  for (const m of frostWayMarks(layout, i0, i1)) {
+    const p = way[m.i];
+    const ang = dirAt(m.i);
+    const off = (m.i >= layout.climbAt ? CLIMB_W : WAY_W) / 2 + 2.6;
+    buildCairn(c, px(p) - Math.sin(ang) * off * m.side, pz(p) + Math.cos(ang) * off * m.side, 3, frostCover(region, p.x, p.z));
   }
   // pines and boulders in the snow, a few frosted ones further out
   const s: SurfaceSample = { h: 0, rock: 0, salt: 0 };
@@ -2147,7 +2155,7 @@ function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): voi
   }
 }
 
-/** One village: houses either side of the road, a fire pit, lamps at the doors, and for the high one a hold. */
+/** One village: houses either side of the road, a fire pit, a lamp at a door here and there, and for the high one a hold. */
 function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
   const village = layout.villages[vi];
   const st = c.stone;
@@ -2260,8 +2268,8 @@ function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
       c.prim(UNIT_BLOB, u, c.g(u, v) + 0.1, v, c.r(1.2, 2.2), c.r(0.45, 0.8), c.r(0.8, 1.2), ry + c.r(-0.3, 0.3));
       c.solid = true;
     }
-    // a lamp by the door
-    {
+    // a lamp by one door in three; the lit windows and the fire pit do the rest
+    if (k % 3 === 0) {
       const [u, v] = at(w * 0.5 + 0.7, face * (d / 2 + 0.9));
       frostTorch(c, u, v, 0.9);
     }

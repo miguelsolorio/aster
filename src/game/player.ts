@@ -22,6 +22,10 @@ const BOOTS = 1.25; // nailed boots are this much quicker over rock
 const BOOTS_GRIP = 1.5; // and hold on rock this steep (rise over run) before it is a cliff; bare feet give up at CLIFF
 const BOOTS_STEEP = 4.2; // the most they make (m/s over the ground) on rock that bare feet could not stand on
 const CLIFF = 1.15;
+const CLIMB = 16; // the most a board gains up a face, metres of height a second
+const CLIMB_BOOST = 24; // with Shift
+const ROCK_DRAG = 5; // rock bites a board that is not being driven: let go and it soon stops
+const REST = 0.32; // sand steeper than this (rise over run) will not hold a board at rest
 const FEATHER = 0.6; // an eagle's feather in the hood: the glide sinks this much as fast
 const CARPET = 1.6; // a carpet flies this much faster, and climbs for twice as long
 
@@ -61,10 +65,11 @@ export interface PlayerEvents {
 const wrap = (a: number) => Math.atan2(Math.sin(a), Math.cos(a));
 
 /**
- * The wanderer starts on foot. A board, once given, surfs the sand: momentum carries,
- * turns are carved, and dune faces give or take speed. On bare rock there is nothing
- * to glide on, so it walks. A held jump climbs and letting go glides; a carpet, once
- * given, does both faster.
+ * The wanderer starts on foot. A board, once given, surfs whatever is under the open sky:
+ * momentum carries, turns are carved, and a slope gives or takes speed. It rides rock as
+ * it rides sand, up a mountain and up a cliff face too, and rock holds it still where
+ * feet could stand. Only underground is walked. A held jump climbs and letting go
+ * glides; a carpet, once given, does both faster.
  */
 export class Player {
   readonly state: PlayerState = {
@@ -97,8 +102,10 @@ export class Player {
   alt = 0;
   /** 0..1 walk-cycle phase on rock. */
   stride = 0;
-  /** Standing on a board: sand is ridden instead of walked. */
+  /** Standing on a board: the ground is ridden instead of walked. */
   board = false;
+  /** On the board and where it can be ridden (anywhere but underground), whether moving or not. */
+  riding = false;
   /** Has a carpet: flying is faster and the climb lasts longer. */
   carpet = false;
   /** Has a rope and hook: rock too steep to walk is climbed. */
@@ -153,14 +160,29 @@ export class Player {
   /** True while the feet are where `floor` has the say: underground, on cut rock. */
   under = false;
 
+  /** The ground itself: the terrain, or the bed of a pool sunk into it. */
+  private ground(x: number, z: number): number {
+    return this.world.height(x, z) - (this.dip ? this.dip(x, z) : 0);
+  }
+
   /** The surface you can stand on: a floor underground, else the terrain (or a pool bed), or a roof above it. */
   private top(x: number, z: number): number {
     if (this.floor) {
       const f = this.floor(x, z, this.state.pos.y);
       if (f !== null) return f;
     }
-    const h = this.world.height(x, z) - (this.dip ? this.dip(x, z) : 0);
+    const h = this.ground(x, z);
     return this.roof ? Math.max(h, this.roof(x, z, this.state.pos.y)) : h;
+  }
+
+  /**
+   * How high whatever might stop you stands at (x, z). On foot that is the surface, so ground
+   * rising more than a step is a wall. A board rides up any ground, however steep: to it only
+   * what stands on the ground is in the way, and bare ground is no height at all.
+   */
+  private block(x: number, z: number): number {
+    const t = this.top(x, z);
+    return this.riding && !this.isUnder(x, z) && t <= this.ground(x, z) + 0.05 ? -Infinity : t;
   }
 
   /** Whether feet at (x, z), at the height they are now, are where `floor` has the say. */
@@ -175,7 +197,7 @@ export class Player {
    */
   private walled(x: number, z: number, dx: number, dz: number, step: number): boolean {
     if (this.beast && !this.inBeast && (this.beast(x, z) || this.beast(x + dx * 0.5, z + dz * 0.5) || this.beast(x + dx, z + dz))) return true;
-    return wallAhead((px, pz) => this.top(px, pz), x, z, dx, dz, step);
+    return wallAhead((px, pz) => this.block(px, pz), x, z, dx, dz, step);
   }
 
   place(x: number, z: number) {
@@ -214,6 +236,7 @@ export class Player {
     // A stone or a bone underfoot is walked on like rock, whatever the ground beneath it is.
     st.onRock = under ? 1 : st.grounded && this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.soft?.(pos.x, pos.z, pos.y) ? 0 : this.s.rock;
     const rock = st.onRock > 0.5;
+    const riding = (this.riding = this.board && !under);
 
     // Wish direction in world space, relative to the camera.
     const fx = -Math.sin(camYaw);
@@ -238,8 +261,8 @@ export class Player {
       this.dropping = false;
       let hs = Math.hypot(vel.x, vel.z);
 
-      if (rock || !this.board) {
-        // ---- walking: on rock, and on sand until there is a board to ride
+      if (!riding) {
+        // ---- walking: until there is a board to ride, and underground
         st.sliding = false;
         const climb = this.wish.x * gx + this.wish.y * gz;
         // Sand gives underfoot: a dune face is slower going up than rock of the same pitch.
@@ -269,14 +292,19 @@ export class Player {
           vel.z += this.downhill.y * 2.5 * dt;
         }
       } else {
-        // ---- gliding on sand
+        // ---- gliding, on sand and on rock alike
         // The slope pulls you along it. Climbing under power is eased so dunes
         // can be crested; standing still on gentle ground does not creep.
+        // Rock grips where sand gives: let go on it and the board is not pulled downhill
+        // at all, on anything feet could stand on (boots stand on steeper, a rope on any).
         const along = (GRAVITY * slope) / Math.sqrt(1 + slope * slope);
         const velDown = hs > 0.2 ? (vel.x * this.downhill.x + vel.z * this.downhill.y) / hs : 0;
+        const grip = this.rope ? Infinity : this.boots ? BOOTS_GRIP : CLIFF;
+        const wishDown = this.wish.x * this.downhill.x + this.wish.y * this.downhill.y;
         let pull = 0.85;
-        if (velDown < 0 && wishing) pull = 0.22;
-        else if (hs < 1.2 && !wishing && slope < 0.32) pull = 0;
+        // (driving uphill counts from a standstill and against a slide too, or a steep face could never be started up)
+        if (wishing && (velDown < 0 || wishDown < -0.1)) pull = 0.22;
+        else if (!wishing && (rock ? slope < grip : hs < 1.2 && slope < REST)) pull = 0;
         vel.x += this.downhill.x * along * pull * dt;
         vel.z += this.downhill.y * along * pull * dt;
 
@@ -303,8 +331,9 @@ export class Player {
               vel.x = vx;
               vel.z = vz;
               // Push toward cruising speed; the push fades as you reach it.
-              const cruise = input.run ? BOOST : CRUISE;
               const sp = Math.hypot(vx, vz);
+              const rise = (vx * gx + vz * gz) / sp;
+              const cruise = Math.min(input.run ? BOOST : CRUISE, (input.run ? CLIMB_BOOST : CLIMB) / Math.max(rise, 1e-3));
               // Boosting also cancels most of the speed-squared drag, so Shift can hold its higher speed.
               const hold = input.run && sp < cruise ? 0.003 * sp * sp : 0;
               const push = (10 * Math.max(0, 1 - sp / cruise) + hold) * Math.max(0.25, Math.cos(d));
@@ -318,10 +347,26 @@ export class Player {
           }
         }
 
-        // Sand drag: light while you ride, firmer when you let go.
+        // A face is climbed no faster than the board can gain height, so a cliff is ridden
+        // up at a crawl over the ground and speed carried into one is soon spent.
         hs = Math.hypot(vel.x, vel.z);
         if (hs > 1e-3) {
-          const drag = (wishing ? 0.25 : 1.0) + 0.003 * hs * hs;
+          const rise = (vel.x * gx + vel.z * gz) / hs;
+          const climb = input.run && wishing ? CLIMB_BOOST : CLIMB;
+          const most = climb / Math.max(rise, 1e-3);
+          // (the rise the ground gave last step is held to the same, so slowing on a face does not throw you off it)
+          vel.y = Math.min(vel.y, climb);
+          if (hs > most) {
+            const k = (most + (hs - most) * Math.exp(-dt * 6)) / hs;
+            vel.x *= k;
+            vel.z *= k;
+          }
+        }
+
+        // Drag: light while you ride, firmer when you let go, and firmer still on rock.
+        hs = Math.hypot(vel.x, vel.z);
+        if (hs > 1e-3) {
+          const drag = (wishing ? 0.25 : rock ? ROCK_DRAG : 1.0) + 0.003 * hs * hs;
           const k = Math.max(0, hs - drag * dt) / hs;
           vel.x *= k;
           vel.z *= k;
@@ -355,10 +400,10 @@ export class Player {
         const step = pos.y + STEP;
         this.inBeast = !!this.beast && this.beast(pos.x, pos.z);
         if (this.walled(nx, nz, ox, oz, step)) {
-          if (!this.walled(nx, pos.z, ox, 0, step) && this.top(nx + ox, pos.z + oz) <= step) {
+          if (!this.walled(nx, pos.z, ox, 0, step) && this.block(nx + ox, pos.z + oz) <= step) {
             nz = pos.z;
             vel.z = 0;
-          } else if (!this.walled(pos.x, nz, 0, oz, step) && this.top(pos.x + ox, nz + oz) <= step) {
+          } else if (!this.walled(pos.x, nz, 0, oz, step) && this.block(pos.x + ox, nz + oz) <= step) {
             nx = pos.x;
             vel.x = 0;
           } else {
@@ -395,7 +440,8 @@ export class Player {
           }
           nh = this.top(nx, nz);
           // (stood where the rock is solid all the way up, which nothing should allow: stay level, do not climb it)
-          nh = nh === Infinity ? pos.y : Math.min(nh, step);
+          // (and ground a board has ridden up is stood on at its own height, not a step's)
+          nh = nh === Infinity ? pos.y : this.block(nx, nz) === -Infinity ? nh : Math.min(nh, step);
         }
         const follow = (nh - pos.y) / dt;
         // If the ground falls away faster than we can follow, we are airborne.
@@ -415,7 +461,7 @@ export class Player {
       }
 
       // Footsteps only where you walk.
-      if (st.grounded && (rock || !this.board)) {
+      if (st.grounded && !riding) {
         const sp = Math.hypot(vel.x, vel.z);
         const strideLen = strideLength(sp, st.running);
         this.stepDist += sp * dt;
@@ -573,7 +619,7 @@ export class Player {
         }
         st.onRock = below ? 1 : this.hard?.(pos.x, pos.z, pos.y) ? 1 : this.soft?.(pos.x, pos.z, pos.y) ? 0 : w.sample(pos.x, pos.z, this.s).rock;
         const onRock = st.onRock > 0.5;
-        if (onRock || !this.board) {
+        if (below || !this.board) {
           const sp = Math.hypot(vel.x, vel.z);
           const cap = input.run ? (onRock ? RUN : RUN_SAND) : WALK;
           if (sp > cap) {

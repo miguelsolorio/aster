@@ -1802,7 +1802,7 @@ function start() {
     // The rod is held out wherever the wanderer goes on foot within its reach of a sealed room,
     // and pulls harder the nearer the spot and the more squarely it is faced.
     {
-      const onFoot = playing && save.has('rod') && st.grounded && !steed && (!player.board || st.onRock > 0.5) && !deepIn && !cities.inside && !talk.talking && swingT < 0 && fluteT <= 0 && glassK < 0.1;
+      const onFoot = playing && save.has('rod') && st.grounded && !steed && (!player.riding || (st.onRock > 0.5 && !st.sliding)) && !deepIn && !cities.inside && !talk.talking && swingT < 0 && fluteT <= 0 && glassK < 0.1;
       rodScan -= dt;
       if (rodScan <= 0) {
         rodScan = 0.5;
@@ -2291,6 +2291,7 @@ function start() {
       night: day.night,
       speed: st.speed,
       sliding: st.sliding && st.grounded,
+      rock: st.onRock > 0.5,
       grounded: st.grounded,
       gust: frame.gust,
       altitude: Math.max(0, st.pos.y) + player.alt * 4,

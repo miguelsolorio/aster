@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createWorld } from '../surface';
-import { frostCover, frostLayout, frostRegion, frostUniform } from '../frost';
+import { FROST_STEP, WAY_MARK_APPROACH, WAY_MARK_CLIMB, frostCover, frostLayout, frostRegion, frostUniform, frostWayMarks } from '../frost';
 
 describe('frostland', () => {
   const w = createWorld(20261111);
@@ -53,5 +53,33 @@ describe('frostland', () => {
     expect(v[1].at).toBeLessThan(v[2].at);
     expect(layout.way[v[1].at].y).toBeGreaterThan(layout.way[v[0].at].y);
     expect(layout.way[v[2].at].y).toBeGreaterThan(layout.way[v[1].at].y);
+  });
+
+  it('marks the road with a few lantern cairns, on alternate sides, clear of the gate and the villages', () => {
+    const n = layout.way.length;
+    const marks = frostWayMarks(layout, 0, n);
+    // far fewer than the old pair of torches every 36 m
+    expect(marks.length).toBeGreaterThan(8);
+    expect(marks.length).toBeLessThan((2 * n) / 3 / 5);
+    for (let k = 1; k < marks.length; k++) {
+      const gap = marks[k].i - marks[k - 1].i;
+      expect(gap).toBeGreaterThanOrEqual(WAY_MARK_CLIMB);
+      // neighbours in an unbroken run stand on opposite sides
+      if (gap === WAY_MARK_CLIMB || gap === WAY_MARK_APPROACH) expect(marks[k].side).toBe(-marks[k - 1].side);
+    }
+    expect(WAY_MARK_APPROACH * FROST_STEP).toBe(300);
+    for (const m of marks) {
+      expect(Math.abs(m.i - layout.gateAt)).toBeGreaterThanOrEqual(4);
+      for (const v of layout.villages) expect(Math.abs(m.i - v.at)).toBeGreaterThanOrEqual(4);
+    }
+  });
+
+  it('gives each cairn to exactly one stretch of the road', () => {
+    const n = layout.way.length;
+    const whole = frostWayMarks(layout, 0, n).map((m) => m.i);
+    const parts: number[] = [];
+    for (let i0 = 0; i0 < n - 1; i0 += 34) parts.push(...frostWayMarks(layout, i0, Math.min(n - 1, i0 + 34)).map((m) => m.i));
+    expect(new Set(parts).size).toBe(parts.length);
+    expect(parts).toEqual(whole.filter((i) => i < n - 1));
   });
 });
