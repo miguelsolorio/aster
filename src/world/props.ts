@@ -10,6 +10,7 @@ import type { FrameState, SurfaceSample, Uniforms } from '../game/contract';
 import type { DesertWorld } from './surface';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import { Solids, type SolidKind } from './solids';
+import { type Lead, leadPoint } from './lead';
 import { STEP } from '../game/player';
 
 const CELL = 28; // one group at most per cell (m)
@@ -24,6 +25,8 @@ const ROUTE_CLEAR = 45; // either side of the line between two neighbouring citi
 const RIVER_CLEAR = 90; // from a river's centre line: water, banks and groves
 const CAVE_CLEAR = 8; // around a massif's cave
 const SCAN_EVERY = 0.25;
+const LEAD_S = 2.5; // chunks are also built around where the wanderer will be this many seconds on
+const LEAD_MAX = 180; // and never further ahead than this (m)
 const FADE = 80; // the far edge dissolves over this (m)
 const FAR: Record<string, number> = { high: 640, low: 480, mobile: 340 };
 const TAU = Math.PI * 2;
@@ -1175,6 +1178,7 @@ export class Props {
   private readonly nrm = new THREE.Vector3();
   private readonly cand = { x: 0, z: 0, r: 0, pri: 0, size: 0 };
   private readonly other = { x: 0, z: 0, r: 0, pri: 0, size: 0 };
+  private readonly lead: Lead = { x: 0, z: 0 };
   private scanT = 0;
   private pix = NaN;
   private piz = NaN;
@@ -1250,7 +1254,8 @@ export class Props {
       this.pix = ix;
       this.piz = iz;
       this.dirty = false;
-      this.rescan(px, pz);
+      leadPoint(px, pz, f.player.vel.x, f.player.vel.z, LEAD_S, LEAD_MAX, this.lead);
+      this.rescan(px, pz, this.lead.x, this.lead.z);
     }
     // the first time round, what is in view is built at once; after that a little each frame
     const budget = this.chunks.size === 0 ? 60 : 3;
@@ -1266,23 +1271,34 @@ export class Props {
     }
   }
 
-  private rescan(px: number, pz: number): void {
+  /**
+   * What is wanted is every chunk in reach of the wanderer or of the point they are heading for
+   * (lx, lz): the first keeps the ground whole whichever way they look, the second has the ground
+   * ahead built before it is near enough to be seen. The chunks ahead are built first.
+   */
+  private rescan(px: number, pz: number, lx: number, lz: number): void {
     const far = this.far.value + CHUNK * 0.75;
     for (const [k, c] of this.chunks) {
-      if (Math.hypot((c.ix + 0.5) * CHUNK - px, (c.iz + 0.5) * CHUNK - pz) > far + CHUNK) {
+      const x = (c.ix + 0.5) * CHUNK;
+      const z = (c.iz + 0.5) * CHUNK;
+      if (Math.min(Math.hypot(x - px, z - pz), Math.hypot(x - lx, z - lz)) > far + CHUNK) {
         this.drop(c);
         this.chunks.delete(k);
       }
     }
-    const ix = Math.floor(px / CHUNK);
-    const iz = Math.floor(pz / CHUNK);
     const span = Math.ceil(far / CHUNK);
+    const i0 = Math.floor(Math.min(px, lx) / CHUNK) - span;
+    const i1 = Math.floor(Math.max(px, lx) / CHUNK) + span;
+    const j0 = Math.floor(Math.min(pz, lz) / CHUNK) - span;
+    const j1 = Math.floor(Math.max(pz, lz) / CHUNK) + span;
     const want: { k: number; d: number }[] = [];
-    for (let j = -span; j <= span; j++) {
-      for (let i = -span; i <= span; i++) {
-        const d = Math.hypot((ix + i + 0.5) * CHUNK - px, (iz + j + 0.5) * CHUNK - pz);
-        if (d > far) continue;
-        const k = chunkKey(ix + i, iz + j);
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const x = (i + 0.5) * CHUNK;
+        const z = (j + 0.5) * CHUNK;
+        const d = Math.hypot(x - lx, z - lz);
+        if (d > far && Math.hypot(x - px, z - pz) > far) continue;
+        const k = chunkKey(i, j);
         if (!this.chunks.has(k)) want.push({ k, d });
       }
     }
