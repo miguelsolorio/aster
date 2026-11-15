@@ -697,6 +697,22 @@ void main() {
     if (uCavC[i].w <= 0.0 || uCavB[i].z >= 1.0 || sandW < 0.01) continue;
     vec2 cd = p.xz - (uCavA[i].xy + uCavA[i].zw * uCavD[i].w);
     float cr = length(cd);
+    // and so that it is not walked past, a ring of gold lies round the spot the pick must
+    // strike, with a warm light inside it that breathes, and a ripple running out to the ring.
+    // It shows from much further off than the cracks do, and lights the sand at night.
+    float gk = (1.0 - uCavB[i].z) * sandW * (1.0 - smoothstep(280.0, 440.0, dist));
+    if (cr < 14.0 && gk > 0.0) {
+      vec3 gold = vec3(1.0, 0.76, 0.3);
+      float breathe = 0.5 + 0.5 * sin(uTime * 1.6 + float(i) * 2.1);
+      float rw = 0.1 + 1.1 * fwXZ; // never thinner than a pixel, however far off
+      float ring = 1.0 - smoothstep(rw * 0.45, rw, abs(cr - 4.6));
+      float wt = fract(uTime * 0.28 + float(i) * 0.37);
+      float ripple = (1.0 - smoothstep(rw * 0.45, rw * 1.6, abs(cr - 4.6 * wt))) * (1.0 - wt) * wt * 2.4;
+      float inner = exp(-cr * cr / 14.0);
+      float halo = exp(-cr * cr / 50.0);
+      col = mix(col, gold * 1.12, clamp(ring * (0.72 + 0.28 * breathe) + ripple * 0.45, 0.0, 1.0) * gk);
+      col += gold * gk * (inner * (0.1 + 0.08 * breathe) + halo * uNight * (0.2 + 0.1 * breathe));
+    }
     if (cr > 5.5) continue;
     float edge = 3.6 + 0.9 * vnoise(vec2(atan(cd.y, cd.x) * 2.5, float(i) * 9.1));
     // it fades out into the sand over half its width, and drifts of sand lie across it, so
