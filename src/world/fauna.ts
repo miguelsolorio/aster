@@ -1,4 +1,4 @@
-// The animals of the open desert: oryx herds that graze and bolt, fennec foxes out after dark,
+// The animals of the open desert: oryx herds that graze and bolt, wild goats on the rock and the snow, fennec foxes out after dark,
 // hares that lope off when you come close, lizards on warm ground, and vultures circling over
 // bones and ruins. All of them are one instanced draw call: legs, heads, ears, tails and wings
 // move in the vertex shader, and only where they are and what they're doing is worked out here.
@@ -23,6 +23,11 @@ const TAU = Math.PI * 2;
 // Cell keys stay under 2^33 and the vultures' are negative, so these never meet them.
 const WATER_KEY = -1e12;
 const FLOCK_KEY = 1e12;
+/** Goats left to graze round a hamlet or a mountain village: this plus the size of the place's own key. */
+const GRAZE_KEY = 6e12;
+/** Snow lies this deep (0..1) before the animals on it are the cold's own: pale foxes, hares and goats. */
+const SNOW_LINE = 0.5;
+const SNOW_COAT: V3 = [0.95, 0.96, 0.98];
 
 export const ORYX = 0;
 export const FOX = 1;
@@ -1272,6 +1277,8 @@ export class Fauna {
   solid: SolidQuery | null = null;
   /** An animal has called out, this far from the player (m). */
   onCall: ((sp: number, dist: number) => void) | null = null;
+  /** How much snow lies at (x, z), 0..1: in it the small animals are pale foxes and hares, and goats keep to it. Set by the game. */
+  snow: ((x: number, z: number) => number) | null = null;
   /** The shepherds out in the open now, each with a flock of goats to keep near. Set by the game. */
   herders: ((out: Herder[]) => Herder[]) | null = null;
 
@@ -1412,7 +1419,7 @@ export class Fauna {
     const z = (cz + 0.15 + 0.7 * hash(cx, cz, s, salt + 2)) * size;
     const riv = small ? Infinity : ((this.world as Partial<{ river(x: number, z: number): number }>).river?.(x, z) ?? Infinity);
     const wet = riv < 260;
-    const p = (small ? 0.34 : wet ? 0.2 : 0.11) * this.thin;
+    const p = (small ? 0.4 : wet ? 0.26 : 0.15) * this.thin;
     if (roll > p) return null;
     const r = roll / p;
     const sm = w.sample(x, z, this.sample);
@@ -1422,8 +1429,11 @@ export class Fauna {
     let sp: number;
     let count: number;
     const rng = mulberry32(Math.floor(hash(cx, cz, s, salt + 3) * 4294967296));
+    const cold = (this.snow?.(x, z) ?? 0) > SNOW_LINE;
     if (small) {
-      if (sm.rock > 0.35) sp = LIZARD;
+      // nothing cold-blooded lives in the snow: a fox or a hare, in its winter coat
+      if (cold) sp = r < 0.45 ? FOX : r < 0.9 ? HARE : -1;
+      else if (sm.rock > 0.35) sp = LIZARD;
       else if (sm.salt > 0.4) return null;
       else sp = r < 0.18 ? FOX : r < 0.36 ? HARE : r < 0.5 ? LIZARD : r < 0.68 ? GROUSE : r < 0.8 ? TORTOISE : r < 0.92 ? SNAKE : -1;
       if (sp < 0) return null;
@@ -1433,12 +1443,22 @@ export class Fauna {
         : sp === TORTOISE || sp === SNAKE ? 1
         : 1 + Math.floor(rng() * 3);
     } else {
-      if (sm.rock > 0.3) return null;
-      sp = wet ? (r < 0.65 ? ASS : r < 0.85 ? GAZELLE : ORYX) : r < 0.55 ? ORYX : r < 0.85 ? GAZELLE : ASS;
+      // bare rock and snow are the wild goats' ground, and nobody else's
+      if (sm.rock > 0.3 || cold) {
+        if (r > 0.6) return null;
+        sp = GOAT;
+      } else sp = wet ? (r < 0.65 ? ASS : r < 0.85 ? GAZELLE : ORYX) : r < 0.55 ? ORYX : r < 0.85 ? GAZELLE : ASS;
       count = sp === ORYX ? 4 + Math.floor(rng() * 6) : sp === GAZELLE ? 5 + Math.floor(rng() * 7) : 3 + Math.floor(rng() * 4);
     }
     const h: Herd = { key, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small, follow: null, grace: 0 };
-    return this.fill(h, count, rng);
+    this.fill(h, count, rng);
+    if (cold) {
+      for (const a of h.animals) {
+        const k = 0.92 + 0.08 * a.seed;
+        a.coat = [SNOW_COAT[0] * k, SNOW_COAT[1] * k, SNOW_COAT[2] * k];
+      }
+    }
+    return h;
   }
 
   /** What comes down to an oasis to drink: a herd grazing a little way off, sometimes sandgrouse too. */
@@ -1457,6 +1477,25 @@ export class Fauna {
       if (sm.rock > 0.3 || sm.salt > 0.4) continue;
       const h: Herd = { key: WATER_KEY - l.key * 4 - k, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small: sp === GROUSE, follow: null, grace: 0 };
       return this.fill(h, sp === GAZELLE ? 5 + Math.floor(rng() * 6) : sp === ASS ? 3 + Math.floor(rng() * 4) : 6 + Math.floor(rng() * 8), rng);
+    }
+    return null;
+  }
+
+  /** The goats of a hamlet or a mountain village, grazing just outside it with nobody minding them. */
+  private makeGraze(l: Landmark): Herd | null {
+    const rng = mulberry32((Math.imul(Math.abs(l.key) | 0, 0x2c1b3c6d) ^ (this.world.seed | 0) ^ 0x60a75) >>> 0);
+    const village = l.kind === 'mountain-village';
+    if (rng() > (village ? 1 : 0.8) * this.thin) return null;
+    // out past the houses, pens and plots, which the goats would only stand stuck among
+    for (let t = 0; t < 8; t++) {
+      const a = rng() * TAU;
+      const d = (village ? 84 : 54) + rng() * 30;
+      const x = l.x + Math.cos(a) * d;
+      const z = l.z + Math.sin(a) * d;
+      if (this.blocked?.(x, z)) continue;
+      if (this.world.sample(x, z, this.sample).salt > 0.4) continue;
+      const h: Herd = { key: GRAZE_KEY + Math.abs(l.key), sp: GOAT, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small: false, follow: null, grace: 0 };
+      return this.fill(h, (village ? 5 : 3) + Math.floor(rng() * 5), rng);
     }
     return null;
   }
@@ -1527,6 +1566,14 @@ export class Fauna {
             if (h) this.herds.set(key, h);
             else this.empty.add(key);
           }
+          continue;
+        }
+        if ((l.kind === 'hamlet' || l.kind === 'mountain-village') && ld < BIG_R) {
+          const key = GRAZE_KEY + Math.abs(l.key);
+          if (this.herds.has(key) || this.empty.has(key)) continue;
+          const h = this.makeGraze(l);
+          if (h) this.herds.set(key, h);
+          else this.empty.add(key);
           continue;
         }
         if (l.kind !== 'bones' && l.kind !== 'ruins') continue;

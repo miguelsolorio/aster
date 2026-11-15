@@ -48,7 +48,8 @@ const f32 = Math.fround;
 /** How far a path stops short of the middle of a find of each kind: clear of its stones (m). */
 const CLEAR: Record<string, number> = {
   temple: 58,
-  hamlet: 46,
+  hamlet: 48,
+  watchtower: 30,
   ruins: 42,
   oasis: 48,
   grove: 36,
