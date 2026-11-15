@@ -1,5 +1,6 @@
 // Rare things to stumble on: tended temples, ruins, oases, arches, standing stones, great bones,
-// lantern towers, sundial plazas, half-buried shells and small empty hamlets (about half the otherwise empty cells). Placement is a
+// lantern towers, sundial plazas, half-buried shells, and in the otherwise empty cells small empty hamlets (about half of them)
+// and lone watchtowers (a fifth). Each massif has villages at its foot besides. Placement is a
 // deterministic jittered grid (675 m cells, about one in three occupied); sites
 // are built lazily near the player and disposed when far away.
 import * as THREE from 'three';
@@ -12,6 +13,7 @@ import { CITY_CELL } from '../city/placement';
 import { Solids, type SolidKind } from './solids';
 import { createDeep } from './deep/index';
 import { frostLayout, frostRegion, frostCover, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
+import { footVillages, type FootVillage } from './foothills';
 import { ropeCoilGeometry, solidMaterial } from '../game/equipment';
 import { isFindKind } from '../game/finds';
 import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types';
@@ -24,6 +26,11 @@ const DROP_R = 3500;
 const SCAN_EVERY = 0.3;
 const GROVE_P = 0.7; // chance an otherwise empty cell beside a river holds a grove
 const HAMLET_P = 0.5; // chance an otherwise empty cell (away from rivers) holds a hamlet
+const TOWER_P = 0.2; // and the chance it holds a lone watchtower instead
+const VILLAGE_KEY = -4e12; // the keys of the mountain villages count down from here: four to a massif
+const VILLAGE_CITY_CLEAR = 450; // a mountain village keeps this far outside a city (m)
+const VILLAGE_REACH = 1.25; // no village stands further from its massif's centre than this many radii
+const NO_VILLAGES: FootVillage[] = [];
 const GROVE_REACH = 260; // metres from a river that counts as beside it
 const CAVERN_P = 0.84; // chance a cell hides a cavern where the ground suits one: measured, about one cell in three ends up with one
 const CAVERN_BUILD_R = 900; // an open cavern's roof is built inside this
@@ -338,6 +345,9 @@ const UNIT_CYL = new THREE.CylinderGeometry(1, 1, 1, 10, 1);
 const UNIT_SLAB = new THREE.CylinderGeometry(0.4, 0.5, 1, 4, 3).rotateY(Math.PI / 4).scale(1.414, 1, 1.414);
 const UNIT_BLOB = new THREE.IcosahedronGeometry(1, 1);
 const UNIT_CONE = new THREE.ConeGeometry(1, 1, 4);
+// Plain versions for small things nobody stands on (beam ends, flags, jars): a sixth of the triangles.
+const UNIT_BIT = new THREE.BoxGeometry(1, 1, 1);
+const UNIT_PEBBLE = new THREE.IcosahedronGeometry(1, 0);
 /** A relic: a small eight-pointed thing, two crossed spindles. */
 const RELIC_GEO = new THREE.OctahedronGeometry(0.15, 0).scale(1, 1.6, 1);
 
@@ -539,7 +549,7 @@ class Ctx {
     if (!this.solid || geo === UNIT_CONE || Math.min(sx, sy, sz) < 0.25) return;
     _mi.copy(_m).invert();
     const kind = this.stone.k === 1 ? 1 : this.stone.k === 2 ? 2 : 0;
-    if (geo === UNIT_BLOB) this.solids.addPrim('ball', _m, _mi, kind);
+    if (geo === UNIT_BLOB || geo === UNIT_PEBBLE) this.solids.addPrim('ball', _m, _mi, kind);
     else if (geo === UNIT_CYL) this.solids.addPrim('cyl', _m, _mi, kind);
     else if (geo === UNIT_SLAB) this.solids.addPrim('box', _m, _mi, kind, 0.45, 0.45);
     else this.solids.addPrim('box', _m, _mi, kind);
@@ -1254,62 +1264,643 @@ function buildBones(c: Ctx): void {
   c.prim(UNIT_BLOB, su - 5, sg - 0.2, sv + c.r(-1, 1), 4, 1.6, 2.6, c.r(-0.3, 0.3), 0, 0.15);
 }
 
-/** A handful of mud-brick houses round a well, with pens and a lamp post: a hamlet nobody is home in. */
-function buildHamlet(c: Ctx): void {
+// ------------------------------------------------------------------ mud-brick settlements
+
+/** Cloth for awnings, pennants and bunting, as tints of the pale palette. */
+const CLOTH: [number, number, number][] = [
+  [1.18, 0.4, 0.3], // madder red
+  [0.3, 0.44, 0.78], // indigo
+  [1.25, 0.86, 0.3], // saffron
+  [0.32, 0.72, 0.66], // teal
+  [1.15, 1.1, 1.0], // undyed
+];
+const WOOD: [number, number, number] = [0.46, 0.33, 0.23];
+const DARK: [number, number, number] = [0.16, 0.12, 0.1];
+
+function clothTint(c: Ctx, k: number): void {
+  const t = CLOTH[((k % CLOTH.length) + CLOTH.length) % CLOTH.length];
+  c.stone.set(t[0], t[1], t[2], 1, 0.02);
+}
+
+interface House {
+  /** Height of its floor and of its roof (relative to the site's base). */
+  floor: number;
+  top: number;
+  /** Frame point at local (x along the house, z across it toward the door when positive * face). */
+  at: (lx: number, lz: number) => [number, number];
+}
+
+/**
+ * A mud-brick house of the desert's own kind, standing level on a plinth however the ground lies:
+ * beam ends under the parapet, a doorway with a timber lintel, deep window slots that glow at
+ * night, and one of four roofs. (hu, hv) is its middle in the site's frame, `ang` the bearing its
+ * long side runs along, `face` the side (+1 or -1 along the normal) its door looks out of.
+ */
+function mudHouse(c: Ctx, hu: number, hv: number, ang: number, face: number, w: number, d: number, wallH: number, wt: number): House {
   const st = c.stone;
-  const n = 4 + Math.floor(c.rng() * 4);
-  const R = c.r(14, 22);
-  c.foot = R + 14;
-  const a0 = c.rng() * Math.PI * 2;
-  const wall = c.r(0.98, 1.1);
-  for (let i = 0; i < n; i++) {
-    const a = a0 + (i / n) * Math.PI * 2 + c.r(-0.25, 0.25);
-    const d = R * c.r(0.75, 1.15);
-    const u = Math.cos(a) * d;
-    const v = Math.sin(a) * d;
-    const w = c.r(4.5, 7);
-    const dp = c.r(4, 6);
-    const h = c.r(2.8, 3.8);
-    const face = a + Math.PI; // doors look in toward the well
-    const g = c.g(u, v);
-    st.set(wall * c.r(0.95, 1.04), wall * 0.96 * c.r(0.95, 1.04), wall * 0.86, 2, 0.06);
-    c.prim(UNIT_BOX, u, g + h / 2 - 0.4, v, w, h, dp, -face + Math.PI / 2, 0, 0);
-    // parapet lip, and a dome over some
-    c.prim(UNIT_BOX, u, g + h - 0.2, v, w + 0.5, 0.45, dp + 0.5, -face + Math.PI / 2);
-    if (c.rng() < 0.4) c.prim(UNIT_BLOB, u, g + h - 0.2, v, Math.min(w, dp) * 0.42, 1.6, Math.min(w, dp) * 0.42, c.rng() * 6);
-    // the dark doorway, toward the well
-    st.set(0.16, 0.12, 0.1, 2, 0);
-    const du = u - Math.cos(a) * (dp / 2);
-    const dv = v - Math.sin(a) * (dp / 2);
+  const Tx = Math.cos(ang);
+  const Tz = Math.sin(ang);
+  const Nx = -Tz;
+  const Nz = Tx;
+  const ry = -ang;
+  const at = (lx: number, lz: number): [number, number] => [hu + Tx * lx + Nx * lz, hv + Tz * lx + Nz * lz];
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const [lx, lz] of [[-w / 2, -d / 2], [w / 2, -d / 2], [-w / 2, d / 2], [w / 2, d / 2], [0, 0]] as const) {
+    const [u, v] = at(lx, lz);
+    const gh = c.g(u, v);
+    lo = Math.min(lo, gh);
+    hi = Math.max(hi, gh);
+  }
+  // the floor is a step above the ground at the door; on a slope the back of the house is dug in
+  const gDoor = c.g(...at(0, face * (d / 2 + 0.9)));
+  const floor = Math.max(gDoor + 0.2, hi - 1.3);
+  // footing: a battered plinth of darker brick
+  st.set(wt * 0.86, wt * 0.82, wt * 0.74, 2, 0.08);
+  c.prim(UNIT_BOX, hu, (lo - 1.2 + floor) / 2, hv, w + 0.9, floor - lo + 1.2, d + 0.9, ry);
+  // walls, and the parapet lip round a flat roof
+  st.set(wt, wt * 0.96, wt * 0.87, 2, 0.06);
+  c.prim(UNIT_BOX, hu, floor + wallH / 2, hv, w, wallH, d, ry);
+  c.prim(UNIT_BOX, hu, floor + wallH + 0.12, hv, w + 0.45, 0.5, d + 0.45, ry);
+  const top = floor + wallH + 0.37;
+  // the ends of the roof beams, standing out of the wall front and back
+  st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.02);
+  c.solid = false;
+  const nb = Math.max(3, Math.round(w / 1.25));
+  for (let i = 0; i < nb; i++) {
+    const lx = -w / 2 + 0.6 + (i / (nb - 1)) * (w - 1.2);
+    for (const s of [-1, 1]) {
+      const [u, v] = at(lx, s * (d / 2 + 0.22));
+      c.prim(UNIT_BIT, u, floor + wallH - 0.5, v, 0.2, 0.2, 0.55, ry);
+    }
+  }
+  c.solid = true;
+  const style = c.rng();
+  if (style < 0.26) {
+    // a dome
+    const rd = Math.min(w, d) * 0.4;
+    const [u, v] = at(-w * 0.08, 0);
+    st.set(wt * 1.03, wt * 0.99, wt * 0.9, 2, 0.05);
+    c.prim(UNIT_BLOB, u, top - 0.25, v, rd, rd * 0.82, rd, c.rng() * 6);
     c.solid = false;
-    c.prim(UNIT_BOX, du, g + 0.9, dv, 1.2, 1.8, 0.5, -face + Math.PI / 2);
+    c.prim(UNIT_CYL, u, top + rd * 0.78, v, 0.12, 0.5, 0.12);
+    c.solid = true;
+  } else if (style < 0.56) {
+    // a second, smaller storey set back from the door, with its own toothed parapet and a window
+    const w2 = w * 0.55;
+    const d2 = d * 0.62;
+    const lx2 = (c.rng() < 0.5 ? -1 : 1) * w * 0.2;
+    const [u, v] = at(lx2, -face * d * 0.17);
+    const h2 = c.r(2.2, 2.8);
+    st.set(wt * 1.02, wt * 0.98, wt * 0.89, 2, 0.06);
+    c.prim(UNIT_BOX, u, top + h2 / 2 - 0.3, v, w2, h2, d2, ry);
+    c.prim(UNIT_BOX, u, top + h2 - 0.2, v, w2 + 0.4, 0.45, d2 + 0.4, ry);
+    frostMerlons(c, u, v, top + h2 + 0.02, w2 + 0.4, d2 + 0.4, Tx, Tz);
+    const [wu, wv] = at(lx2, -face * d * 0.17 + face * (d2 / 2 + 0.03));
+    st.set(DARK[0], DARK[1], DARK[2], 2, 0);
+    c.solid = false;
+    c.prim(UNIT_BIT, wu, top + h2 * 0.5 - 0.2, wv, 0.6, 0.9, 0.14, ry);
+    c.solid = true;
+    if (c.rng() < 0.6) c.glow(wu, top + h2 * 0.5 - 0.2, wv, 1.0);
+  } else if (style < 0.8) {
+    // a toothed parapet
+    st.set(wt, wt * 0.96, wt * 0.87, 2, 0.06);
+    frostMerlons(c, hu, hv, top, w + 0.45, d + 0.45, Tx, Tz);
+  } else {
+    // a roof that is lived on: a drying frame hung with cloth, and jars
+    c.solid = false;
+    st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.02);
+    const fx = c.r(-w * 0.2, w * 0.2);
+    for (const s of [-1, 1]) {
+      const [u, v] = at(fx + s * 1.1, -face * d * 0.15);
+      c.prim(UNIT_BIT, u, top + 0.8, v, 0.1, 1.6, 0.1, ry);
+    }
+    const [bu, bv] = at(fx, -face * d * 0.15);
+    c.prim(UNIT_BIT, bu, top + 1.55, bv, 2.4, 0.08, 0.08, ry);
+    const k0 = Math.floor(c.rng() * CLOTH.length);
+    for (let i = 0; i < 3; i++) {
+      clothTint(c, k0 + i * 2);
+      const [u, v] = at(fx - 0.72 + i * 0.72, -face * d * 0.15);
+      const len = c.r(0.6, 1.0);
+      c.prim(UNIT_BIT, u, top + 1.5 - len / 2, v, 0.55, len, 0.05, ry);
+    }
+    st.set(0.92, 0.56, 0.38, 2, 0.03);
+    for (let i = 0; i < 3; i++) {
+      const [u, v] = at(c.r(-w * 0.38, w * 0.38), face * d * c.r(0.05, 0.3));
+      const s = c.r(0.26, 0.42);
+      c.prim(UNIT_PEBBLE, u, top + s * 0.9, v, s, s * 1.15, s, c.rng() * 6);
+    }
     c.solid = true;
   }
-  // the well: a low ring of stone
-  const g0 = c.g(0, 0);
+  // the doorway: dark, under a timber lintel, with a step or two up to it where the ground falls away
+  const doorX = c.r(-w * 0.12, w * 0.12);
+  {
+    const [u, v] = at(doorX, face * (d / 2 + 0.02));
+    st.set(DARK[0], DARK[1], DARK[2], 2, 0);
+    c.solid = false;
+    c.prim(UNIT_BIT, u, floor + 0.95, v, 1.15, 1.9, 0.4, ry);
+    st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.02);
+    const [lu, lv] = at(doorX, face * (d / 2 + 0.12));
+    c.prim(UNIT_BIT, lu, floor + 2.02, lv, 1.7, 0.24, 0.3, ry);
+    c.solid = true;
+    st.set(wt * 0.86, wt * 0.82, wt * 0.74, 2, 0.05);
+    const drop = floor - gDoor;
+    const steps = Math.max(1, Math.min(4, Math.ceil(drop / 0.32)));
+    for (let k = 0; k < steps; k++) {
+      const [su, sv] = at(doorX, face * (d / 2 + 0.45 + k * 0.42));
+      const y1 = floor - (k * drop) / steps;
+      const y0 = Math.min(lo, gDoor) - 0.6;
+      c.prim(UNIT_BOX, su, (y0 + y1) / 2, sv, 1.7, y1 - y0, 0.46, ry);
+    }
+  }
+  // window slots either side of the door; lamps burn behind some at night
+  for (const s of [-1, 1]) {
+    const wx = doorX + s * Math.max(1.55, w * 0.3);
+    if (Math.abs(wx) > w / 2 - 0.6) continue;
+    const [u, v] = at(wx, face * (d / 2 + 0.02));
+    st.set(DARK[0], DARK[1], DARK[2], 2, 0);
+    c.solid = false;
+    c.prim(UNIT_BIT, u, floor + 1.7, v, 0.55, 0.85, 0.3, ry);
+    st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.02);
+    const [su, sv] = at(wx, face * (d / 2 + 0.1));
+    c.prim(UNIT_BIT, su, floor + 1.22, sv, 0.85, 0.1, 0.24, ry);
+    c.solid = true;
+    if (c.rng() < 0.7) c.glow(u, floor + 1.7, v, 1.1);
+  }
+  // an awning of dyed cloth over the door, on two poles
+  if (c.rng() < 0.5) {
+    const out = 1.7;
+    const [u, v] = at(doorX, face * (d / 2 + out / 2 + 0.05));
+    clothTint(c, Math.floor(c.rng() * CLOTH.length));
+    c.solid = false;
+    c.prim(UNIT_BIT, u, floor + 2.42, v, 2.5, 0.07, out, ry, face * 0.24);
+    st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.02);
+    for (const s of [-1, 1]) {
+      const [pu, pv] = at(doorX + s * 1.15, face * (d / 2 + out));
+      const pg = c.g(pu, pv);
+      c.prim(UNIT_BIT, pu, (pg + floor + 2.22) / 2, pv, 0.1, floor + 2.22 - pg, 0.1, ry);
+    }
+    c.solid = true;
+  }
+  // jars by the door
+  st.set(0.92, 0.56, 0.38, 2, 0.03);
+  c.solid = false;
+  const jars = Math.floor(c.rng() * 3);
+  for (let i = 0; i < jars; i++) {
+    const [u, v] = at(doorX + (c.rng() < 0.5 ? -1 : 1) * c.r(1.0, 1.5), face * (d / 2 + c.r(0.4, 0.8)));
+    const s = c.r(0.28, 0.46);
+    c.prim(UNIT_PEBBLE, u, c.g(u, v) + s * 0.95, v, s, s * 1.2, s, c.rng() * 6);
+  }
+  // a ladder up to the roof against an end wall
+  if (c.rng() < 0.35) {
+    const side = c.rng() < 0.5 ? -1 : 1;
+    const lean = 0.2;
+    const [bu, bv] = at(side * (w / 2 + 0.75), -face * d * 0.1);
+    const g = c.g(bu, bv);
+    const L = (top + 0.5 - g) / Math.cos(lean);
+    st.set(WOOD[0] * 1.1, WOOD[1] * 1.1, WOOD[2] * 1.1, 2, 0.01);
+    for (const s of [-0.28, 0.28]) {
+      const [u, v] = at(side * (w / 2 + 0.75 - (Math.sin(lean) * L) / 2), -face * d * 0.1 + s);
+      c.prim(UNIT_BIT, u, g + (Math.cos(lean) * L) / 2, v, 0.08, L, 0.08, ry, 0, side * lean);
+    }
+    for (let t = 0.5; t < L - 0.3; t += 0.5) {
+      const [u, v] = at(side * (w / 2 + 0.75 - Math.sin(lean) * t), -face * d * 0.1);
+      c.prim(UNIT_BIT, u, g + Math.cos(lean) * t, v, 0.06, 0.06, 0.6, ry);
+    }
+  }
+  c.solid = true;
+  return { floor, top, at };
+}
+
+/** A well: a ring of stone, two posts, a beam across and a bucket on its rope. */
+function mudWell(c: Ctx, u: number, v: number): void {
+  const st = c.stone;
+  const g = c.g(u, v);
   st.set(1.0, 0.97, 0.9, 0, 0.08);
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2;
-    c.prim(UNIT_BOX, Math.cos(a) * 1.7, g0 + 0.5, Math.sin(a) * 1.7, 1.3, 1, 0.9, -a);
+    c.prim(UNIT_BOX, u + Math.cos(a) * 1.7, g + 0.45, v + Math.sin(a) * 1.7, 1.3, 1.1, 0.9, -a);
   }
-  // a lamp post by it
-  st.set(0.5, 0.42, 0.34, 2, 0.02);
-  c.prim(UNIT_BOX, 3.4, g0 + 2.2, 0.4, 0.3, 4.4, 0.3, 0);
-  c.glow(3.4, g0 + 4.6, 0.4, 1.2);
-  // a pen or two: short low walls
-  const pens = 1 + Math.floor(c.rng() * 2);
-  for (let k = 0; k < pens; k++) {
-    const a = a0 + c.rng() * Math.PI * 2;
-    const d = R + c.r(9, 13);
-    const pu = Math.cos(a) * d;
-    const pv = Math.sin(a) * d;
-    const L = c.r(5, 8);
-    st.set(0.95, 0.9, 0.8, 2, 0.1);
-    for (const [du, dv, wu, wv] of [[0, -L / 2, L, 0.6], [0, L / 2, L, 0.6], [-L / 2, 0, 0.6, L], [L / 2, 0, 0.6, L]] as const) {
-      const gg = c.g(pu + du, pv + dv);
-      c.prim(UNIT_BOX, pu + du, gg + 0.6, pv + dv, wu, 1.3, wv, a);
+  st.set(DARK[0], DARK[1], DARK[2], 2, 0);
+  c.solid = false;
+  c.prim(UNIT_CYL, u, g + 0.72, v, 1.3, 0.1, 1.3);
+  st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.02);
+  for (const s of [-1, 1]) c.prim(UNIT_BIT, u + s * 1.75, g + 1.6, v, 0.22, 3.2, 0.22);
+  c.prim(UNIT_BIT, u, g + 3.1, v, 4.1, 0.2, 0.2);
+  c.prim(UNIT_CYL, u, g + 3.1, v, 0.24, 1.4, 0.24, 0, 0, Math.PI / 2);
+  c.prim(UNIT_BIT, u + 0.2, g + 2.3, v, 0.04, 1.5, 0.04);
+  st.set(WOOD[0] * 1.2, WOOD[1] * 1.2, WOOD[2] * 1.2, 2, 0.02);
+  c.prim(UNIT_CYL, u + 0.2, g + 1.45, v, 0.26, 0.4, 0.26);
+  c.solid = true;
+}
+
+/** A stack of straw, bound round. */
+function hayStack(c: Ctx, u: number, v: number, s: number): void {
+  const st = c.stone;
+  const g = c.g(u, v);
+  st.set(1.18, 0.98, 0.52, 2, 0.1);
+  c.prim(UNIT_BLOB, u, g + s * 0.55, v, s, s * 0.85, s, c.rng() * 6);
+  c.solid = false;
+  c.prim(UNIT_CONE, u, g + s * 1.45, v, s * 0.7, s * 0.9, s * 0.7, c.rng() * 6);
+  c.solid = true;
+}
+
+/** A two-wheeled hand cart, its shafts resting on the ground. */
+function handCart(c: Ctx, u: number, v: number, ang: number): void {
+  const st = c.stone;
+  const Tx = Math.cos(ang);
+  const Tz = Math.sin(ang);
+  const g = c.g(u, v);
+  const ry = -ang;
+  st.set(WOOD[0] * 1.15, WOOD[1] * 1.15, WOOD[2] * 1.15, 2, 0.03);
+  c.prim(UNIT_BOX, u, g + 0.85, v, 2.2, 0.3, 1.3, ry);
+  c.solid = false;
+  for (const s of [-1, 1]) {
+    c.prim(UNIT_BIT, u - Tz * 0.62 * s, g + 1.15, v + Tx * 0.62 * s, 2.2, 0.4, 0.08, ry);
+    c.prim(UNIT_BIT, u + Tx * 1.9 - Tz * 0.5 * s, g + 0.48, v + Tz * 1.9 + Tx * 0.5 * s, 1.9, 0.09, 0.09, ry, 0, -0.4);
+  }
+  st.set(WOOD[0] * 0.8, WOOD[1] * 0.8, WOOD[2] * 0.8, 2, 0.02);
+  for (const s of [-1, 1]) c.prim(UNIT_CYL, u - Tz * 0.78 * s, g + 0.62, v + Tx * 0.78 * s, 0.62, 0.14, 0.62, ry, Math.PI / 2);
+  // what it carries
+  st.set(0.92, 0.56, 0.38, 2, 0.03);
+  c.prim(UNIT_PEBBLE, u - Tx * 0.4, g + 1.3, v - Tz * 0.4, 0.36, 0.42, 0.36);
+  st.set(1.18, 0.98, 0.52, 2, 0.08);
+  c.prim(UNIT_PEBBLE, u + Tx * 0.4, g + 1.25, v + Tz * 0.4, 0.5, 0.36, 0.48);
+  c.solid = true;
+}
+
+/** A pen of low mud walls with a gap for a gate, straw inside and a trough. L is its side. */
+function mudPen(c: Ctx, pu: number, pv: number, ang: number, L: number): void {
+  const st = c.stone;
+  const Tx = Math.cos(ang);
+  const Tz = Math.sin(ang);
+  const ry = -ang;
+  st.set(0.95, 0.9, 0.8, 2, 0.1);
+  const seg = (lx: number, lz: number, len: number, alongT: boolean): void => {
+    const u = pu + Tx * lx - Tz * lz;
+    const v = pv + Tz * lx + Tx * lz;
+    c.prim(UNIT_BOX, u, c.g(u, v) + 0.45, v, alongT ? len : 0.55, 1.5, alongT ? 0.55 : len, ry);
+  };
+  const h = L / 2;
+  // each side in two lengths, so the wall follows the ground; the near side leaves a gateway
+  for (const s of [-1, 1]) {
+    seg(-h / 2, s * h, h + 0.3, true);
+    if (s < 0) seg(h / 2 + 0.6, s * h, h - 1.2, true);
+    else seg(h / 2, s * h, h + 0.3, true);
+    seg(s * h, -h / 2, h, false);
+    seg(s * h, h / 2, h, false);
+  }
+  hayStack(c, pu + Tx * (h - 1.6) + Tz * (h - 1.6), pv + Tz * (h - 1.6) - Tx * (h - 1.6), 0.9);
+  st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.03);
+  const tu = pu - Tx * (h - 1.2);
+  const tv = pv - Tz * (h - 1.2);
+  c.prim(UNIT_BOX, tu, c.g(tu, tv) + 0.3, tv, 0.6, 0.5, 1.8, ry);
+}
+
+/** A line of little flags between two poles, sagging in the middle. Points are in the site's frame. */
+function bunting(c: Ctx, u0: number, v0: number, u1: number, v1: number, high: number): void {
+  const st = c.stone;
+  const len = Math.hypot(u1 - u0, v1 - v0);
+  const ry = -Math.atan2(v1 - v0, u1 - u0);
+  const y0 = c.g(u0, v0) + high;
+  const y1 = c.g(u1, v1) + high;
+  c.solid = false;
+  st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.02);
+  c.prim(UNIT_BIT, u0, y0 - high / 2, v0, 0.14, high, 0.14);
+  c.prim(UNIT_BIT, u1, y1 - high / 2, v1, 0.14, high, 0.14);
+  const n = Math.max(5, Math.round(len / 0.8));
+  const k0 = Math.floor(c.rng() * CLOTH.length);
+  for (let i = 1; i < n; i++) {
+    const t = i / n;
+    const y = y0 + (y1 - y0) * t - len * 0.1 * 4 * t * (1 - t);
+    clothTint(c, k0 + i);
+    c.prim(UNIT_BIT, u0 + (u1 - u0) * t, y - 0.24, v0 + (v1 - v0) * t, 0.36, 0.46, 0.04, ry, 0, Math.PI / 4);
+  }
+  c.solid = true;
+}
+
+/** A terrace: a low retaining wall along bearing `ang`, and rows of green behind it on the side (su, sv). */
+function terracePlot(c: Ctx, u: number, v: number, ang: number, len: number, deep: number): void {
+  const st = c.stone;
+  const Tx = Math.cos(ang);
+  const Tz = Math.sin(ang);
+  const ry = -ang;
+  const n = Math.max(2, Math.round(len / 3.5));
+  st.set(0.9, 0.84, 0.74, 2, 0.1);
+  for (let i = 0; i < n; i++) {
+    const t = -len / 2 + ((i + 0.5) / n) * len;
+    const wu = u + Tx * t;
+    const wv = v + Tz * t;
+    c.prim(UNIT_BOX, wu, c.g(wu, wv) + 0.25, wv, len / n + 0.25, 1.3, 0.6, ry);
+  }
+  c.solid = false;
+  const rows = Math.max(1, Math.round(Math.abs(deep) / 1.6));
+  const sgn = Math.sign(deep);
+  for (let r = 0; r < rows; r++) {
+    const off = sgn * (1.3 + r * 1.6);
+    const green = c.r(0.85, 1.1);
+    for (let t = -len / 2 + 0.8; t < len / 2 - 0.5; t += c.r(0.95, 1.35)) {
+      const pu = u + Tx * t - Tz * off;
+      const pv = v + Tz * t + Tx * off;
+      st.set(0.3 * green, 0.62 * green, 0.3, 0, 0.12);
+      const s = c.r(0.3, 0.5);
+      c.prim(UNIT_PEBBLE, pu, c.g(pu, pv) + s * 0.5, pv, s * 1.2, s, s * 1.2, c.rng() * 6);
     }
   }
+  c.solid = true;
+}
+
+/**
+ * A mud-brick watchtower, battered as it rises, with a toothed platform, a brazier that burns at
+ * night and a pennant. (u, v) is its middle, `ang` the bearing its door faces, H its height.
+ */
+function mudTower(c: Ctx, u: number, v: number, ang: number, H: number, wt: number): void {
+  const st = c.stone;
+  const Fx = Math.cos(ang);
+  const Fz = Math.sin(ang);
+  const ry = -ang;
+  let lo = Infinity;
+  let hi = -Infinity;
+  for (const [a, b] of [[-3, -3], [3, -3], [-3, 3], [3, 3], [0, 0]] as const) {
+    const gh = c.g(u + a, v + b);
+    lo = Math.min(lo, gh);
+    hi = Math.max(hi, gh);
+  }
+  const base = hi + 0.4;
+  const B = 4.8;
+  st.set(wt * 0.86, wt * 0.82, wt * 0.74, 2, 0.08);
+  c.prim(UNIT_BOX, u, (lo - 1.2 + base) / 2, v, B + 1.6, base - lo + 1.2, B + 1.6, ry);
+  // the shaft: a fifth narrower at the top than at the foot
+  st.set(wt, wt * 0.96, wt * 0.87, 2, 0.07);
+  c.prim(UNIT_SLAB, u, base + H / 2, v, B, H, B, ry);
+  const half = (y: number): number => (B / 2) * (1 - 0.2 * (y / H));
+  // the platform, carried out past the shaft on beam ends
+  const topW = B * 0.8 + 1.3;
+  const py = base + H;
+  st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.02);
+  c.solid = false;
+  for (let i = 0; i < 4; i++) {
+    const t = -topW / 2 + 0.5 + (i / 3) * (topW - 1);
+    c.prim(UNIT_BIT, u - Fz * t, py - 0.2, v + Fx * t, topW + 0.5, 0.22, 0.22, ry);
+    c.prim(UNIT_BIT, u + Fx * t, py - 0.2, v + Fz * t, 0.22, 0.22, topW + 0.5, ry);
+  }
+  c.solid = true;
+  st.set(wt * 1.02, wt * 0.98, wt * 0.89, 2, 0.06);
+  c.prim(UNIT_BOX, u, py + 0.2, v, topW, 0.6, topW, ry);
+  frostMerlons(c, u, v, py + 0.5, topW, topW, Fx, Fz);
+  frostMerlons(c, u, v, py + 0.5, topW, topW, -Fz, Fx);
+  // slots up the faces, lit from inside at night, and the door
+  for (let k = 0; k < 4; k++) {
+    const a = ang + (k * Math.PI) / 2;
+    for (const fy of [0.42, 0.72]) {
+      if (k === 0 && fy < 0.5) continue;
+      const y = H * fy;
+      const r = half(y) + 0.02;
+      st.set(DARK[0], DARK[1], DARK[2], 2, 0);
+      c.solid = false;
+      c.prim(UNIT_BIT, u + Math.cos(a) * r, base + y, v + Math.sin(a) * r, 0.14, 1.4, 0.5, -a);
+      c.solid = true;
+      if (c.rng() < 0.8) c.glow(u + Math.cos(a) * r, base + y, v + Math.sin(a) * r, 1.0);
+    }
+  }
+  {
+    const r = half(1) + 0.05;
+    st.set(DARK[0], DARK[1], DARK[2], 2, 0);
+    c.solid = false;
+    c.prim(UNIT_BIT, u + Fx * r, base + 1.0, v + Fz * r, 0.4, 2.0, 1.2, ry);
+    st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.02);
+    c.prim(UNIT_BIT, u + Fx * (r + 0.1), base + 2.12, v + Fz * (r + 0.1), 0.3, 0.24, 1.8, ry);
+    c.solid = true;
+    st.set(wt * 0.86, wt * 0.82, wt * 0.74, 2, 0.05);
+    const gd = c.g(u + Fx * (B / 2 + 2.2), v + Fz * (B / 2 + 2.2));
+    const drop = base - gd;
+    const steps = Math.max(1, Math.min(6, Math.ceil(drop / 0.32)));
+    for (let k = 0; k < steps; k++) {
+      const su = u + Fx * (B / 2 + 0.95 + k * 0.44);
+      const sv = v + Fz * (B / 2 + 0.95 + k * 0.44);
+      const y1 = base - (k * drop) / steps;
+      const y0 = Math.min(lo, gd) - 0.6;
+      c.prim(UNIT_BOX, su, (y0 + y1) / 2, sv, 0.48, y1 - y0, 1.9, ry);
+    }
+  }
+  // the brazier, and a pennant on a pole at one corner
+  st.set(0.2, 0.18, 0.17, 1, 0.02);
+  c.prim(UNIT_CYL, u, py + 0.85, v, 0.8, 0.5, 0.8);
+  st.set(1, 1, 1, 3, 0);
+  c.prim(UNIT_CONE, u, py + 1.8, v, 0.5, 1.5, 0.5, 0.6);
+  c.glow(u, py + 1.7, v, 8);
+  c.glow(u, py + 1.6, v, 4);
+  const cu = u + (Fx - Fz) * (topW / 2 - 0.3);
+  const cv = v + (Fz + Fx) * (topW / 2 - 0.3);
+  c.solid = false;
+  st.set(WOOD[0], WOOD[1], WOOD[2], 2, 0.01);
+  c.prim(UNIT_BIT, cu, py + 2.6, cv, 0.1, 4.2, 0.1, ry);
+  clothTint(c, Math.floor(c.rng() * 4));
+  c.prim(UNIT_BIT, cu - Fz * 0.75, py + 4.3, cv + Fx * 0.75, 0.05, 0.6, 1.4, ry);
+  c.prim(UNIT_BIT, cu - Fz * 1.65, py + 4.36, cv + Fx * 1.65, 0.05, 0.34, 0.5, ry);
+  c.solid = true;
+}
+
+/** A handful of mud-brick houses round a well, with pens, palms and a lamp post: a hamlet nobody is home in. */
+function buildHamlet(c: Ctx): void {
+  const n = 4 + Math.floor(c.rng() * 4);
+  const R = c.r(15, 22);
+  c.foot = R + 16;
+  const a0 = c.rng() * Math.PI * 2;
+  const wall = c.r(0.98, 1.1);
+  for (let i = 0; i < n; i++) {
+    const a = a0 + (i / n) * Math.PI * 2 + c.r(-0.2, 0.2);
+    const d = R * c.r(0.8, 1.12);
+    // long side across the ring, door looking in toward the well
+    mudHouse(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, 1, c.r(5, 7.4), c.r(4.2, 5.8), c.r(2.8, 3.6), wall * c.r(0.95, 1.05));
+  }
+  mudWell(c, 0, 0);
+  frostTorch(c, 3.6, 0.6, 1.5);
+  // palms in the gaps between the houses, and beyond them a pen or two, straw and a cart
+  const palms = 1 + Math.floor(c.rng() * 3);
+  for (let k = 0; k < palms; k++) {
+    const a = a0 + ((Math.floor(c.rng() * n) + 0.5) / n) * Math.PI * 2;
+    const d = R + c.r(8, 13); // behind the houses, clear of their walls
+    addPalm(c, Math.cos(a) * d, Math.sin(a) * d, c.rng() * 6.28);
+  }
+  const pens = 1 + Math.floor(c.rng() * 2);
+  const pa = a0 + c.rng() * Math.PI * 2;
+  for (let k = 0; k < pens; k++) {
+    const a = pa + k * c.r(1.6, 2.6);
+    const d = R + c.r(11, 14);
+    mudPen(c, Math.cos(a) * d, Math.sin(a) * d, a, c.r(5.5, 8));
+  }
+  for (let k = 0; k < 2; k++) {
+    const a = pa + Math.PI + c.r(-1, 1);
+    const d = R + c.r(8, 12);
+    hayStack(c, Math.cos(a) * d, Math.sin(a) * d, c.r(0.9, 1.4));
+  }
+  if (c.rng() < 0.7) {
+    const a = a0 + c.rng() * 6.28;
+    handCart(c, Math.cos(a) * 6.5, Math.sin(a) * 6.5, a + c.r(0.8, 2.2));
+  }
+  // a kitchen garden behind a low wall
+  if (c.rng() < 0.75) {
+    const a = pa + Math.PI / 2 + c.r(-0.4, 0.4);
+    const d = R + c.r(10, 13);
+    terracePlot(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, c.r(7, 11), c.r(3, 5));
+  }
+}
+
+/**
+ * A village on the foot of a mountain: a street of houses along the slope, a terrace of more
+ * above it, a square with a well, a watchtower at one end, garden plots stepping down toward
+ * the sand, bunting over the street and palms round about. The frame is the world's own (yaw 0).
+ */
+function buildMountainVillage(c: Ctx, vil: FootVillage): void {
+  const st = c.stone;
+  const Tx = Math.cos(vil.yaw);
+  const Tz = Math.sin(vil.yaw);
+  // down the slope, across the street
+  const Nx = -Tz;
+  const Nz = Tx;
+  const ang = vil.yaw;
+  c.foot = 62;
+  const P = (a: number, off: number): [number, number] => [Tx * a + Nx * off, Tz * a + Nz * off];
+  const wall = c.r(0.98, 1.08);
+  const slots = 5 + Math.floor(c.rng() * 2);
+  const gap = 10.6;
+  const square = Math.floor(slots / 2);
+  const x0 = -((slots - 1) / 2) * gap;
+  // the street: a row above it and a row below, doors facing across; the square is left open below
+  for (let i = 0; i < slots; i++) {
+    for (const side of [-1, 1]) {
+      if (side === 1 && i === square) continue;
+      const w = c.r(6, 8.2);
+      const d = c.r(4.8, 6.2);
+      const [u, v] = P(x0 + i * gap + c.r(-1, 1), side * (2.6 + d / 2 + c.r(0.4, 1.6)));
+      mudHouse(c, u, v, ang, -side, w, d, c.r(2.7, 3.4), wall * c.r(0.95, 1.06));
+      if (c.rng() < 0.35) {
+        const [tu, tv] = P(x0 + i * gap + w / 2 + 0.9, side * 2.4);
+        frostTorch(c, tu, tv, 1.2);
+      }
+    }
+  }
+  // the terrace above: a shorter row further up, looking out over the roofs
+  const upper = 2 + Math.floor(c.rng() * 3);
+  for (let i = 0; i < upper; i++) {
+    const w = c.r(5.6, 7.4);
+    const d = c.r(4.6, 5.6);
+    const [u, v] = P((i - (upper - 1) / 2) * 12.5 + c.r(-2, 2), -(19.5 + c.r(0, 3)));
+    mudHouse(c, u, v, ang + c.r(-0.12, 0.12), 1, w, d, c.r(2.7, 3.2), wall * c.r(0.95, 1.06));
+  }
+  // the square: the well, a fire ring, a cart, a lamp
+  {
+    const [wu, wv] = P(x0 + square * gap, 7.5);
+    mudWell(c, wu, wv);
+    const [fu, fv] = P(x0 + square * gap - 3.6, 4.4);
+    const g = c.g(fu, fv);
+    st.set(0.62, 0.58, 0.55, 0, 0.12);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      c.prim(UNIT_BOX, fu + Math.cos(a) * 1.0, g + 0.2, fv + Math.sin(a) * 1.0, 0.7, 0.5, 0.55, -a);
+    }
+    st.set(1, 1, 1, 3, 0);
+    c.prim(UNIT_CONE, fu, g + 0.75, fv, 0.4, 1.0, 0.4, 0.5);
+    c.glow(fu, g + 0.8, fv, 4);
+    const [cu, cv] = P(x0 + square * gap + 3.4, 4.2);
+    handCart(c, cu, cv, ang + c.r(0.3, 1.2));
+    const [lu, lv] = P(x0 + square * gap + 4.6, 9.5);
+    frostTorch(c, lu, lv, 1.5);
+  }
+  // stepping stones down the middle of the street
+  st.set(0.98, 0.93, 0.84, 0, 0.05);
+  c.solid = false;
+  for (let a = x0 - gap * 0.7; a <= -x0 + gap * 0.7; a += 1.9) {
+    const [u, v] = P(a, c.r(-0.5, 0.5));
+    c.prim(UNIT_BIT, u, c.g(u, v) + 0.02, v, c.r(1.0, 1.4), 0.16, c.r(0.9, 1.3), -ang + c.r(-0.3, 0.3));
+  }
+  c.solid = true;
+  // bunting across the street
+  for (const i of [1, slots - 2]) {
+    const a = x0 + (i + 0.5) * gap;
+    const [u0, v0] = P(a + c.r(-0.6, 0.6), -2.5);
+    const [u1, v1] = P(a + c.r(-0.6, 0.6), 2.5);
+    bunting(c, u0, v0, u1, v1, 4.3);
+  }
+  // the watchtower past one end of the rows, a little up the slope, its door down toward the street
+  const endSign = c.rng() < 0.5 ? -1 : 1;
+  {
+    const [u, v] = P(endSign * (-x0 + gap * 0.95), -7);
+    mudTower(c, u, v, Math.atan2(Nz, Nx), c.r(10.5, 13.5), wall);
+  }
+  // garden plots stepping down below the lower row
+  const plots = 2 + Math.floor(c.rng() * 2);
+  for (let k = 0; k < plots; k++) {
+    const [u, v] = P(c.r(-0.5, 0.5) * gap * (slots - 2) * 0.6, 17 + k * 7.5);
+    terracePlot(c, u, v, ang, c.r(13, 24), -c.r(3.5, 5.5));
+  }
+  // the pen and the straw at the other end from the tower
+  {
+    const [u, v] = P(-endSign * (-x0 + gap * 1.05), 9);
+    mudPen(c, u, v, ang, c.r(6.5, 8.5));
+    const [hu, hv] = P(-endSign * (-x0 + gap * 1.05) + c.r(-3, 3), -4);
+    hayStack(c, hu, hv, c.r(1.0, 1.5));
+  }
+  // palms round the edges, and rocks fallen from the mountain above
+  for (let k = 0; k < 6; k++) {
+    // below the lower row, or above the upper terrace: never among the roofs
+    const [u, v] = P(c.r(-1, 1) * (-x0 + gap), c.rng() < 0.65 ? c.r(15, 42) : -c.r(30, 44));
+    addPalm(c, u, v, c.rng() * 6.28);
+  }
+  for (let k = 0; k < 5; k++) {
+    const [u, v] = P(c.r(-1, 1) * (-x0 + gap * 1.2), -c.r(30, 48));
+    const g = c.g(u, v);
+    const s = c.r(1.0, 2.6);
+    st.set(c.r(0.9, 1.05), c.r(0.88, 1.0), 0.92, 0, 0.2);
+    c.prim(UNIT_BLOB, u, g + s * 0.3, v, s, s * c.r(0.55, 0.85), s * c.r(0.8, 1.1), c.rng() * 3);
+  }
+}
+
+/**
+ * A lone watchtower out on the sand: the tower itself, a keeper's hut against it, a ring of low
+ * wall half fallen in, and what was left lying about.
+ */
+function buildWatchtower(c: Ctx): void {
+  const st = c.stone;
+  c.foot = 20;
+  const wt = c.r(0.98, 1.1);
+  const face = c.rng() * Math.PI * 2;
+  mudTower(c, 0, 0, face, c.r(13, 17.5), wt);
+  // the hut, off to one side of the door
+  const ha = face + (c.rng() < 0.5 ? -1 : 1) * c.r(1.2, 1.7);
+  mudHouse(c, Math.cos(ha) * 7.6, Math.sin(ha) * 7.6, ha + Math.PI / 2, -1, c.r(4.6, 5.6), c.r(3.6, 4.2), c.r(2.4, 2.8), wt * c.r(0.95, 1.04));
+  // the ring wall, with gaps where it has gone
+  const R = c.r(12.5, 15);
+  const segs = 18;
+  st.set(wt * 0.92, wt * 0.87, wt * 0.78, 2, 0.12);
+  for (let i = 0; i < segs; i++) {
+    const a = (i / segs) * Math.PI * 2;
+    const dFace = Math.abs(Math.atan2(Math.sin(a - face), Math.cos(a - face)));
+    if (dFace < 0.3 || c.rng() < 0.28) continue; // the gateway, and the fallen lengths
+    const u = Math.cos(a) * R;
+    const v = Math.sin(a) * R;
+    const h = c.r(0.7, 1.9);
+    c.prim(UNIT_BOX, u, c.g(u, v) + h / 2 - 0.4, v, 0.8, h + 0.8, (Math.PI * 2 * R) / segs + 0.2, -a);
+  }
+  // inside the wall: straw, a cart or a stack of wood, a lamp by the gate
+  {
+    const a = face + Math.PI + c.r(-0.8, 0.8);
+    hayStack(c, Math.cos(a) * (R - 3.2), Math.sin(a) * (R - 3.2), c.r(0.9, 1.3));
+  }
+  if (c.rng() < 0.6) {
+    const a = ha + Math.PI + c.r(-0.4, 0.4);
+    handCart(c, Math.cos(a) * 8, Math.sin(a) * 8, a + 1.2);
+  } else {
+    const a = ha + Math.PI + c.r(-0.4, 0.4);
+    const u = Math.cos(a) * 7.5;
+    const v = Math.sin(a) * 7.5;
+    st.set(0.5, 0.36, 0.25, 2, 0.05);
+    c.prim(UNIT_BOX, u, c.g(u, v) + 0.45, v, 2.4, 0.9, 0.9, -a);
+  }
+  frostTorch(c, Math.cos(face + 0.24) * (R + 0.6), Math.sin(face + 0.24) * (R + 0.6), 1.3);
+  frostTorch(c, Math.cos(face - 0.24) * (R + 0.6), Math.sin(face - 0.24) * (R + 0.6), 1.3);
+  if (c.rng() < 0.5) addPalm(c, Math.cos(face + 2.4) * (R + 4), Math.sin(face + 2.4) * (R + 4), c.rng() * 6.28);
 }
 
 // ------------------------------------------------------------------ the frostland
@@ -3180,11 +3771,12 @@ export class Discoveries {
     this.cellPos.x = cx * CELL + MARGIN + hash4(cx, cz, s, 2) * (CELL - 2 * MARGIN);
     this.cellPos.z = cz * CELL + MARGIN + hash4(cx, cz, s, 3) * (CELL - 2 * MARGIN);
     // Most cells are empty, but one beside a river usually holds a grove.
-    this.cellHamlet = false;
+    this.cellSpare = '';
     if (hash4(cx, cz, s, 1) >= SITE_P && !(hash4(cx, cz, s, 5) < GROVE_P && this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH)) {
-      // An empty cell away from the water may hold a hamlet instead.
-      if (hash4(cx, cz, s, 31) >= HAMLET_P || this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH) return false;
-      this.cellHamlet = true;
+      // An empty cell away from the water may hold a hamlet instead, or a watchtower.
+      const roll = hash4(cx, cz, s, 31);
+      if (roll >= HAMLET_P + TOWER_P || this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH) return false;
+      this.cellSpare = roll < HAMLET_P ? 'hamlet' : 'watchtower';
     }
     // The wilderness finds keep clear of cities.
     const cities = (this.world as Partial<{ cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>).cities;
@@ -3195,7 +3787,8 @@ export class Discoveries {
     return true;
   }
 
-  private cellHamlet = false;
+  /** What an otherwise empty cell holds, as cellSite last worked out. */
+  private cellSpare: '' | 'hamlet' | 'watchtower' = '';
 
   private isBuilt(key: number): boolean {
     for (let i = 0; i < this.sites.length; i++) if (this.sites[i].key === key) return true;
@@ -3363,6 +3956,18 @@ export class Discoveries {
           this.finishSite(caveKey, 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6, ctx.baseY, ctx);
           return true;
         }
+        // the villages at its foot (worked out only once the massif is near enough for one to be in reach)
+        const vils = Math.hypot(m.x - px, m.z - pz) < BUILD_R + m.r * VILLAGE_REACH ? this.villagesOf(gi, gj, m) : NO_VILLAGES;
+        for (let k = 0; k < vils.length; k++) {
+          const v = vils[k];
+          const key = VILLAGE_KEY - (id * 4 + k);
+          if (this.isBuilt(key) || Math.hypot(v.x - px, v.z - pz) >= BUILD_R) continue;
+          const ctx = new Ctx(this.world, v.x, v.z, this.world.height(v.x, v.z), mulberry32(seed ^ (0x51c7 + k * 7919)), 0);
+          ctx.stone.salt = (id * 5 + k * 37) & 1023;
+          buildMountainVillage(ctx, v);
+          this.finishSite(key, 'mountain-village', v.x, v.z, ctx.baseY, ctx);
+          return true;
+        }
         // the rock over each spring: the notch a river pours from becomes a cave mouth
         let springs = this.springCache.get(id);
         if (!springs) this.springCache.set(id, (springs = this.findSprings(m)));
@@ -3389,17 +3994,49 @@ export class Discoveries {
 
   /** The frostland's region and layout, worked out once and only when the wanderer is near enough to want it. */
   private frostLayoutNear(px: number, pz: number): FrostLayout | null {
-    if (this.frostMemo === undefined) {
-      const w = this.world as Partial<DesertWorld>;
-      this.frostMemo = w.massif && w.cities ? frostRegion(this.world as DesertWorld) : null;
-    }
-    const region = this.frostMemo;
+    const region = this.frostOf();
     if (!region || Math.hypot(region.cx - px, region.cz - pz) > FROST_WAKE) return null;
     this.frostLay ??= frostLayout(this.world as DesertWorld, region);
     return this.frostLay;
   }
 
   private frostMemo: FrostRegion | null | undefined;
+
+  /** The frostland's region (null when the world has none), worked out once. */
+  private frostOf(): FrostRegion | null {
+    if (this.frostMemo === undefined) {
+      const w = this.world as Partial<DesertWorld>;
+      this.frostMemo = w.massif && w.cities ? frostRegion(this.world as DesertWorld) : null;
+    }
+    return this.frostMemo;
+  }
+
+  /**
+   * The villages at the foot of a massif, worked out once: none for the frostland's own mountain,
+   * which has its snow villages, and each kept clear of the cities, the finds and the massif's cave.
+   */
+  private villagesOf(gi: number, gj: number, m: Massif): FootVillage[] {
+    const id = (gi + 32768) * 65536 + (gj + 32768);
+    let vils = this.villageCache.get(id);
+    if (vils) return vils;
+    vils = [];
+    const fr = this.frostOf();
+    const w = this.world as Partial<DesertWorld>;
+    if (!(fr && Math.hypot(fr.cx - m.x, fr.cz - m.z) < 1) && w.river) {
+      const cv = w.cave?.(gi, gj);
+      const free = (x: number, z: number): boolean => {
+        if (cv && Math.hypot(cv.x - x, cv.z - z) < 160) return false;
+        const city = w.cities?.at(x, z);
+        if (city && Math.hypot(city.cx - x, city.cz - z) < city.radius + VILLAGE_CITY_CLEAR) return false;
+        return !this.cellClaimed(x, z, 70);
+      };
+      vils = footVillages(this.world as DesertWorld, m, hash4(gi, gj, this.world.seed | 0, 53), free);
+    }
+    this.villageCache.set(id, vils);
+    return vils;
+  }
+
+  private readonly villageCache = new Map<number, FootVillage[]>();
   private frostLay: FrostLayout | undefined;
 
   /**
@@ -3666,11 +4303,35 @@ export class Discoveries {
   }
 
   /**
-   * Whether a disc of radius r at (x, z) comes near where a find stands on the surface or a
-   * cavern runs under the sand, built yet or not. Decided from the cells alone, so it gives the
+   * Whether a disc of radius r at (x, z) comes near where a find stands on the surface, a
+   * cavern runs under the sand or a mountain village stands, built yet or not. Decided from the seed alone, so it gives the
    * same answer whenever it is asked (for things scattered about that must keep off them).
    */
   claimed(x: number, z: number, r: number): boolean {
+    if (this.cellClaimed(x, z, r)) return true;
+    // a mountain village spreads some 70 m round its middle
+    const w = this.world as Partial<DesertWorld>;
+    if (!w.massif) return false;
+    const gi0 = Math.round(x / CITY_CELL);
+    const gj0 = Math.round(z / CITY_CELL);
+    for (let gj = gj0 - 1; gj <= gj0 + 1; gj++) {
+      for (let gi = gi0 - 1; gi <= gi0 + 1; gi++) {
+        const id = (gi + 32768) * 65536 + (gj + 32768);
+        let vils = this.villageCache.get(id);
+        if (!vils) {
+          const m = w.massif(gi, gj);
+          if (!m) this.villageCache.set(id, (vils = NO_VILLAGES));
+          else if (Math.hypot(m.x - x, m.z - z) > r + 70 + m.r * VILLAGE_REACH) continue;
+          else vils = this.villagesOf(gi, gj, m);
+        }
+        for (const v of vils) if (Math.hypot(v.x - x, v.z - z) < r + 70) return true;
+      }
+    }
+    return false;
+  }
+
+  /** `claimed`, for the finds and caverns of the cells alone. */
+  private cellClaimed(x: number, z: number, r: number): boolean {
     const pcx = Math.floor(x / CELL);
     const pcz = Math.floor(z / CELL);
     for (let dz = -1; dz <= 1; dz++) {
@@ -3774,7 +4435,7 @@ export class Discoveries {
   }
 
   /**
-   * Calls `each` for every massif site (summit, cave mouth, springs) of the massifs whose grid
+   * Calls `each` for every massif site (summit, cave mouth, villages, springs) of the massifs whose grid
    * cells could reach within r of (x, z), with the key it is built under. `want` leaves out
    * kinds the caller has no use for, so springs (the dear ones to work out) are only found when asked for.
    */
@@ -3791,6 +4452,10 @@ export class Discoveries {
         if (!m) continue;
         const id = (gi + 32768) * 65536 + (gj + 32768);
         if (want('summit')) each(-(id * 16 + 1), 'summit', m.x, m.z);
+        if (want('mountain-village') && Math.hypot(m.x - x, m.z - z) < r + m.r * VILLAGE_REACH) {
+          const vils = this.villagesOf(gi, gj, m);
+          for (let k = 0; k < vils.length; k++) each(VILLAGE_KEY - (id * 4 + k), 'mountain-village', vils[k].x, vils[k].z);
+        }
         if (want('cave')) {
           const cv = w.cave(gi, gj);
           if (cv) each(-(id * 16 + 2), 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6);
@@ -3917,8 +4582,9 @@ export class Discoveries {
       mean += w.height(x + Math.cos(a) * 250, z + Math.sin(a) * 250);
     }
     mean /= 8;
-    if (this.cellHamlet) {
-      // a hamlet settles on the level sand nearby, off rock and salt
+    if (this.cellSpare !== '') {
+      // a hamlet or a watchtower settles on the level sand nearby, off rock and salt
+      const spare = this.cellSpare;
       let best = Infinity;
       let bx = x;
       let bz = z;
@@ -3939,7 +4605,7 @@ export class Discoveries {
         }
       }
       rng();
-      return { kind: 'hamlet', x: bx, z: bz, onSalt: false };
+      return { kind: spare, x: bx, z: bz, onSalt: false };
     }
     const r = rng();
     let kind: string;
@@ -4024,6 +4690,7 @@ export class Discoveries {
       case 'bones': buildBones(ctx); break;
       case 'lantern': buildLantern(ctx); break;
       case 'hamlet': buildHamlet(ctx); break;
+      case 'watchtower': buildWatchtower(ctx); break;
       case 'sundial': buildSundial(ctx, onSalt); break;
       case 'temple': buildTemple(ctx); break;
       default: buildShell(ctx); break;

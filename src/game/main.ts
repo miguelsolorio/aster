@@ -226,6 +226,7 @@ function start() {
   const fauna = new Fauna(world, u);
   fauna.landmarks = (out) => discoveries.landmarks(out);
   fauna.herders = (out) => caravans.herders(out); // each shepherd's goats keep round them
+  fauna.snow = (x, z) => (frost ? frostCover(frost, x, z) : 0); // where the frostland's animals wear white
   fauna.blocked = (x, z) => {
     const c = cities.nearest(x, z);
     return Math.hypot(c.cx - x, c.cz - z) < c.radius + 300 || discoveries.nearSolids(x, z, 12);
