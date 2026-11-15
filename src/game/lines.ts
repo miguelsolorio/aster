@@ -318,11 +318,10 @@ export const VILLAGER = {
     'There\'s a lantern on the summit. Somebody carries the oil up. Not me.',
     'Somewhere a road of torches climbs into the snow. Our cousins live at the top of it.',
   ],
-  /** While there is still something to be sent after: who to ask. */
-  ask: [
-    'Ask the watcher what\'s out on the sand. Stands under the tower all day, in blue, looking.',
-    'The old climber by the fire has been to the top more times than anyone. Ask, if you\'ve an hour.',
-  ],
+  /** To someone with no rope: who to ask. */
+  askWatcher: ['Ask the watcher what\'s out on the sand. Stands under the tower all day, in blue, looking.'],
+  /** To someone without the boots or the feather: who to ask. */
+  askClimber: ['The old climber by the fire, in green, has been to the top more times than anyone. Ask, if you\'ve an hour.'],
   dawn: ['The sun reaches the top of the mountain first. We get it an hour later.', 'Up before the goats. That\'s rare.'],
   dusk: ['The mountain\'s shadow goes out across the sand at this hour. Watch it.', 'The fire in the square is lit. Sit by it.'],
   night: [
@@ -354,7 +353,9 @@ export const SNOWFOLK = {
     'There\'s a hold at the top with a fire you can see from the desert.',
     'The pines were planted by the first people up the road. Or the pines planted us.',
   ],
-  ask: ['The climber sits by the fire, in green. Been everywhere on this mountain, and will tell you so.'],
+  /** There is no tower up here, and nobody watching the sand from it. */
+  askWatcher: [] as string[],
+  askClimber: ['The climber sits by the fire, in green. Been everywhere on this mountain, and will tell you so.'],
   night: [
     'Cold enough for you? It gets colder.',
     'The torches stay lit all night. Somebody walks the whole road with oil.',

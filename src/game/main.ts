@@ -740,7 +740,8 @@ function start() {
         const d = day.day;
         const hour = dark() ? [...lines.night, ...lines.night] : lines === VILLAGER && d < 0.32 ? VILLAGER.dawn : lines === VILLAGER && d > 0.7 ? VILLAGER.dusk : [];
         const pool = [...lines.any, ...hour];
-        if (!save.has('boots') || !save.has('feather') || (lines === VILLAGER && !save.has('rope'))) pool.push(...lines.ask, ...lines.ask);
+        if (!save.has('rope')) pool.push(...lines.askWatcher, ...lines.askWatcher);
+        if (!save.has('boots') || !save.has('feather')) pool.push(...lines.askClimber, ...lines.askClimber);
         if (save.has('boots')) pool.push(...lines.boots);
         if (save.has('feather')) pool.push(...lines.feather);
         return { lines: [(lastLine = pick(pool, lastLine))] };

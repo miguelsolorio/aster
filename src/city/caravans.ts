@@ -1392,8 +1392,9 @@ function newAgent(animal: boolean, rng: () => number): Agent {
 
 /**
  * Someone out on the sand, as the talking needs them. role is ROLE_TRAVELLER, ROLE_PILGRIM,
- * ROLE_KEEPER, ROLE_HERDER or one of the village roles (snow says which kind of village); camp is true for someone who belongs to a camp (sitting or standing
- * at its fire), false for someone walking (a caravan, a pilgrim, a shepherd) or at a temple.
+ * ROLE_KEEPER, ROLE_HERDER or one of the village roles (snow is true for someone of a snow
+ * village); camp is true for someone who belongs to a camp (sitting or standing at its fire),
+ * false for someone walking (a caravan, a pilgrim, a shepherd), at a temple or in a village.
  */
 export interface PersonOut {
   ref: unknown;

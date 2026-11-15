@@ -20,7 +20,7 @@ describe('what the village people say', () => {
   });
 
   it('has the same pools for the snow villages as for the foot villages, less the hours they do not keep', () => {
-    for (const k of ['any', 'ask', 'night', 'boots', 'feather', 'child'] as const) {
+    for (const k of ['any', 'askClimber', 'night', 'boots', 'feather', 'child'] as const) {
       expect(VILLAGER[k].length).toBeGreaterThan(0);
       expect(SNOWFOLK[k].length).toBeGreaterThan(0);
     }

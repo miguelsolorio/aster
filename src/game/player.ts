@@ -20,6 +20,7 @@ export const STEP = 0.9; // waist high: the most the figure steps up onto withou
 const REACH = 0.38; // how far ahead of the feet a wall is felt
 const BOOTS = 1.25; // nailed boots are this much quicker over rock
 const BOOTS_GRIP = 1.5; // and hold on rock this steep (rise over run) before it is a cliff; bare feet give up at CLIFF
+const BOOTS_STEEP = 4.2; // the most they make (m/s over the ground) on rock that bare feet could not stand on
 const CLIFF = 1.15;
 const FEATHER = 0.6; // an eagle's feather in the hood: the glide sinks this much as fast
 const CARPET = 1.6; // a carpet flies this much faster, and climbs for twice as long
@@ -243,9 +244,11 @@ export class Player {
         const climb = this.wish.x * gx + this.wish.y * gz;
         // Sand gives underfoot: a dune face is slower going up than rock of the same pitch.
         const shod = rock && this.boots;
-        const factor = rock ? Math.min(1.2, Math.max(shod ? 0.5 : 0.35, 1 - climb * (shod ? 0.7 : 0.9))) : Math.min(1.12, Math.max(0.3, 1 - climb * 1.3));
-        const target = (input.run ? (rock ? RUN : RUN_SAND) : WALK) * factor * (shod ? BOOTS : 1);
+        const factor = rock ? Math.min(1.2, Math.max(0.35, 1 - climb * 0.9)) : Math.min(1.12, Math.max(0.3, 1 - climb * 1.3));
+        let target = (input.run ? (rock ? RUN : RUN_SAND) : WALK) * factor * (shod ? BOOTS : 1);
+        // Nailed boots hold where bare feet slide off, but nobody runs up such a face.
         const cliff = shod ? BOOTS_GRIP : CLIFF;
+        if (shod && slope > CLIFF) target = Math.min(target, BOOTS_STEEP);
         const rate = 1 - Math.exp(-dt * 6);
         vel.x += (this.wish.x * target - vel.x) * rate;
         vel.z += (this.wish.y * target - vel.z) * rate;
