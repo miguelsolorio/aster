@@ -26,7 +26,7 @@ describe('Save', () => {
   it('starts fresh with empty storage', () => {
     const s = new Save(qs());
     expect(Object.values(s.data.tools).every((v) => v === false)).toBe(true);
-    expect(Object.keys(s.data.tools)).toHaveLength(9);
+    expect(Object.keys(s.data.tools)).toHaveLength(11);
     expect(s.data.talked).toBe(false);
     expect(s.data.roles.miner).toBe(0);
     expect(s.data.opened).toEqual([]);

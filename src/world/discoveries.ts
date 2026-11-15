@@ -14,7 +14,8 @@ import { Solids, type SolidKind } from './solids';
 import { createDeep } from './deep/index';
 import { frostLayout, frostRegion, frostCover, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
 import { footVillages, type FootVillage } from './foothills';
-import { CHOSEN, bedrollGeometry, carpetGeometry, chartGeometry, fluteGeometry, rodGeometry, ropeCoilGeometry, rugMaterial, solidMaterial } from '../game/equipment';
+import { footVillageFolk, snowVillageFolk, type FolkMark, type FolkRole } from './villagers';
+import { CHOSEN, bedrollGeometry, bootGeometry, carpetGeometry, featherGeometry, chartGeometry, fluteGeometry, rodGeometry, ropeCoilGeometry, rugMaterial, solidMaterial } from '../game/equipment';
 import type { Offering } from '../game/offerings';
 import { isFindKind } from '../game/finds';
 import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types';
@@ -500,6 +501,8 @@ class Ctx {
   relic: [number, number, number] | null = null;
   /** A temple's marks, local: the stair's foot, the avenue's end, the way out, and where keepers stand (x, y, z, yaw). */
   temple: { foot: [number, number, number]; end: [number, number, number]; yaw: number; keep: [number, number, number, number][]; offer: [number, number, number] } | null = null;
+  /** A village's people: where each stands, in the site's frame. */
+  folk: FolkMark[] | null = null;
   /** What the wanderer walks into and stands on: one shape per stone, drum and length of bone. */
   readonly solids = new Solids();
   /** Off while building things you pass straight through (scrub, paving flush with the ground). */
@@ -1828,6 +1831,7 @@ function buildMountainVillage(c: Ctx, vil: FootVillage): void {
   }
   // the watchtower past one end of the rows, a little up the slope, its door down toward the street
   const endSign = c.rng() < 0.5 ? -1 : 1;
+  c.folk = footVillageFolk({ Tx, Tz, Nx, Nz, x0, gap, slots, square, endSign });
   {
     const [u, v] = P(endSign * (-x0 + gap * 0.95), -7);
     mudTower(c, u, v, Math.atan2(Nz, Nx), c.r(10.5, 13.5), wall);
@@ -2274,10 +2278,11 @@ function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
     frostPine(c, ox + Tx * a + Nx * off, oz + Tz * a + Nz * off, c.r(0.9, 1.5));
   }
   // the hold at the head of the road: a mud-brick watchtower like the towns', with a great brazier
+  const end = way[way.length - 1];
+  const eu = end.x - c.x + Tx * 8;
+  const ev = end.z - c.z + Tz * 8;
+  c.folk = snowVillageFolk({ Tx, Tz, Nx, Nz, ox, oz, hw, kind: village.kind, hold: village.kind === 'high' ? [eu, ev] : null });
   if (village.kind === 'high') {
-    const end = way[way.length - 1];
-    const eu = end.x - c.x + Tx * 8;
-    const ev = end.z - c.z + Tz * 8;
     const g = c.g(eu, ev);
     const wt = c.r(0.98, 1.06);
     st.set(wt * 0.9, wt * 0.87, wt * 0.8, 2, 0.07);
@@ -2874,6 +2879,8 @@ interface Site {
   light?: THREE.Vector4;
   relic?: { x: number; y: number; z: number; obj: THREE.Object3D };
   temple?: TempleMarks;
+  /** For a village: its people. */
+  folk?: VillageFolk[];
   /** For a temple: what lies on the stone before its altar now, if anything. */
   offer?: { kind: Offering; obj: THREE.Group };
 }
@@ -2891,6 +2898,28 @@ export interface TempleMarks {
   /** The top of the stone before the altar, where an offering lies. */
   offer: { x: number; y: number; z: number };
 }
+
+/** Someone's place in a village, in world coordinates: where they stand or sit, and which way they face (atan2(dx, dz)). */
+export interface VillageFolk {
+  x: number;
+  z: number;
+  yaw: number;
+  sit: boolean;
+  role: FolkRole;
+  small: boolean;
+}
+
+/** A built village and its people: at the foot of a mountain, or up in the snow. */
+export interface Village {
+  key: number;
+  snow: boolean;
+  x: number;
+  z: number;
+  folk: VillageFolk[];
+}
+
+/** Small things left lying up a mountain for whoever is sent after them: boots at the back of its cave, a feather on its summit. */
+export type Stray = 'boots' | 'feather';
 
 /** A built place in the open desert that people might walk to. */
 export interface Landmark {
@@ -3801,6 +3830,99 @@ export class Discoveries {
     return Math.hypot(m.position.x - x, m.position.z - z) < r && Math.abs(m.position.y - y) < 2.5;
   }
 
+  // ---------------------------------------------------------------- what is left up the mountains
+
+  private readonly strays: Partial<Record<Stray, THREE.Group>> = {};
+
+  /**
+   * Where a stray thing lies for a wanderer near (x, z): the boots at the back of the nearest
+   * mountain cave within maxR, the feather a few steps from the lantern on the nearest summit.
+   * Decided from the seed alone, so it is the same spot whether or not the mountain is built.
+   */
+  straySpot(kind: Stray, x: number, z: number, maxR: number): { x: number; z: number } | null {
+    const w = this.world as Partial<{ massif(gi: number, gj: number): Massif | null; cave(gi: number, gj: number): Cave | null }>;
+    if (!w.massif || !w.cave) return null;
+    let best: { x: number; z: number } | null = null;
+    let bd = maxR;
+    const gi0 = Math.floor((x - maxR) / CITY_CELL) - 1;
+    const gi1 = Math.floor((x + maxR) / CITY_CELL) + 1;
+    const gj0 = Math.floor((z - maxR) / CITY_CELL) - 1;
+    const gj1 = Math.floor((z + maxR) / CITY_CELL) + 1;
+    for (let gj = gj0; gj <= gj1; gj++) {
+      for (let gi = gi0; gi <= gi1; gi++) {
+        const m = w.massif(gi, gj);
+        if (!m) continue;
+        if (kind === 'boots') {
+          const cv = w.cave(gi, gj);
+          if (!cv) continue;
+          // well in, beside the cairn at the back, against the wall
+          const along = TERRAIN.caveLen - 11;
+          const sx = cv.x + cv.dx * along - cv.dz * 2.6;
+          const sz = cv.z + cv.dz * along + cv.dx * 2.6;
+          const d = Math.hypot(sx - x, sz - z);
+          if (d < bd) {
+            bd = d;
+            best = { x: sx, z: sz };
+          }
+          continue;
+        }
+        const d = Math.hypot(m.x - x, m.z - z);
+        if (d >= bd) continue;
+        bd = d;
+        // clear of the lantern's cairn, on whichever side the ground falls away least
+        const a0 = hash4(gi, gj, this.world.seed | 0, 67) * Math.PI * 2;
+        let top = -Infinity;
+        for (let k = 0; k < 8; k++) {
+          const a = a0 + (k / 8) * Math.PI * 2;
+          const sx = m.x + Math.cos(a) * 7;
+          const sz = m.z + Math.sin(a) * 7;
+          const h = this.world.height(sx, sz);
+          if (h > top) {
+            top = h;
+            best = { x: sx, z: sz };
+          }
+        }
+      }
+    }
+    return best;
+  }
+
+  /** Lays a stray thing at a spot on the ground under a small light, or takes it away (null). */
+  setStray(kind: Stray, at: { x: number; z: number } | null): void {
+    let g = this.strays[kind];
+    if (!at) {
+      if (g) g.visible = false;
+      return;
+    }
+    if (!g) {
+      const mat = (this.toolMat ??= solidMaterial(this.u));
+      g = new THREE.Group();
+      g.name = kind;
+      if (kind === 'boots') {
+        // a pair, larger than life so they read in the dark: one standing, one fallen against it
+        const up = new THREE.Mesh(bootGeometry().scale(1.7, 1.7, 1.7).rotateY(0.5).translate(-0.1, 0, 0), mat);
+        const down = new THREE.Mesh(bootGeometry().scale(1.7, 1.7, 1.7).rotateZ(-1.42).rotateY(-0.7).translate(0.14, 0.07, 0.06), mat);
+        g.add(up, down);
+      } else {
+        // held up off the ground by the air that comes up the mountain, leaning (update turns it)
+        g.add(new THREE.Mesh(featherGeometry().scale(2.6, 2.6, 2.6).translate(0, -0.4, 0).rotateZ(-0.35).translate(0, 0.4, 0), mat));
+      }
+      // (a small light: enough to find them by in the cave, not enough to drown them in daylight)
+      g.add(this.glowMesh([0, 0.35, 0, 0.4, 0, 0.35, 0, 0.95], this.relicGlowMat));
+      this.strays[kind] = g;
+      this.group.add(g);
+    }
+    g.position.set(at.x, this.world.height(at.x, at.z), at.z);
+    g.visible = true;
+  }
+
+  /** Whether a stray thing lies within reach of (x, y, z). */
+  strayNear(kind: Stray, x: number, y: number, z: number, r: number): boolean {
+    const g = this.strays[kind];
+    if (!g?.visible) return false;
+    return Math.hypot(g.position.x - x, g.position.z - z) < r && Math.abs(g.position.y - y) < 2.5;
+  }
+
   // ---------------------------------------------------------------- the offerings in the temples
 
   /**
@@ -4003,6 +4125,12 @@ export class Discoveries {
   update(f: FrameState): void {
     const px = f.player.pos.x;
     const pz = f.player.pos.z;
+    // the feather on a summit hangs in the rising air, turning, so it is never edge-on for long
+    const fe = this.strays.feather?.children[0];
+    if (fe && this.strays.feather?.visible) {
+      fe.rotation.y = f.time * 0.9;
+      fe.position.y = 0.3 + 0.08 * Math.sin(f.time * 1.3);
+    }
     this.scanT -= f.dt;
     if (this.scanT <= 0) {
       this.scanT = SCAN_EVERY;
@@ -4498,6 +4626,16 @@ export class Discoveries {
     return out;
   }
 
+  /** The villages built now, with their people. */
+  villages(out: Village[]): Village[] {
+    out.length = 0;
+    for (let i = 0; i < this.sites.length; i++) {
+      const s = this.sites[i];
+      if (s.folk) out.push({ key: s.key, snow: s.kind === 'snow-village', x: s.x, z: s.z, folk: s.folk });
+    }
+    return out;
+  }
+
   /** Whether (x, z) is within reach of any site's stones, give or take a margin. */
   nearSolids(x: number, z: number, margin: number): boolean {
     for (let i = 0; i < this.sites.length; i++) {
@@ -4969,6 +5107,7 @@ export class Discoveries {
       light: ctx.light ? new THREE.Vector4(ctx.x + ctx.light[0], baseY + ctx.light[1], ctx.z + ctx.light[2], ctx.light[3]) : undefined,
       relic,
       temple: ctx.temple ? templeMarks(ctx, baseY) : undefined,
+      folk: ctx.folk?.map((f) => ({ x: ctx.x + f.u, z: ctx.z + f.v, yaw: Math.atan2(f.fu - f.u, f.fv - f.v), sit: f.sit, role: f.role, small: f.small })),
     });
   }
 

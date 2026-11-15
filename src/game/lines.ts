@@ -173,6 +173,7 @@ export const TOWNSFOLK = {
     'My mother said never to trust a quiet wind.',
     'If you\'re looking for someone, ask at the square.',
     'Somewhere out there a road of torches runs up into the snow. Villages at the top, they say.',
+    'There are villages under the mountains. They don\'t come down much. Go up and talk to them.',
   ],
   /** Only to someone carrying a relic from under the sand. */
   relic: [
@@ -304,8 +305,126 @@ export const MINER = {
   ] as Line[],
 };
 
+/** The people of the villages at the foot of the mountains. One line each. */
+export const VILLAGER = {
+  any: [
+    'You came up from the sand? Sit. Nobody hurries here.',
+    'The mountain keeps the wind off us. Most days.',
+    'The goats are ours. The oryx belong to nobody.',
+    'Water comes down off the rock. We only have to catch it.',
+    'The terraces were my grandmother\'s. I just put the stones back.',
+    'We see the caravans from up here, a day before they see us.',
+    'Mind the bunting. The children hung it, and they\'re proud of it.',
+    'There\'s a lantern on the summit. Somebody carries the oil up. Not me.',
+    'Somewhere a road of torches climbs into the snow. Our cousins live at the top of it.',
+  ],
+  /** While there is still something to be sent after: who to ask. */
+  ask: [
+    'Ask the watcher what\'s out on the sand. Stands under the tower all day, in blue, looking.',
+    'The old climber by the fire has been to the top more times than anyone. Ask, if you\'ve an hour.',
+  ],
+  dawn: ['The sun reaches the top of the mountain first. We get it an hour later.', 'Up before the goats. That\'s rare.'],
+  dusk: ['The mountain\'s shadow goes out across the sand at this hour. Watch it.', 'The fire in the square is lit. Sit by it.'],
+  night: [
+    'You can see every camp on the sand from here, once it\'s dark.',
+    'The fire in the square burns till morning. Nobody remembers who decided that.',
+    'Late to be on the mountain. Stay by the fire.',
+  ],
+  /** To someone wearing the climber's boots, or the feather. */
+  boots: ['Those are the climber\'s old boots. I\'d know those nails anywhere.'],
+  feather: ['A feather from the top. Then you\'ve been higher than any of us.'],
+  /** The children. */
+  child: [
+    'Did you fly here? I saw someone fly once.',
+    'I\'m not allowed past the last terrace.',
+    'The goats have names. I\'m not telling you them.',
+    'When I\'m bigger I\'m going to the top.',
+    'There are bones out on the sand as big as a house. The watcher said.',
+  ],
+};
+
+/** The people of the villages up the torchlit road, in the snow. One line each. */
+export const SNOWFOLK = {
+  any: [
+    'Come in by the fire. You\'re dressed for sand.',
+    'The torches brought you? We light them for exactly that.',
+    'Snow keeps. What fell in winter is still here in summer.',
+    'Down there they count wells. Up here we count woodpiles.',
+    'Three villages on the road. This one is the best. Ask anyone here.',
+    'There\'s a hold at the top with a fire you can see from the desert.',
+    'The pines were planted by the first people up the road. Or the pines planted us.',
+  ],
+  ask: ['The climber sits by the fire, in green. Been everywhere on this mountain, and will tell you so.'],
+  night: [
+    'Cold enough for you? It gets colder.',
+    'The torches stay lit all night. Somebody walks the whole road with oil.',
+    'Stand closer. The fire doesn\'t charge.',
+  ],
+  boots: ['Nailed boots. Good. The ice won\'t have you, then.'],
+  feather: ['An eagle gave you that? They give us nothing.'],
+  child: ['Have you seen sand? Is it like snow?', 'I can slide from here to the gate. Nearly.', 'Your hood has sand in it. I\'ve never seen sand.'],
+};
+
+/**
+ * The watcher under the tower of each foot village, in blue: looks out over the sand all day, and
+ * knows where a rope was left beside the great bones. {way} and {far} are worked out from the tower to the rope.
+ */
+export const WATCHER = {
+  /** The first time, to someone with no rope, where there are bones in sight. */
+  ask: [
+    'I watch the sand. Somebody has to.',
+    'There are bones out there to the {way}, {far}. Bigger than this tower. On a clear day you can count the ribs.',
+    'My brother went to look, and came back without his rope. Left it lying beside them. A good rope, with an iron hook.',
+    'It\'s yours if you fetch it. He won\'t go back. Says the ribs creak.',
+  ] as Line[],
+  /** Asked already, and still no rope. */
+  pending: 'The rope is by the bones, to the {way}, {far}. It\'s not the sort of thing anyone steals.',
+  /** Nothing to send anyone after: one of these. */
+  after: [
+    'I watched you come in. You don\'t walk like the caravan people.',
+    'Dust to the east means a caravan. Dust everywhere means stay indoors.',
+    'From the top of the tower I can see two cities. Neither can see me.',
+    'Nothing out there today but sand. That\'s how I like it.',
+  ],
+  /** To someone with the rope. */
+  rope: ['With that hook you can go straight up the rock. We go round. It takes all morning.'],
+  night: ['Count the fires on the sand. Each one is somebody\'s supper.'],
+};
+
+/**
+ * The old climber by the fire of every mountain village, in green: sends the wanderer up the mountain
+ * twice. First for the boots left at the back of its cave, then for a feather from its summit.
+ * {way} and {far} are worked out from the fire to the place.
+ */
+export const CLIMBER = {
+  /** To someone without the boots. */
+  boots: [
+    'Sit. The fire is for everyone.',
+    'I climbed this mountain every year, until my knees voted against it.',
+    'My boots are still in the cave, to the {way}, {far}. Right at the back, past where the daylight stops. Nailed soles. They bite the rock.',
+    'Take them. Boots want walking in, and I\'ve done mine.',
+  ] as Line[],
+  bootsPending: 'The cave, to the {way}, {far}. Right at the back. They\'ll be stiff, but they\'ll soften.',
+  /** To someone with the boots and no feather. */
+  feather: [
+    'Those are my boots. Good. They were doing nothing in the dark.',
+    'Now the top. The eagles sit up by the lantern, to the {way}, {far}, and they leave feathers.',
+    'Find one and put it in your hood. The air holds you longer with it. Don\'t ask me how. Ask the eagle.',
+  ] as Line[],
+  featherPending: 'The summit, to the {way}, {far}. Look near the lantern. Pale, with a dark tip.',
+  /** To someone with both. */
+  after: [
+    'Boots for going up, a feather for coming down. That\'s all I ever needed.',
+    'You\'ve been to the top. It shows. People come down quieter.',
+    'My knees know when the weather will turn. They\'re wrong about half the time.',
+    'Step off the summit at first light. The air is still asleep, and you go for miles.',
+  ],
+};
+
 /** Said over a thing picked up where it lay: what it is, and how it is used. */
-export const FOUND: Record<'chart' | 'flute' | 'bedroll' | 'rod' | 'rope' | 'carpet', Line> = {
+export const FOUND: Record<'chart' | 'flute' | 'bedroll' | 'rod' | 'rope' | 'carpet' | 'boots' | 'feather', Line> = {
+  boots: 'Nailed boots. They bite the rock: on foot you cross it quicker, and steeper.',
+  feather: 'An eagle\'s feather for the hood. On a glide, the air holds you longer.',
   chart: 'A star chart. After dark, the brightest line of stars stands over something you haven\'t seen.',
   flute: {
     keys: 'A reed flute. Press R to play. A wild one comes, if it\'s near enough to hear.',

@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import type { CitySite } from './types';
-import type { Landmark } from '../world/discoveries';
+import type { Landmark, Village } from '../world/discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import { blockedAt, clearAt, CREATURE_STEP, steer, steered, type SolidQuery } from '../world/avoid';
 import { routePos, routeSAtU, routeSlope, routeUAtS, type RouteCamp, type RouteNet, type TravelRoute } from './routes';
@@ -1053,12 +1053,36 @@ const KEEPER_ROBES: V3[] = [
   [0.78, 0.5, 0.2],
 ];
 const PILGRIM_LOADS = [0, 1, 1, 2, 3, 0];
+// The mountain people wear their own wool: madder, sage, straw, plum and undyed cream at the foot
+// of the mountains, and darker, heavier dyes up in the snow. (No blue or green among them: those
+// are the watcher's and the climber's.)
+const VILLAGE_WOOL: V3[] = [
+  [0.56, 0.3, 0.2],
+  [0.32, 0.38, 0.3],
+  [0.64, 0.52, 0.32],
+  [0.38, 0.3, 0.42],
+  [0.74, 0.68, 0.56],
+];
+const SNOW_WOOL: V3[] = [
+  [0.5, 0.17, 0.15],
+  [0.3, 0.2, 0.16],
+  [0.62, 0.46, 0.2],
+  [0.74, 0.71, 0.66],
+  [0.4, 0.26, 0.34],
+];
+// The two with something to ask stand out from the rest: the watcher in deep blue, the climber in teal.
+const WATCHER_COAT: V3 = [0.13, 0.24, 0.52];
+const CLIMBER_COAT: V3 = [0.1, 0.47, 0.45];
 /** Who someone is, for what they say: a traveller, a pilgrim, a temple keeper, or a goat herder. */
 export const ROLE_TRAVELLER = 0;
 export const ROLE_PILGRIM = 1;
 export const ROLE_KEEPER = 2;
 /** Someone out with a shepherd's flock (the shepherd, or whoever walks with them). */
 export const ROLE_HERDER = 3;
+/** The people of the mountain villages: anyone, the watcher under the tower, and the climber by the fire. */
+export const ROLE_VILLAGER = 4;
+export const ROLE_WATCHER = 5;
+export const ROLE_CLIMBER = 6;
 
 interface Agent {
   animal: boolean;
@@ -1211,7 +1235,8 @@ interface Trip {
   index: number;
 }
 
-// kind: 1 camp, 2 lone walkers, 3 pilgrims, 4 temple keepers, 5 a party on a route between cities,
+// kind: 1 camp, 2 lone walkers, 3 pilgrims, 4 temple keepers (and a village's people, who keep
+// their places the same way), 5 a party on a route between cities,
 // 6 a shepherd, 7 the beasts in a pen outside a city
 interface Group {
   kind: number;
@@ -1245,6 +1270,8 @@ interface Group {
   shep?: Shepherd;
   /** A pen's beasts: the pen, and what each of them is about. */
   pen?: PenLife;
+  /** A village's people, up in the snow. */
+  snow?: boolean;
 }
 
 /** The beasts of one pen (a Group of kind 7). The pen's own frame turns by co, si of its rot. */
@@ -1365,7 +1392,7 @@ function newAgent(animal: boolean, rng: () => number): Agent {
 
 /**
  * Someone out on the sand, as the talking needs them. role is ROLE_TRAVELLER, ROLE_PILGRIM,
- * ROLE_KEEPER or ROLE_HERDER; camp is true for someone who belongs to a camp (sitting or standing
+ * ROLE_KEEPER, ROLE_HERDER or one of the village roles (snow says which kind of village); camp is true for someone who belongs to a camp (sitting or standing
  * at its fire), false for someone walking (a caravan, a pilgrim, a shepherd) or at a temple.
  */
 export interface PersonOut {
@@ -1378,6 +1405,7 @@ export interface PersonOut {
   seed: number;
   role: number;
   camp?: boolean;
+  snow?: boolean;
 }
 
 class Inst {
@@ -1436,6 +1464,11 @@ export class Caravans {
   private readonly marks: Landmark[] = [];
   /** The places built now in the open desert (temples among them). Set by the game. */
   landmarks: ((out: Landmark[]) => Landmark[]) | null = null;
+  /** The villages built now, with where their people stand. Set by the game. */
+  villages: ((out: Village[]) => Village[]) | null = null;
+  private readonly vils: Village[] = [];
+  /** Each village's people, by its site key. */
+  private readonly villagers = new Map<number, Group>();
   /** The animal pens outside the cities whose outskirts are built now (world space). Set by the game. */
   pens: ((out: PenSpot[]) => PenSpot[]) | null = null;
   /** The beasts of each pen, by its key, and how many refreshes there have been (to forget the pens left behind). */
@@ -1607,6 +1640,7 @@ export class Caravans {
     out.ref = a;
     out.role = g?.kind === 6 ? ROLE_HERDER : a.role;
     out.camp = g?.kind === 1;
+    out.snow = g?.snow === true;
     out.x = a.x;
     out.y = a.y;
     out.z = a.z;
@@ -2893,6 +2927,49 @@ export class Caravans {
     }
   }
 
+  /** A village's people, each where the village has a place for them: they keep to it, as the temples' keepers do. */
+  private buildVillage(v: Village): Group {
+    const rng = mulberry32((this.world.seed ^ Math.imul(v.key | 0, 0x3d4d51cb) ^ 0x51ed270b) >>> 0);
+    const g = this.emptyGroup(4, v.x, v.z, 80);
+    g.snow = v.snow;
+    const wool = v.snow ? SNOW_WOOL : VILLAGE_WOOL;
+    for (const f of v.folk) {
+      const a = newAgent(false, rng);
+      const c = wool[Math.floor(rng() * wool.length)];
+      const j = 0.9 + rng() * 0.18;
+      a.role = f.role === 'watcher' ? ROLE_WATCHER : f.role === 'climber' ? ROLE_CLIMBER : ROLE_VILLAGER;
+      a.coat = f.role === 'watcher' ? WATCHER_COAT : f.role === 'climber' ? CLIMBER_COAT : [c[0] * j, c[1] * j, c[2] * j];
+      a.variant = 0;
+      if (f.small) a.scale = 0.58 + rng() * 0.1;
+      let x = f.x;
+      let z = f.z;
+      let y = this.world.height(x, z);
+      // (a place that turns out to be inside a wall: step aside, or stay indoors)
+      if (this.solid && blockedAt(this.solid, x, z, y)) {
+        let ok = false;
+        for (let k = 0; k < 8 && !ok; k++) {
+          const an = (k / 8) * TAU;
+          const tx = f.x + Math.sin(an) * 1.6;
+          const tz = f.z + Math.cos(an) * 1.6;
+          const ty = this.world.height(tx, tz);
+          if (blockedAt(this.solid, tx, tz, ty)) continue;
+          x = tx;
+          z = tz;
+          y = ty;
+          ok = true;
+        }
+        if (!ok && f.role === 'villager') continue;
+      }
+      a.x = x;
+      a.y = y;
+      a.z = z;
+      a.yaw = a.yaw0 = f.yaw;
+      if (f.sit) a.sit = a.sitTarget = 1;
+      g.agents.push(a);
+    }
+    return g;
+  }
+
   private stepKeepers(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
     for (let i = 0; i < g.agents.length; i++) {
       const a = g.agents[i];
@@ -2960,6 +3037,19 @@ export class Caravans {
             this.shrines.set(l.key, gs);
           }
           for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
+        }
+      }
+      if (this.villages) {
+        const vs = this.villages(this.vils);
+        for (let i = 0; i < vs.length; i++) {
+          const v = vs[i];
+          if (Math.hypot(v.x - px, v.z - pz) > RANGE + 500) continue;
+          let g = this.villagers.get(v.key);
+          if (!g) {
+            g = this.buildVillage(v);
+            this.villagers.set(v.key, g);
+          }
+          this.live.push(g);
         }
       }
       this.shepherdsNear(px, pz);

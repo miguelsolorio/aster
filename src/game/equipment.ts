@@ -846,6 +846,47 @@ export const ropeCoilGeometry = (): THREE.BufferGeometry => {
   return b.done();
 };
 
+/**
+ * One nailed boot, stood on its sole at y = 0 with the toe toward +z and the shaft over the
+ * heel: brown hide, a dark sole studded with iron, and a cuff of pale wool turned over the top.
+ */
+export const bootGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  const hide: V3 = [0.42, 0.27, 0.17];
+  b.box([0, 0.009, 0.035], [0.07, 0.018, 0.168], DARK);
+  b.box([0, 0.04, 0.04], [0.06, 0.046, 0.15], hide);
+  // the toe cap, a touch lighter where it is scuffed
+  b.box([0, 0.036, 0.108], [0.062, 0.04, 0.03], mul(hide, 1.18));
+  b.tube([[0, 0.03, -0.028], [0, 0.1, -0.03], [0, 0.16, -0.032]], [0.035, 0.036, 0.04], 8, hide);
+  b.tube([[0, 0.148, -0.032], [0, 0.178, -0.032]], [0.046, 0.047], 8, PALE);
+  // a thong tied round the ankle
+  b.tube([[0, 0.078, -0.03], [0, 0.09, -0.03]], [0.0385, 0.0385], 8, GOLD);
+  // the nails: three a side along the edge of the sole, and one under the toe
+  for (const z of [-0.03, 0.035, 0.095]) for (const x of [-0.034, 0.034]) b.box([x, 0.006, z], [0.012, 0.014, 0.014], IRON);
+  b.box([0, 0.006, 0.118], [0.014, 0.014, 0.012], IRON);
+  return b.done();
+};
+
+/**
+ * An eagle's feather, stood on its quill at y = 0 and flat to the front: a pale vane, barred,
+ * with a dark tip leaning a little to one side.
+ */
+export const featherGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  const pale: V3 = [0.93, 0.9, 0.82];
+  const bar: V3 = [0.5, 0.36, 0.24];
+  const tip: V3 = [0.22, 0.15, 0.11];
+  const blade: [number, number] = [1, 0.1];
+  b.tube([[0, 0, 0], [0.002, 0.09, 0]], [0.0045, 0.004], 4, BONE);
+  b.tube([[0.002, 0.07, 0], [0.005, 0.11, 0], [0.009, 0.17, 0]], [0.008, 0.036, 0.04], 4, pale, Math.PI / 4, blade);
+  b.tube([[0.009, 0.17, 0], [0.012, 0.2, 0]], [0.04, 0.04], 4, bar, Math.PI / 4, blade);
+  b.tube([[0.012, 0.2, 0], [0.017, 0.25, 0]], [0.04, 0.036], 4, pale, Math.PI / 4, blade);
+  b.tube([[0.017, 0.25, 0], [0.024, 0.31, 0], [0.03, 0.35, 0]], [0.036, 0.024, 0.003], 4, tip, Math.PI / 4, blade);
+  // the shaft, showing down the middle of the vane
+  b.tube([[0.002, 0.08, 0.005], [0.014, 0.22, 0.005], [0.027, 0.33, 0.004]], [0.0035, 0.003, 0.0015], 4, BONE);
+  return b.done();
+};
+
 // ------------------------------------------------------------------ material
 
 const solidVert = /* glsl */ `
