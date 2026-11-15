@@ -225,13 +225,16 @@
   stroke-linejoin: round;
 }
 
-/* The same button swings the pick when nobody is in reach. */
+/* The same button swings the pick when nobody is in reach, and gets on or off a beast. */
 .aster-touch__talk .aster-touch__pick,
-.aster-touch--dig .aster-touch__talk svg:not(.aster-touch__pick) {
+.aster-touch__talk .aster-touch__ride,
+.aster-touch--dig .aster-touch__talk svg:not(.aster-touch__pick),
+.aster-touch--ride .aster-touch__talk svg:not(.aster-touch__ride) {
   display: none;
 }
 
-.aster-touch--dig .aster-touch__talk .aster-touch__pick {
+.aster-touch--dig .aster-touch__talk .aster-touch__pick,
+.aster-touch--ride .aster-touch__talk .aster-touch__ride {
   display: block;
 }
 
@@ -259,7 +262,10 @@
   opacity: 0;
 }
 
-.aster-touch--dig .aster-touch__talk.aster-touch__tool svg {
+.aster-touch--dig .aster-touch__talk.aster-touch__tool svg,
+.aster-touch--ride .aster-touch__talk.aster-touch__tool svg,
+.aster-touch--dig .aster-touch__talk.aster-touch__board svg,
+.aster-touch--ride .aster-touch__talk.aster-touch__board svg {
   display: block;
 }
 

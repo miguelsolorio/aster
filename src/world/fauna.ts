@@ -1637,6 +1637,14 @@ export class Fauna {
     return best;
   }
 
+  /** Where the key cap goes for an animal got from nearestRideable: on its back. */
+  rideMark(ref: unknown, out: { x: number; y: number; z: number }): void {
+    const a = ref as Animal;
+    out.x = a.x;
+    out.y = a.y + MOUNT_BACK * a.scale;
+    out.z = a.z;
+  }
+
   /** Climb on an animal got from nearestRideable. */
   mount(ref: unknown): boolean {
     const a = ref as Animal | null;

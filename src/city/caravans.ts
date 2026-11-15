@@ -1713,6 +1713,14 @@ export class Caravans {
     return best;
   }
 
+  /** Where the key cap goes for a camel got from nearestRideable: on its back, lower while it kneels. */
+  rideMark(ref: unknown, out: { x: number; y: number; z: number }): void {
+    const a = ref as Agent;
+    out.x = a.x;
+    out.y = a.y + (CAMEL_BACK - CAMEL_KNEEL * ss(0, 1, a.sit)) * a.scale;
+    out.z = a.z;
+  }
+
   /** Climb on a camel got from nearestRideable. It is taken out of its party; its load comes off and stays off. */
   mount(ref: unknown): boolean {
     const a = ref as Agent | null;

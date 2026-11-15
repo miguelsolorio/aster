@@ -32,7 +32,7 @@ There are 20 of these in [docs/screenshots](docs/screenshots).
 | `Shift` | Run, or boost in the air |
 | `Space` | Leap. Hold to rise, let go to glide, double-tap to drop |
 | `Q` | Step on or off the board, once you have one (or get off an animal) |
-| `E` | Talk, or climb onto a wild ass or oryx (walk up to one, don't run) and get off again |
+| `E` | Talk, or climb onto a wild ass, an oryx (walk up to one, don't run) or a caravan's camel, and get off again. The key shows over whichever is nearest |
 | `F` | Hold up the spyglass, once you have one |
 | `R` | Play the flute, once you have one |
 | `B` | Lay the bedroll and sleep in it, once you have one |
