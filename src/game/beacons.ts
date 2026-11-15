@@ -1,7 +1,7 @@
 // The light over a sealed cavern: a soft shaft of gold standing on the spot the pick must
 // strike, tall enough to show over the dunes between. It reads the same short list of caverns
 // the ground is cut by (see cavernUniforms in world/surface.ts), so it stands exactly where the
-// ring on the sand lies, and goes out as the sand drains away.
+// cracks in the sand glow, and goes out as the sand drains away.
 import * as THREE from 'three';
 import { MAX_CAVERNS } from '../world/surface';
 import type { Uniforms } from './contract';

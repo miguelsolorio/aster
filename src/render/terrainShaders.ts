@@ -697,31 +697,35 @@ void main() {
     if (uCavC[i].w <= 0.0 || uCavB[i].z >= 1.0 || sandW < 0.01) continue;
     vec2 cd = p.xz - (uCavA[i].xy + uCavA[i].zw * uCavD[i].w);
     float cr = length(cd);
-    // and so that it is not walked past, a ring of gold lies round the spot the pick must
-    // strike, with a warm light inside it that breathes, and a ripple running out to the ring.
-    // It shows from much further off than the cracks do, and lights the sand at night.
-    float gk = (1.0 - uCavB[i].z) * sandW * (1.0 - smoothstep(280.0, 440.0, dist));
+    float seal = (1.0 - uCavB[i].z) * sandW;
+    // the cracks are only worked out close to the spot; further out there is just the glow
+    vec2 cv = cr < 9.0 ? cells(p.xz / 0.75 + float(i) * 3.7) : vec2(1.0);
+    if (cr <= 5.5) {
+      float edge = 3.6 + 0.9 * vnoise(vec2(atan(cd.y, cd.x) * 2.5, float(i) * 9.1));
+      // it fades out into the sand over half its width, and drifts of sand lie across it, so
+      // the cracks show in patches rather than as a clean disc
+      float k = (1.0 - smoothstep(edge - 2.6, edge, cr)) * seal * (1.0 - smoothstep(60.0, 140.0, dist));
+      float bare = smoothstep(0.46, 0.66, fbm(p.xz * 0.8 + float(i) * 5.3) + 0.12 * k) * k;
+      float crack = 1.0 - smoothstep(0.03, 0.09 + 0.6 * fwXZ, cv.x);
+      col *= 1.0 - k * (0.07 + bare * (0.07 + 0.04 * cv.y + 0.4 * crack * (1.0 - smoothstep(12.0, 45.0, dist))));
+    }
+    // and so that it is not walked past, light leaks up through the cracks: every seam in the
+    // crust glows gold from below, brightest over the spot the pick must strike, in a pulse
+    // that runs outward. It shows from much further off than the dark cracks do, where the
+    // seams run together into one warm patch, and it lights the sand at night.
+    float gk = seal * (1.0 - smoothstep(280.0, 440.0, dist));
     if (cr < 14.0 && gk > 0.0) {
       vec3 gold = vec3(1.0, 0.76, 0.3);
       float breathe = 0.5 + 0.5 * sin(uTime * 1.6 + float(i) * 2.1);
-      float rw = 0.1 + 1.1 * fwXZ; // never thinner than a pixel, however far off
-      float ring = 1.0 - smoothstep(rw * 0.45, rw, abs(cr - 4.6));
-      float wt = fract(uTime * 0.28 + float(i) * 0.37);
-      float ripple = (1.0 - smoothstep(rw * 0.45, rw * 1.6, abs(cr - 4.6 * wt))) * (1.0 - wt) * wt * 2.4;
-      float inner = exp(-cr * cr / 14.0);
+      float wave = 0.5 + 0.5 * sin(uTime * 1.5 - cr * 1.15 + float(i) * 2.1);
+      float fall = exp(-cr * cr / 15.0);
       float halo = exp(-cr * cr / 50.0);
-      col = mix(col, gold * 1.12, clamp(ring * (0.72 + 0.28 * breathe) + ripple * 0.45, 0.0, 1.0) * gk);
-      col += gold * gk * (inner * (0.1 + 0.08 * breathe) + halo * uNight * (0.2 + 0.1 * breathe));
+      float seam = 1.0 - smoothstep(0.02, 0.1 + 0.7 * fwXZ, cv.x);
+      col *= 1.0 - 0.1 * fall * gk;
+      col = mix(col, gold * 1.12, clamp(seam * fall * (0.45 + 0.55 * wave) * 1.25, 0.0, 1.0) * gk);
+      float g = fall * (0.07 + 0.07 * wave) + exp(-cr * cr / 2.0) * 0.12;
+      col += gold * gk * (g + halo * uNight * (0.12 + 0.1 * breathe + 0.25 * g));
     }
-    if (cr > 5.5) continue;
-    float edge = 3.6 + 0.9 * vnoise(vec2(atan(cd.y, cd.x) * 2.5, float(i) * 9.1));
-    // it fades out into the sand over half its width, and drifts of sand lie across it, so
-    // the cracks show in patches rather than as a clean disc
-    float k = (1.0 - smoothstep(edge - 2.6, edge, cr)) * (1.0 - uCavB[i].z) * sandW * (1.0 - smoothstep(60.0, 140.0, dist));
-    float bare = smoothstep(0.46, 0.66, fbm(p.xz * 0.8 + float(i) * 5.3) + 0.12 * k) * k;
-    vec2 cv = cells(p.xz / 0.75 + float(i) * 3.7);
-    float crack = 1.0 - smoothstep(0.03, 0.09 + 0.6 * fwXZ, cv.x);
-    col *= 1.0 - k * (0.07 + bare * (0.07 + 0.04 * cv.y + 0.4 * crack * (1.0 - smoothstep(12.0, 45.0, dist))));
   }
 
   // ---- deep in a cavern: past the daylight from its mouth the rock is nearly black, and
