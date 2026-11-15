@@ -141,6 +141,11 @@ export class Talk {
     this.more.style.display = 'none';
   }
 
+  /** A line from `tell` is still up. */
+  get telling(): boolean {
+    return this.note !== null && performance.now() < this.noteUntil;
+  }
+
   end(): void {
     this.script = null;
     this.say.classList.remove('is-on');
@@ -166,7 +171,7 @@ export class Talk {
       this.hasNear = this.hooks.find(this.near);
       this.cue.classList.toggle('is-on', this.hasNear);
       if (this.hasNear) this.place(this.cue, camera, this.near, 0.34, false);
-      const noted = this.note !== null && performance.now() < this.noteUntil;
+      const noted = this.telling;
       this.say.classList.toggle('is-on', noted);
       if (noted && this.note) this.place(this.say, camera, this.note, 0.32, true);
     }
