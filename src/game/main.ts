@@ -36,7 +36,8 @@ import { Massifs } from '../world/massifs';
 import { Save, loadSpawn, saveSpawn, clearSpawn, clearProgress } from './save';
 import { findName, isFindKind } from './finds';
 import { Talk, type Speaker } from './talk';
-import { HERDER, KEEPER, MINER, PILGRIM, TOWNSFOLK, TRAVELLER, WEAVER, type Line } from './lines';
+import { FOUND, HERDER, KEEPER, MINER, PILGRIM, TOWNSFOLK, TRAVELLER, WEAVER, type Line } from './lines';
+import { offeringAt } from './offerings';
 import { Beacons } from './beacons';
 import { Marks } from './marks';
 import { SpyglassView } from './spyglass';
@@ -573,7 +574,7 @@ function start() {
     if (save.data.roles.miner === 2) {
       // Once the pick has been swung, the miner has one thing more to give: the rod.
       if (!save.has('rod') && save.data.deeds.dug) return { lines: MINER.rod.map(text), done: () => given('rod') };
-      const pool = [...MINER.after, ...(save.has('rod') ? [] : [MINER.rodAsk, MINER.rodAsk]), ...(save.data.items.relic ? [...MINER.relic, ...MINER.relic] : [])];
+      const pool = [...MINER.after, ...(save.has('carpet') ? [] : MINER.carpet), ...(save.has('rod') ? [] : [MINER.rodAsk, MINER.rodAsk]), ...(save.data.items.relic ? [...MINER.relic, ...MINER.relic] : [])];
       // until a first cavern has been opened, the miner goes on pointing at one
       if (cav && save.data.opened.length === 0) pool.push(directions(MINER.remind, minerP.x, minerP.z, cav.x, cav.z), directions(MINER.remind, minerP.x, minerP.z, cav.x, cav.z));
       return { lines: [(lastLine = pick(pool, lastLine))] };
@@ -612,6 +613,13 @@ function start() {
     dust.puff(tmp, tmp2, 0.2);
     buzz(12);
   };
+  /** Say what a thing just picked up is, over the wanderer's head. */
+  const found = (t: keyof typeof FOUND) => {
+    const at = player.state.pos;
+    talk.tell({ x: at.x, y: at.y + 1.8, z: at.z }, text(FOUND[t]));
+  };
+  /** Each temple near holds the first of its tools the wanderer lacks, until it has given one. */
+  const layOffers = () => discoveries.setOffers((key) => offeringAt(key, (t) => save.has(t), save.data.gathered.includes(key)));
   let lampT = 0;
   const digAt = { x: 0, y: 0, z: 0 };
 
@@ -690,6 +698,7 @@ function start() {
         const pool = [...lines.any, ...(dark ? [...lines.night, ...lines.night] : [])];
         if (s.kind === 'pilgrim' && !save.has('chart')) pool.push(...PILGRIM.dial, ...PILGRIM.dial);
         if (s.kind === 'keeper' && save.data.items.relic) pool.push(...KEEPER.relic, ...KEEPER.relic);
+        if (s.kind === 'keeper' && discoveries.offerWithin(s.x, s.z, 90)) pool.push(...KEEPER.offering, ...KEEPER.offering);
         return { lines: [(lastLine = pick(pool, lastLine))] };
       }
       if (s.kind === 'traveller') {
@@ -718,7 +727,7 @@ function start() {
       }
       // The keeper of the market stall has a carpet, and wants something old for it.
       if (people.personAt(s.ref as number, folk) && folk.stall) {
-        if (save.has('carpet')) return { lines: [(lastLine = pick(WEAVER.after, lastLine))] };
+        if (save.has('carpet')) return { lines: [save.data.roles.weaver === 2 ? (lastLine = pick(WEAVER.after, lastLine)) : WEAVER.own] };
         if (save.data.items.relic) {
           return {
             lines: WEAVER.gift.map(text),
@@ -1931,7 +1940,16 @@ function start() {
         discoveries.setRope(null);
         given('rope');
         pickedUp(st.pos.x, st.pos.y + 0.4, st.pos.z);
-        talk.tell({ x: st.pos.x, y: st.pos.y + 1.8, z: st.pos.z }, 'A rope and a hook. Rock too steep to walk can be climbed now.');
+        found('rope');
+      }
+      // What a temple has left on the stone before its altar: one thing from each.
+      const offer = discoveries.offerNear(st.pos.x, st.pos.y, st.pos.z, 1.5);
+      if (offer) {
+        save.gather(offer.key);
+        given(offer.kind);
+        layOffers();
+        pickedUp(st.pos.x, st.pos.y + 1, st.pos.z);
+        found(offer.kind);
       }
       if (discoveries.lampNear(st.pos.x, st.pos.y, st.pos.z, 1.5)) {
         discoveries.setLamps([]); // one is enough: the other is left for nobody
@@ -1940,10 +1958,20 @@ function start() {
         pickedUp(st.pos.x, st.pos.y + 0.4, st.pos.z);
       }
     }
+    // The carpet that waits at the heart of a deep comes to whoever reaches it, on foot or in the air.
+    if (playing && discoveries.carpetNear(st.pos.x, st.pos.y, st.pos.z, 1.4)) {
+      discoveries.setCarpet(false);
+      player.carpet = figure.carpet = true;
+      given('carpet');
+      pickedUp(st.pos.x, st.pos.y + 1, st.pos.z);
+      found('carpet');
+    }
     // The miner's lamp lies out in the desert until it is carried back: by the nearest city's spring.
     lampT -= dt;
     if (lampT <= 0) {
       lampT = 1;
+      layOffers();
+      discoveries.setCarpet(!save.has('carpet'));
       people.minerLamp = save.data.roles.miner === 2;
       const at: { x: number; z: number }[] = [];
       if (save.data.roles.miner !== 2 && !save.data.items.lamp) {

@@ -19,6 +19,11 @@ const MAX_SPEED = 60;
 export const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
 const REACH = 0.38; // how far ahead of the feet a wall is felt
 const CARPET = 1.6; // a carpet flies this much faster, and climbs for twice as long
+
+/** Forward speed in flight, metres a second: a carpet is faster at the glide and at the boost alike. */
+export function flightSpeed(carpet: boolean, boost: boolean): number {
+  return (boost ? GLIDE_BOOST : GLIDE_SPEED) * (carpet ? CARPET : 1);
+}
 const TAP_GRACE = 0.12; // in flight a press waits this long before climbing, so a double tap can drop instead
 const DOUBLE_TAP = 0.3; // two presses this close together in flight drop you
 
@@ -478,7 +483,7 @@ export class Player {
         // down, so you can come to rest over a roof. Extra speed from a fast launch bleeds off.
         // Shift raises the glide speed and gets there in about a second.
         const fast = this.carpet ? CARPET : 1;
-        const want = wishing ? (input.run ? GLIDE_BOOST : GLIDE_SPEED) * fast * Math.min(1, wl) : 0;
+        const want = wishing ? flightSpeed(this.carpet, input.run) * Math.min(1, wl) : 0;
         if (hs > want) hs += (want - hs) * (1 - Math.exp(-dt * (wishing ? 0.8 : 2.2)));
         else hs = Math.min(want, hs + (input.run ? 30 : 14) * fast * dt);
       } else {
