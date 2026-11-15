@@ -250,3 +250,45 @@
   opacity: 0.45;
   background: rgba(239, 230, 216, 0.1);
 }
+
+/* Tools: left of the talk button, shown once the spyglass, flute or bedroll is owned.
+   These buttons share the talk button's shape, and none of the rules for when it shows or
+   which of its glyphs is drawn. */
+.aster-touch--play.aster-touch--talk .aster-touch__tool {
+  visibility: hidden;
+  opacity: 0;
+}
+
+.aster-touch--dig .aster-touch__talk.aster-touch__tool svg {
+  display: block;
+}
+
+.aster-touch__tools {
+  right: calc(env(safe-area-inset-right, 0px) + 164px);
+}
+
+.aster-touch--play.aster-touch--tools .aster-touch__tool.aster-touch__tools {
+  visibility: visible;
+  opacity: 0.28;
+  transition: opacity 200ms ease-out, background-color 120ms ease-out, visibility 0s;
+}
+
+.aster-touch--play.aster-touch--tools .aster-touch__tool.aster-touch__tools.is-held {
+  opacity: 0.45;
+  background: rgba(239, 230, 216, 0.1);
+}
+
+/* The fan: the owned tools, stacked upward from the Tools button. */
+.aster-touch__tool-item {
+  --aster-slot: 0;
+  right: calc(env(safe-area-inset-right, 0px) + 164px);
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 92px + var(--aster-slot) * 60px);
+  pointer-events: none;
+}
+
+.aster-touch--play.aster-touch--fan .aster-touch__tool.aster-touch__tool-item.is-owned {
+  visibility: visible;
+  opacity: 0.5;
+  pointer-events: auto;
+  transition: opacity 200ms ease-out, visibility 0s;
+}

@@ -147,6 +147,28 @@ const scaleNote = (m: Mood, idx: number): number => {
   return m.base + 12 * oct + m.scale[((idx % n) + n) % n];
 };
 
+// ------------------------------------------------------------ the flute
+
+/** The flute's lowest D (MIDI): D5, an octave over the plucks' day register. */
+const FLUTE_D = 74;
+
+/**
+ * The flute's phrases: [scale index, seconds] per note, slurred, in the current mode's
+ * pentatonic from FLUTE_D (index 5 is the octave). Each lasts 2 to 2.6 s; the last note is held.
+ */
+const FLUTE_PHRASES: readonly (readonly (readonly [number, number])[])[] = [
+  // up to the octave and held there: a call
+  [[0, 0.26], [1, 0.26], [2, 0.3], [4, 0.46], [5, 1.0]],
+  // a turn round the middle, settling down a step
+  [[2, 0.3], [3, 0.3], [4, 0.5], [3, 0.3], [2, 0.92]],
+  // from the top, down and back up
+  [[5, 0.48], [4, 0.26], [2, 0.3], [3, 1.06]],
+  // a little rise and fall, and home to the tonic
+  [[4, 0.34], [3, 0.2], [2, 0.2], [3, 0.38], [1, 0.3], [0, 0.98]],
+  // two leaps up, an answer below
+  [[1, 0.26], [2, 0.26], [4, 0.62], [2, 0.28], [4, 0.94]],
+];
+
 // ------------------------------------------------------------- the graph
 
 interface Graph {
@@ -969,6 +991,158 @@ export class AudioEngine {
       t += rand(0.26, 0.38);
     }
   }
+
+  private rodHum: { amp: GainNode; trem: OscillatorNode; depth: GainNode; tone: OscillatorNode } | null = null;
+  /**
+   * The dowsing rod's pull, 0..1, called every frame: a low hum felt more than heard, that
+   * rises a little and beats faster as the fork is drawn down. Silent at 0.
+   */
+  dowse(level: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return;
+    let h = this.rodHum;
+    if (!h) {
+      if (level <= 0.01) return;
+      const tone = ctx.createOscillator();
+      tone.setPeriodicWave(ctx.createPeriodicWave(new Float32Array([0, 0, 0, 0]), new Float32Array([0, 1, 0.35, 0.12])));
+      const amp = ctx.createGain();
+      amp.gain.value = 0;
+      // the beat: the level rides up and down under a slow wobble
+      const beat = ctx.createGain();
+      beat.gain.value = 0.7;
+      const trem = ctx.createOscillator();
+      const depth = ctx.createGain();
+      depth.gain.value = 0.3;
+      trem.connect(depth).connect(beat.gain);
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 520;
+      tone.connect(beat).connect(lp).connect(amp).connect(g.sfxBus);
+      tone.start();
+      trem.start();
+      h = this.rodHum = { amp, trem, depth, tone };
+    }
+    const l = Math.min(1, Math.max(0, level));
+    const t = ctx.currentTime;
+    h.amp.gain.setTargetAtTime(l <= 0.01 ? 0 : 0.012 + 0.05 * l * l, t, 0.15);
+    h.tone.frequency.setTargetAtTime(98 + 49 * l, t, 0.25);
+    h.trem.frequency.setTargetAtTime(1.2 + 9 * l * l, t, 0.2);
+  }
+
+  /**
+   * A short phrase on a reed flute, played by the wanderer: four to six slurred notes, breathy,
+   * in the current mode's pentatonic an octave over the plucks, never the same phrase twice
+   * running. Returns how long it lasts (s). Before audio has started it plays nothing and still
+   * returns the length.
+   */
+  flute(): number {
+    let k: number;
+    if (this.lastFlute < 0) k = Math.floor(Math.random() * FLUTE_PHRASES.length);
+    else {
+      k = Math.floor(Math.random() * (FLUTE_PHRASES.length - 1));
+      if (k >= this.lastFlute) k++;
+    }
+    this.lastFlute = k;
+    const phrase = FLUTE_PHRASES[k];
+    let len = 0;
+    for (const [, d] of phrase) len += d;
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return len;
+    const mood = MOODS[this.dominantMood()];
+    // from D5 up whatever the mode's own register: a flute sits over the plucks and the chime
+    const lift = 12 * Math.round((FLUTE_D - mood.base) / 12);
+    const note = (idx: number): number => midiHz(scaleNote(mood, idx) + lift);
+    const t0 = ctx.currentTime + 0.04;
+    const end = t0 + len;
+    const peak = 0.05;
+
+    // the tone: a soft fundamental with a little of the octave and twelfth, rounded off
+    const osc = ctx.createOscillator();
+    osc.setPeriodicWave(ctx.createPeriodicWave(new Float32Array([0, 0, 0, 0, 0]), new Float32Array([0, 1, 0.2, 0.07, 0.025])));
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 2600;
+    lp.Q.value = 0.3;
+    const amp = ctx.createGain();
+    // vibrato, eased in on each note so only the held ones waver
+    const vib = ctx.createOscillator();
+    vib.frequency.value = rand(4.6, 5.4);
+    const vibDepth = ctx.createGain();
+    vibDepth.gain.value = 0;
+    vib.connect(vibDepth).connect(osc.detune);
+    // breath: noise in a band round each note, and a softer airy hiss over it
+    const air = ctx.createBufferSource();
+    air.buffer = g.noise;
+    air.loop = true;
+    const airBP = ctx.createBiquadFilter();
+    airBP.type = 'bandpass';
+    airBP.Q.value = 1.6;
+    const airHP = ctx.createBiquadFilter();
+    airHP.type = 'highpass';
+    airHP.frequency.value = 3200;
+    const airHG = ctx.createGain();
+    airHG.gain.value = 0.15;
+    const airAmp = ctx.createGain();
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.08, 0.08);
+    const space = ctx.createGain();
+    space.gain.value = 0.3;
+
+    osc.connect(lp).connect(amp).connect(pan);
+    air.connect(airBP).connect(airAmp);
+    air.connect(airHP).connect(airHG).connect(airAmp);
+    airAmp.connect(pan);
+    pan.connect(g.sfxBus);
+    pan.connect(space).connect(g.chimeBus); // a little of the chime's room round it
+
+    let t = t0;
+    let prev = 0;
+    amp.gain.setValueAtTime(0, t0);
+    airAmp.gain.setValueAtTime(0, t0);
+    for (let i = 0; i < phrase.length; i++) {
+      const [idx, d] = phrase[i];
+      const f = note(idx) * Math.pow(2, rand(-4, 4) / 1200);
+      const last = i === phrase.length - 1;
+      const lvl = peak * (last ? 0.92 : rand(0.85, 1)) * Math.min(1.1, Math.pow(700 / f, 0.25));
+      if (i === 0) {
+        // a soft start, scooped up from a little flat
+        osc.frequency.setValueAtTime(f * 0.97, t);
+        osc.frequency.exponentialRampToValueAtTime(f, t + 0.09);
+        amp.gain.linearRampToValueAtTime(lvl, t + 0.11);
+      } else {
+        // slurred: a quick glide and a small dip, as a finger lifts
+        osc.frequency.setValueAtTime(prev, t);
+        osc.frequency.exponentialRampToValueAtTime(f, t + 0.035);
+        amp.gain.setTargetAtTime(lvl * 0.6, t - 0.02, 0.012);
+        amp.gain.setTargetAtTime(lvl, t + 0.025, 0.03);
+      }
+      airBP.frequency.setValueAtTime(f * 1.5, t);
+      // a puff of breath at each note's start, settling to a thread under it
+      const breath = lvl * (i === 0 ? 0.9 : 0.55);
+      airAmp.gain.setTargetAtTime(breath, t - 0.01, 0.012);
+      airAmp.gain.setTargetAtTime(lvl * 0.22, t + 0.05, 0.06);
+      vibDepth.gain.setValueAtTime(0, t);
+      if (d > 0.35) vibDepth.gain.linearRampToValueAtTime(rand(9, 14), t + Math.min(d, 0.9) * 0.85);
+      if (last) {
+        // swell a touch, then let the breath go
+        amp.gain.setTargetAtTime(lvl * 1.06, t + 0.08, d * 0.3);
+        amp.gain.setTargetAtTime(0, end - 0.32, 0.09);
+        airAmp.gain.setTargetAtTime(0, end - 0.3, 0.07);
+      }
+      prev = f;
+      t += d;
+    }
+    const stop = end + 0.5;
+    for (const s of [osc, vib, air]) {
+      s.start(t0);
+      s.stop(stop);
+    }
+    osc.onended = () => disconnectAll(osc, lp, amp, vib, vibDepth, air, airBP, airHP, airHG, airAmp, pan, space);
+    return len;
+  }
+  private lastFlute = -1;
 
   dispose(): void {
     if (this.disposed) return;

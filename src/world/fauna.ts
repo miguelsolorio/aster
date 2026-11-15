@@ -48,6 +48,17 @@ const CALM_FLEE = 1.2;
 export const MOUNT_REACH = 3.2;
 /** The back's height over the ground at scale 1 (m). */
 export const MOUNT_BACK = 1.3;
+/** How far (m) the flute's call carries to a beast that can be ridden. */
+export const CALL_R = 220;
+/** A called beast stops this far (m) short of whoever called it. */
+const CALL_STOP = 2.5;
+/** How long (s) it waits by them once there, and how long it keeps trying to get there. */
+const CALL_WAIT = 40;
+const CALL_TRY = 45;
+/** It gives up if the caller gets this far (m) off. */
+const CALL_LOSE = 400;
+/** Key base for a herd of one: a beast got off, or one called away from its herd. */
+const SOLO_KEY = 1.5e12;
 const GOAT_COATS: V3[] = [
   [0.16, 0.13, 0.12],
   [0.42, 0.28, 0.18],
@@ -1587,6 +1598,11 @@ export class Fauna {
       const i = h.animals.indexOf(a);
       if (i < 0) continue;
       h.animals.splice(i, 1);
+      if (a === this.come) {
+        // ridden now, as any other: the call is over, and its herd of one goes with it
+        if (h === this.comeH && h.key >= SOLO_KEY && h.animals.length === 0) this.herds.delete(h.key);
+        this.come = this.comeH = this.comeFrom = null;
+      }
       this.ridden = a;
       a.state = 0;
       a.spd = 0;
@@ -1606,8 +1622,144 @@ export class Fauna {
     a.t = 2;
     a.tx = a.x;
     a.tz = a.z;
-    const key = 1.5e12 + this.soloKey++;
+    const key = SOLO_KEY + this.soloKey++;
     this.herds.set(key, { key, sp: a.sp, hx: a.x, hz: a.z, animals: [a], pres: 1, alarm: 0, small: false, follow: null, grace: 3 });
+  }
+
+  // ---------------------------------------------------------------- calling
+
+  /** The beast answering the flute, the herd of one it walks in meanwhile, and the herd it left (null: it was alone). */
+  private come: Animal | null = null;
+  private comeH: Herd | null = null;
+  private comeFrom: Herd | null = null;
+  /** 0 on its way, 1 waiting by the caller, 2 going back to its herd. */
+  private comePhase = 0;
+  private comeT = 0;
+  /** Turning on the spot to face the caller again. */
+  private comeTurn = false;
+
+  /** A beast called on the flute is on its way, or waiting by the caller. */
+  get called(): boolean {
+    return this.come !== null && this.comePhase < 2;
+  }
+
+  /**
+   * A call on the flute from (x, z): the nearest wild ass or oryx within CALL_R leaves its herd
+   * and comes to stand by the caller, unafraid, for CALL_WAIT s (or till ridden). False if none is
+   * in reach. Calling again while one is coming or waiting only starts its time over.
+   */
+  call(x: number, z: number): boolean {
+    let a = this.come;
+    if (!a || this.comePhase === 2) {
+      let bh: Herd | null = null;
+      let bd = CALL_R;
+      a = null;
+      for (const h of this.herds.values()) {
+        if (!RIDEABLE[h.sp] || h.pres < 0.5) continue;
+        for (const b of h.animals) {
+          const d = Math.hypot(b.x - x, b.z - z);
+          if (d < bd) {
+            bd = d;
+            a = b;
+            bh = h;
+          }
+        }
+      }
+      if (!a || !bh) return false;
+      if (a !== this.come) {
+        this.letGo();
+        if (bh.animals.length === 1) {
+          // alone already: it keeps its own herd of one
+          this.comeH = bh;
+          this.comeFrom = null;
+        } else {
+          bh.animals.splice(bh.animals.indexOf(a), 1);
+          const key = SOLO_KEY + this.soloKey++;
+          this.comeH = { key, sp: a.sp, hx: a.x, hz: a.z, animals: [a], pres: 1, alarm: 0, small: false, follow: null, grace: 0 };
+          this.herds.set(key, this.comeH);
+          this.comeFrom = bh;
+        }
+        this.come = a;
+      }
+    }
+    this.comePhase = 0;
+    this.comeT = 0;
+    this.comeTurn = false;
+    a.state = 1;
+    a.avT = 0;
+    if (this.comeH) this.comeH.alarm = 0;
+    this.onCall?.(a.sp, Math.hypot(a.x - x, a.z - z));
+    return true;
+  }
+
+  /** Forget the call: the beast stays where it is, a herd of one, and behaves as any other. */
+  private letGo(): void {
+    const h = this.comeH;
+    const a = this.come;
+    if (h && a) {
+      h.hx = a.x;
+      h.hz = a.z;
+      h.grace = 0;
+      a.state = 0;
+      a.t = 1 + Math.random() * 3;
+    }
+    this.come = null;
+    this.comeH = null;
+    this.comeFrom = null;
+    this.comePhase = 0;
+  }
+
+  /** Done waiting (or never got there): back to the herd it left, if that is still about. */
+  private goBack(): void {
+    const from = this.comeFrom;
+    const a = this.come;
+    if (!a || !this.comeH || !from || from.animals.length === 0 || this.herds.get(from.key) !== from) {
+      this.letGo();
+      return;
+    }
+    this.comePhase = 2;
+    this.comeT = 0;
+    this.comeH.grace = 0;
+    a.state = 0;
+    a.t = 1 + Math.random() * 2;
+  }
+
+  /** The called beast's clock, before the herds move: keeps it calm, gives up, or takes it back into its herd. */
+  private stepCall(dt: number, px: number, pz: number): void {
+    const a = this.come;
+    const h = this.comeH;
+    if (!a || !h) return;
+    if (this.herds.get(h.key) !== h || !h.animals.includes(a)) {
+      this.come = this.comeH = this.comeFrom = null;
+      return;
+    }
+    this.comeT += dt;
+    if (this.comePhase < 2) {
+      // its own herd of one goes where it goes, and nothing the caller does spooks it
+      h.hx = a.x;
+      h.hz = a.z;
+      h.alarm = 0;
+      h.grace = Math.max(h.grace, 0.5);
+      const d = Math.hypot(a.x - px, a.z - pz);
+      if (this.comePhase === 0 ? this.comeT > CALL_TRY || d > CALL_LOSE : this.comeT > CALL_WAIT) this.goBack();
+      return;
+    }
+    const from = this.comeFrom;
+    if (!from || from.animals.length === 0 || this.herds.get(from.key) !== from) {
+      this.letGo();
+      return;
+    }
+    h.hx = from.hx;
+    h.hz = from.hz;
+    if (h.alarm <= 0 && Math.hypot(a.x - from.hx, a.z - from.hz) < SPEC[a.sp].roam) {
+      // among them again
+      h.animals.length = 0;
+      this.herds.delete(h.key);
+      from.animals.push(a);
+      a.state = 0;
+      a.t = 1 + Math.random() * 3;
+      this.come = this.comeH = this.comeFrom = null;
+    } else if (this.comeT > 240) this.letGo();
   }
 
   /** Where the ridden animal stands and faces, and how fast it goes (valid while mounted). */
@@ -1685,6 +1837,7 @@ export class Fauna {
       this.scanT = SCAN_EVERY;
       this.scan(px, pz);
     }
+    this.stepCall(dt, px, pz);
     this.n = 0;
     let nearestFox = Infinity;
     for (const h of this.herds.values()) {
@@ -1786,6 +1939,34 @@ export class Fauna {
         targetSpd = spec.run * (herd ? 0.85 + a.seed * 0.15 : 1);
         // sandgrouse go up all together, climbing hard at first
         if (sp === GROUSE) a.fly += (4 + a.seed * 4 - a.fly) * k(1.4);
+      } else if (a === this.come) {
+        // answering the flute: loping in from far off, easing to a trot and a walk as it nears the
+        // caller (the gait follows the speed), and stopping short to face them
+        a.state = 1;
+        const toward = Math.atan2(-dx, -dz);
+        if (this.comePhase === 2) {
+          const from = this.comeFrom as Herd;
+          const ex = from.hx - a.x;
+          const ez = from.hz - a.z;
+          targetYaw = Math.atan2(ex, ez);
+          targetSpd = spec.walk * (Math.hypot(ex, ez) > spec.roam * 2 ? 2.4 : 1);
+        } else if (this.comePhase === 0 && d - CALL_STOP > 0.25) {
+          const gap = d - CALL_STOP;
+          targetYaw = toward;
+          targetSpd = Math.min(spec.run * 0.75, gap < 2 ? spec.walk * Math.max(0.3, gap / 2) : spec.walk + (gap - 2) * 0.3);
+        } else {
+          if (this.comePhase === 0) {
+            this.comePhase = 1;
+            this.comeT = 0;
+          }
+          a.state = 0;
+          // stands facing them, shifting round when they move off to one side; grazes after a while
+          const err = Math.abs(angDiff(toward, a.yaw));
+          if (err > 0.7) this.comeTurn = true;
+          else if (err < 0.12) this.comeTurn = false;
+          if (this.comeTurn) targetYaw = toward;
+          poseT = this.comeT > 6 && Math.sin(f.time * 0.21 + a.seed * 30) > 0.2 ? 1 : 0;
+        }
       } else if (a.fly > 0) {
         // coming down again a little way on: glide in, slowing, and land running
         a.fly = Math.max(0, a.fly - dt * 2.4);

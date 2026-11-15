@@ -1,21 +1,34 @@
 // What the wanderer has been given and who they have met. One versioned key in
 // localStorage; the world itself is seeded, so only the changes are stored.
 //
-// Testing: ?tools=board,carpet,pick grants tools for this visit without saving them,
+// Testing: ?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope grants tools for this visit without saving them,
 // and ?reset clears the save and the saved spawn before the game starts.
 
 import { isFindKind, type FindKind } from './finds';
 
-export type Tool = 'board' | 'carpet' | 'pick';
-export const TOOLS: Tool[] = ['board', 'carpet', 'pick'];
+export type Tool = 'board' | 'carpet' | 'pick' | 'spyglass' | 'flute' | 'bedroll' | 'rod' | 'chart' | 'rope';
+export const TOOLS: Tool[] = ['board', 'carpet', 'pick', 'spyglass', 'flute', 'bedroll', 'rod', 'chart', 'rope'];
 
 /** Small things carried for a while, shown on the figure. */
 export type Item = 'lamp' | 'relic';
 export const ITEMS: Item[] = ['lamp', 'relic'];
 
 /** People with something to ask and something to give. Each is 0 before, 1 asked (pending), 2 done. */
-export type Role = 'miner';
-export const ROLES: Role[] = ['miner'];
+export type Role = 'miner' | 'weaver';
+export const ROLES: Role[] = ['miner', 'weaver'];
+
+/** Things the wanderer has done once, that people ask about. */
+export type Deed = 'rode' | 'dug';
+export const DEEDS: Deed[] = ['rode', 'dug'];
+
+const SIGHTED_CAP = 256;
+
+/** Where the bedroll is laid, and which way the wanderer faced. */
+export interface Camp {
+  x: number;
+  z: number;
+  facing: number;
+}
 
 export interface SaveData {
   v: 1;
@@ -35,6 +48,14 @@ export interface SaveData {
   introSeen: boolean;
   /** The kinds of discovery come upon so far, each once, in the order they were found. */
   found: FindKind[];
+  /** Things the wanderer has done once. */
+  deeds: Record<Deed, boolean>;
+  /** Sites marked through the spyglass (by site key), oldest first. */
+  sighted: number[];
+  /** Where each of those lies: x then z, a pair for every key, in the same order. */
+  sightedAt: number[];
+  /** Where the bedroll is laid, if it is. */
+  camp: Camp | null;
 }
 
 const KEY = 'aster.save';
@@ -91,18 +112,30 @@ export function clearProgress(): void {
 
 const fresh = (): SaveData => ({
   v: 1,
-  tools: { board: false, carpet: false, pick: false },
+  tools: { board: false, carpet: false, pick: false, spyglass: false, flute: false, bedroll: false, rod: false, chart: false, rope: false },
   talked: false,
   items: { lamp: false, relic: false },
-  roles: { miner: 0 },
+  roles: { miner: 0, weaver: 0 },
   opened: [],
   taken: [],
   woken: [],
   introSeen: false,
   found: [],
+  deeds: { rode: false, dug: false },
+  sighted: [],
+  sightedAt: [],
+  camp: null,
 });
 
 const keys = (v: unknown): number[] => (Array.isArray(v) ? v.filter((k): k is number => typeof k === 'number' && Number.isFinite(k)).slice(0, 4096) : []);
+
+const readCamp = (v: unknown): Camp | null => {
+  if (!v || typeof v !== 'object') return null;
+  const { x, z, facing } = v as Partial<Camp>;
+  if (typeof x !== 'number' || typeof z !== 'number' || typeof facing !== 'number') return null;
+  if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(facing)) return null;
+  return { x, z, facing };
+};
 
 export class Save {
   readonly data: SaveData;
@@ -130,6 +163,12 @@ export class Save {
         // A save from before the intro existed belongs to someone who has already played.
         this.data.introSeen = raw.introSeen === undefined ? true : raw.introSeen === true;
         if (Array.isArray(raw.found)) this.data.found = [...new Set((raw.found as unknown[]).filter(isFindKind))];
+        for (const d of DEEDS) this.data.deeds[d] = raw.deeds?.[d] === true;
+        this.data.sighted = keys(raw.sighted).slice(-SIGHTED_CAP);
+        this.data.sightedAt = keys(raw.sightedAt).slice(-SIGHTED_CAP * 2);
+        // a mark with no place to stand it is no mark
+        if (this.data.sightedAt.length !== this.data.sighted.length * 2) this.data.sighted = this.data.sightedAt = [];
+        this.data.camp = readCamp(raw.camp);
       }
     } catch {
       /* unreadable save: start again */
@@ -141,6 +180,11 @@ export class Save {
 
   has(t: Tool): boolean {
     return this.data.tools[t] || this.lent.has(t);
+  }
+
+  /** How many of the tools are in hand (lent ones count). */
+  toolCount(): number {
+    return TOOLS.filter((t) => this.has(t)).length;
   }
 
   give(t: Tool): void {
@@ -201,6 +245,41 @@ export class Save {
     this.data.found.push(kind);
     this.write();
     return true;
+  }
+
+  /** Something done for the first time. */
+  setDeed(d: Deed): void {
+    if (this.data.deeds[d]) return;
+    this.data.deeds[d] = true;
+    this.write();
+  }
+
+  /** A site has been marked through the spyglass. True if it was newly marked. */
+  sight(key: number, x: number, z: number): boolean {
+    if (this.data.sighted.includes(key)) return false;
+    this.data.sighted.push(key);
+    this.data.sightedAt.push(x, z);
+    const over = this.data.sighted.length - SIGHTED_CAP;
+    if (over > 0) {
+      this.data.sighted.splice(0, over);
+      this.data.sightedAt.splice(0, over * 2);
+    }
+    this.write();
+    return true;
+  }
+
+  unsight(key: number): void {
+    const i = this.data.sighted.indexOf(key);
+    if (i < 0) return;
+    this.data.sighted.splice(i, 1);
+    this.data.sightedAt.splice(i * 2, 2);
+    this.write();
+  }
+
+  /** Lay the bedroll here, or pick it up (null). */
+  setCamp(c: Camp | null): void {
+    this.data.camp = c ? { x: c.x, z: c.z, facing: c.facing } : null;
+    this.write();
   }
 
   private write(): void {

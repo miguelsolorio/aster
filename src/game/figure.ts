@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { PlayerState, Uniforms } from './contract';
 import { strideLength } from './player';
 import { STYLE_GLSL } from '../render/styleGlsl';
-import { CHOSEN, TRIM, boardGeometry, carpetGeometry, lampGeometry, pickGeometry, relicGeometry, rollGeometry, rugMaterial, solidMaterial, trimGeometry } from './equipment';
+import { CHOSEN, TRIM, bedrollGeometry, boardGeometry, carpetGeometry, chartGeometry, fluteGeometry, lampGeometry, pickGeometry, relicGeometry, rodGeometry, rollGeometry, ropeCoilGeometry, rugMaterial, solidMaterial, spyglassGeometry, trimGeometry } from './equipment';
 
 // The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
 // legs, a plain white face and a round hood.
@@ -304,6 +304,29 @@ export class Figure {
   flourish = 0;
   private lampMesh: THREE.Mesh;
   private relicMesh: THREE.Mesh;
+  /** The tools found later, each worn where it can be seen: glass and rope at the right hip, chart at the left, flute in the sash, bedroll across the shoulders. */
+  spyglass = false;
+  flute = false;
+  bedroll = false;
+  rod = false;
+  chart = false;
+  rope = false;
+  /** 0..1 the flute is at the lips. */
+  piping = 0;
+  /** 0..1 the rod is held out in both hands, and how far its tip is pulled down (0..1). */
+  dowsing = 0;
+  dip = 0;
+  /** 0..1 hauling up a rock face on the rope: the arms reach up in turn. */
+  climbing = 0;
+  private pipe = 0;
+  private dowse = 0;
+  private climb = 0;
+  private glassMesh: THREE.Mesh;
+  private fluteMesh: THREE.Mesh;
+  private bedMesh: THREE.Mesh;
+  private rodMesh: THREE.Mesh;
+  private chartMesh: THREE.Mesh;
+  private ropeMesh: THREE.Mesh;
 
   constructor(u: Uniforms) {
     this.group.rotation.order = 'YXZ';
@@ -384,6 +407,14 @@ export class Figure {
     this.lampMesh = add(t, lampGeometry(), solid);
     this.relicMesh = add(t, relicGeometry(), solid);
     this.lampMesh.visible = this.relicMesh.visible = false;
+    this.glassMesh = add(t, spyglassGeometry(), solid);
+    this.fluteMesh = add(t, fluteGeometry(), solid);
+    this.bedMesh = add(t, bedrollGeometry(), solid);
+    this.rodMesh = add(t, rodGeometry(), solid);
+    this.chartMesh = add(t, chartGeometry(), solid);
+    // (the coil is made lying flat; worn, it hangs on edge from the belt)
+    this.ropeMesh = add(t, ropeCoilGeometry().translate(0, -0.058, 0).scale(0.8, 0.8, 0.8), solid);
+    for (const m of [this.glassMesh, this.fluteMesh, this.bedMesh, this.rodMesh, this.chartMesh, this.ropeMesh]) m.visible = false;
     this.boardBack.visible = this.boardFoot.visible = this.rug.visible = this.roll.visible = this.pickMesh.visible = false;
     this.setBoard(CHOSEN.board);
     this.setCarpet(CHOSEN.carpet);
@@ -574,6 +605,63 @@ export class Figure {
       this.relicMesh.position.set(-0.24, 0.13 + 0.3 * this.flourish, 0.07);
       this.relicMesh.rotation.set(0, t * 0.6, Math.sin(a + 1) * 0.2 * this.amp);
       this.relicMesh.scale.setScalar(pop);
+    }
+    // The later tools. Each hangs outside the cloak and swings a little with the walk.
+    const sw = Math.sin(a) * this.amp;
+    this.glassMesh.visible = this.spyglass;
+    if (this.spyglass) {
+      // at the right hip, forward of where a lamp hangs, eyepiece up
+      this.glassMesh.position.set(0.19, 0.27, 0.15);
+      this.glassMesh.rotation.set(Math.PI + 0.18 + sw * 0.16 - this.pitch * 0.5, 0, -0.14);
+    }
+    this.chartMesh.visible = this.chart;
+    if (this.chart) {
+      // slung behind the left hip, slanting back
+      this.chartMesh.position.set(-0.22, 0.16, -0.1);
+      this.chartMesh.rotation.set(-0.55 + sw * 0.1, 0, 0.3);
+    }
+    this.ropeMesh.visible = this.rope;
+    if (this.rope) {
+      this.ropeMesh.position.set(0.27, 0.1, -0.07);
+      this.ropeMesh.rotation.set(sw * 0.12 - this.pitch * 0.5, 0.25, -Math.PI / 2 + 0.12);
+    }
+    // The bedroll rides across the back above the carpet's roll, outside the board.
+    this.bedMesh.visible = this.bedroll;
+    if (this.bedroll) this.bedMesh.position.set(0, this.roll.visible ? 0.33 : 0.2, this.boardBack.visible ? -0.37 : -0.3);
+    // The flute sits in the sash, slantwise across the front, until it is played: then both
+    // hands bring it up to the lips and it points down and out.
+    this.pipe += (this.piping - this.pipe) * k(9);
+    this.fluteMesh.visible = this.flute;
+    if (this.flute) {
+      const p = this.pipe * this.pipe * (3 - 2 * this.pipe);
+      const breath = Math.sin(t * 5.3) * 0.012 * p;
+      this.fluteMesh.position.set(0.12 - 0.12 * p, 0.1 + 0.27 * p, 0.215 + 0.135 * p + breath);
+      this.fluteMesh.rotation.set(-0.12 - 0.55 * p, 0, 0.95 * (1 - p));
+      if (p > 0.05) {
+        this.reach(this.arms[0], -0.035, 0.5, 0.26, p);
+        this.reach(this.arms[1], 0.035, 0.43, 0.3, p);
+      }
+    }
+    // The rod is carried at the left hip, fork down. Held, it is level out in front in both
+    // hands, trembling, and its tip is drawn down as the ground under it answers.
+    this.dowse += (this.dowsing - this.dowse) * k(6);
+    this.rodMesh.visible = this.rod;
+    if (this.rod) {
+      const d = this.dowse * this.dowse * (3 - 2 * this.dowse);
+      const shake = (Math.sin(t * 31) + Math.sin(t * 47 + 1)) * 0.012 * d * (0.3 + this.dip);
+      this.rodMesh.position.set(-0.2 + 0.2 * d, 0.2 + 0.06 * d, 0.12 + 0.12 * d);
+      this.rodMesh.rotation.set((1 - d) * 1.5 + d * (0.08 + this.dip * 1.0) + shake, (1 - d) * 0.4, (1 - d) * 0.2);
+      if (d > 0.05 && this.pipe < 0.05) {
+        this.reach(this.arms[0], -0.095, 0.26, 0.24, d);
+        this.reach(this.arms[1], 0.095, 0.26, 0.24, d);
+      }
+    }
+    // Hauling up a face on the rope: hand over hand above the head.
+    this.climb += (this.climbing - this.climb) * k(8);
+    if (this.climb > 0.05) {
+      const h = Math.sin(t * 5.5);
+      this.reach(this.arms[0], -0.12, 0.62 + 0.14 * h, 0.2, this.climb);
+      this.reach(this.arms[1], 0.12, 0.62 - 0.14 * h, 0.2, this.climb);
     }
     if (riding) {
       const tiltT = st.grounded ? -Math.atan(m.slopeAlong) : -0.45 * Math.atan2(st.vel.y, Math.max(st.speed, 4));

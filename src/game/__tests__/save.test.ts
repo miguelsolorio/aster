@@ -25,7 +25,8 @@ beforeEach(() => {
 describe('Save', () => {
   it('starts fresh with empty storage', () => {
     const s = new Save(qs());
-    expect(s.data.tools).toEqual({ board: false, carpet: false, pick: false });
+    expect(Object.values(s.data.tools).every((v) => v === false)).toBe(true);
+    expect(Object.keys(s.data.tools)).toHaveLength(9);
     expect(s.data.talked).toBe(false);
     expect(s.data.roles.miner).toBe(0);
     expect(s.data.opened).toEqual([]);
@@ -106,7 +107,7 @@ describe('Save', () => {
       JSON.stringify({ v: 1, tools: { board: true, carpet: 'yes' }, talked: true, roles: { miner: 7 }, opened: [1, 'x', null, NaN, 2], taken: 'nope' }),
     );
     const d = new Save(qs()).data;
-    expect(d.tools).toEqual({ board: true, carpet: false, pick: false });
+    expect(d.tools).toMatchObject({ board: true, carpet: false, pick: false, rope: false });
     expect(d.talked).toBe(true);
     expect(d.items).toEqual({ lamp: false, relic: false });
     expect(d.roles.miner).toBe(0);
@@ -179,5 +180,71 @@ describe('spawn', () => {
     // JSON has no NaN/Infinity literal; 1e999 parses to Infinity.
     store.setItem('aster.spawn', '{"x":1e999,"z":2,"facing":0}');
     expect(loadSpawn()).toBeNull();
+  });
+});
+
+describe('Save: tools and deeds', () => {
+  it('loads an old v1 save without the new fields', () => {
+    store.setItem('aster.save', JSON.stringify({ v: 1, tools: { board: true }, talked: true, roles: { miner: 2 } }));
+    const s = new Save(qs());
+    expect(s.has('board')).toBe(true);
+    expect(s.has('rope')).toBe(false);
+    expect(s.data.roles.weaver).toBe(0);
+    expect(s.data.deeds).toEqual({ rode: false, dug: false });
+    expect(s.data.sighted).toEqual([]);
+    expect(s.data.camp).toBeNull();
+    expect(s.toolCount()).toBe(1);
+  });
+
+  it('round-trips deeds, sights, camp and the weaver', () => {
+    const a = new Save(qs());
+    a.give('spyglass');
+    a.setDeed('rode');
+    a.setDeed('rode');
+    a.setRole('weaver', 1);
+    expect(a.sight(7, 10, -20)).toBe(true);
+    expect(a.sight(7, 10, -20)).toBe(false);
+    a.setCamp({ x: 1.5, z: -2, facing: 0.5 });
+    const b = new Save(qs());
+    expect(b.has('spyglass')).toBe(true);
+    expect(b.data.deeds).toEqual({ rode: true, dug: false });
+    expect(b.data.roles.weaver).toBe(1);
+    expect(b.data.sighted).toEqual([7]);
+    expect(b.data.sightedAt).toEqual([10, -20]);
+    expect(b.data.camp).toEqual({ x: 1.5, z: -2, facing: 0.5 });
+    b.setCamp(null);
+    expect(new Save(qs()).data.camp).toBeNull();
+  });
+
+  it('unsights, and caps the sighted list at 256 dropping the oldest', () => {
+    const s = new Save(qs());
+    for (let i = 0; i < 260; i++) s.sight(i, i, -i);
+    expect(s.data.sighted).toHaveLength(256);
+    expect(s.data.sighted[0]).toBe(4);
+    expect(s.data.sighted.at(-1)).toBe(259);
+    s.unsight(10);
+    s.unsight(99999);
+    expect(s.data.sighted).toHaveLength(255);
+    expect(s.data.sighted.includes(10)).toBe(false);
+    expect(s.data.sightedAt).toHaveLength(510);
+    expect(s.data.sightedAt.slice(0, 2)).toEqual([4, -4]);
+    expect(new Save(qs()).data.sighted).toHaveLength(255);
+  });
+
+  it('rejects bad camp data', () => {
+    for (const camp of [{ x: 'a', z: 1, facing: 0 }, { x: 1, z: null, facing: 0 }, { x: 1, z: 1 }, 'camp', 5, [1, 2]]) {
+      store.setItem('aster.save', JSON.stringify({ v: 1, camp }));
+      expect(new Save(qs()).data.camp).toBeNull();
+    }
+    store.setItem('aster.save', '{"v":1,"camp":{"x":1e999,"z":0,"facing":0}}');
+    expect(new Save(qs()).data.camp).toBeNull();
+  });
+
+  it('lends every tool through ?tools= without saving', () => {
+    const s = new Save(qs('tools=spyglass,flute,bedroll,rod,chart,rope,nope'));
+    for (const t of ['spyglass', 'flute', 'bedroll', 'rod', 'chart', 'rope'] as const) expect(s.has(t)).toBe(true);
+    expect(s.has('board')).toBe(false);
+    expect(s.toolCount()).toBe(6);
+    expect(new Save(qs()).toolCount()).toBe(0);
   });
 });

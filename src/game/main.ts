@@ -16,7 +16,7 @@ import { Props } from '../world/props';
 import { blockedAt } from '../world/avoid';
 import { Cities } from '../city/cities';
 import { FootpathNet } from '../city/footpaths';
-import { Caravans, ROLE_KEEPER, ROLE_PILGRIM } from '../city/caravans';
+import { Caravans, ROLE_HERDER, ROLE_KEEPER, ROLE_PILGRIM } from '../city/caravans';
 import { Waymarks } from '../city/waymarks';
 import { People } from '../city/people';
 import { Figure } from './figure';
@@ -35,7 +35,11 @@ import { Massifs } from '../world/massifs';
 import { Save, loadSpawn, saveSpawn, clearSpawn, clearProgress } from './save';
 import { findName, isFindKind } from './finds';
 import { Talk, type Speaker } from './talk';
-import { KEEPER, MINER, PILGRIM, TOWNSFOLK, TRAVELLER, type Line } from './lines';
+import { HERDER, KEEPER, MINER, PILGRIM, TOWNSFOLK, TRAVELLER, WEAVER, type Line } from './lines';
+import { Marks } from './marks';
+import { SpyglassView } from './spyglass';
+import { SleepView } from './sleep';
+import { bedGeometry, hearthGeometry, solidMaterial } from './equipment';
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
@@ -62,6 +66,10 @@ function start() {
   for (const k of Object.keys(DEFAULTS) as Array<keyof Params>) {
     if (k !== 'glow' && k !== 'fog') u[cap(k)] = { value: DEFAULTS[k] };
   }
+
+  // The star chart's line in the night sky: how bright, and the way it points over the ground.
+  u.uChart = { value: 0 };
+  u.uChartDir = { value: new THREE.Vector2(1, 0) };
 
   const qs = new URLSearchParams(location.search);
   const day = new DayCycle(u, qs.has('day') ? Number(qs.get('day')) : Math.random());
@@ -239,6 +247,54 @@ function start() {
   figure.lamp = save.data.items.lamp;
   figure.relic = save.data.items.relic;
   scene.add(figure.group);
+  /** Show on the figure whatever tools it has. */
+  const wear = () => {
+    figure.spyglass = save.has('spyglass');
+    figure.flute = save.has('flute');
+    figure.bedroll = save.has('bedroll');
+    figure.rod = save.has('rod');
+    figure.chart = save.has('chart');
+    figure.rope = save.has('rope');
+    player.rope = figure.rope;
+  };
+  wear();
+  // The places marked through the spyglass: a thread of light over each, until it is reached.
+  const marks = new Marks(u);
+  scene.add(marks.group);
+  const syncMarks = () => marks.set(save.data.sightedAt, (x, z) => world.height(x, z));
+  syncMarks();
+  const glassView = new SpyglassView(canvasHost); // under the touch buttons and the interface, over the scene
+  // The bedroll, where it has been laid: the bed and a small hearth beside it.
+  const campGroup = new THREE.Group();
+  {
+    const solid = solidMaterial(u);
+    campGroup.add(new THREE.Mesh(bedGeometry(), solid));
+    const hearth = new THREE.Mesh(hearthGeometry(), solid);
+    hearth.position.set(1.25, 0, 0.2);
+    campGroup.add(hearth);
+    for (const m of campGroup.children) m.frustumCulled = false;
+  }
+  scene.add(campGroup);
+  const placeCamp = () => {
+    const c = save.data.camp;
+    campGroup.visible = !!c;
+    caravans.hearth = null;
+    if (!c) return;
+    campGroup.position.set(c.x, world.height(c.x, c.z), c.z);
+    campGroup.rotation.set(0, c.facing, 0);
+    // (the hearth sits to the bed's right: the flames stand in its ring of stones)
+    const hx = c.x + Math.cos(c.facing) * 1.25 + Math.sin(c.facing) * 0.2;
+    const hz = c.z - Math.sin(c.facing) * 1.25 + Math.cos(c.facing) * 0.2;
+    caravans.hearth = { x: hx, y: world.height(hx, hz) + 0.05, z: hz };
+    props.keepClear(c.x, c.z, 5);
+  };
+  placeCamp();
+  const sleep = new SleepView(uiHost, (to) => {
+    // the hours pass in the dark: it is first light, or the last of it
+    day.day = to === 'dawn' ? 0.268 : 0.722;
+    day.update(0);
+    stillDrawn = false;
+  });
 
   // ---- a fire and its travellers, a short walk from where you begin, toward the city you face.
   // They are the first people you can reach, and the first thing worth walking to.
@@ -434,13 +490,35 @@ function start() {
       style: unlocked ? qs.get('style') : null,
       intro: !save.data.introSeen,
       finds: save.data.found.length,
+      tools: save.toolCount(),
     },
   );
   applyTier();
   const syncKnown = () => {
-    ui.setKnown({ talk: save.data.talked, board: save.has('board'), carpet: player.carpet, dig: save.has('pick') });
+    ui.setKnown({
+      talk: save.data.talked,
+      board: save.has('board'),
+      carpet: player.carpet,
+      dig: save.has('pick'),
+      spyglass: save.has('spyglass'),
+      flute: save.has('flute'),
+      bedroll: save.has('bedroll'),
+    });
     touch.setBoard(save.has('board'), player.board);
+    touch.setTools({ spyglass: save.has('spyglass'), flute: save.has('flute'), bedroll: save.has('bedroll') });
+    ui.setTools(save.toolCount());
   };
+
+  // A tool changes hands: kept, shown on the figure, and counted.
+  const given = (t: Parameters<Save['give']>[0]) => {
+    save.give(t);
+    wear();
+    figure.flourish = 1;
+    audio.chime();
+    buzz(20);
+    syncKnown();
+  };
+  let herderAsked = false;
 
   // ---- talking: anyone in reach can be spoken to. Travellers give the board to someone on foot.
   const pick = <T,>(list: T[], avoid: T | null): T => {
@@ -450,10 +528,10 @@ function start() {
   };
   const text = (l: Line) => (typeof l === 'string' ? l : touch.used ? l.touch : l.keys);
   let lastLine: string | null = null;
-  const trav = { ref: null as unknown, x: 0, y: 0, z: 0, h: 1, sit: 0, seed: 0, role: 0 };
-  const folk = { id: -1, x: 0, z: 0, h: 1, sit: 0 };
+  const trav = { ref: null as unknown, x: 0, y: 0, z: 0, h: 1, sit: 0, seed: 0, role: 0, camp: false };
+  const folk = { id: -1, x: 0, z: 0, h: 1, sit: 0, stall: false };
   const setTraveller = (out: Speaker) => {
-    out.kind = trav.role === ROLE_PILGRIM ? 'pilgrim' : trav.role === ROLE_KEEPER ? 'keeper' : 'traveller';
+    out.kind = trav.role === ROLE_PILGRIM ? 'pilgrim' : trav.role === ROLE_KEEPER ? 'keeper' : trav.role === ROLE_HERDER ? 'herder' : 'traveller';
     out.ref = trav.ref;
     out.x = trav.x;
     out.z = trav.z;
@@ -496,7 +574,9 @@ function start() {
     const where = directions(lamp.kind === 'spring' ? MINER.lampSpring : lamp.kind === 'cave' ? MINER.lampCave : MINER.lampSand, minerP.x, minerP.z, lamp.x, lamp.z);
     const cav = discoveries.nearestCavern(minerP.x, minerP.z);
     if (save.data.roles.miner === 2) {
-      const pool = [...MINER.after, ...(save.data.items.relic ? [...MINER.relic, ...MINER.relic] : [])];
+      // Once the pick has been swung, the miner has one thing more to give: the rod.
+      if (!save.has('rod') && save.data.deeds.dug) return { lines: MINER.rod.map(text), done: () => given('rod') };
+      const pool = [...MINER.after, ...(save.has('rod') ? [] : [MINER.rodAsk, MINER.rodAsk]), ...(save.data.items.relic ? [...MINER.relic, ...MINER.relic] : [])];
       // until a first cavern has been opened, the miner goes on pointing at one
       if (cav && save.data.opened.length === 0) pool.push(directions(MINER.remind, minerP.x, minerP.z, cav.x, cav.z), directions(MINER.remind, minerP.x, minerP.z, cav.x, cav.z));
       return { lines: [(lastLine = pick(pool, lastLine))] };
@@ -572,7 +652,7 @@ function start() {
         setMiner(s);
         return true;
       }
-      if (s.kind === 'traveller' || s.kind === 'pilgrim' || s.kind === 'keeper') {
+      if (s.kind === 'traveller' || s.kind === 'pilgrim' || s.kind === 'keeper' || s.kind === 'herder') {
         caravans.hold(s.ref);
         caravans.personAt(s.ref, trav);
         setTraveller(s);
@@ -589,10 +669,29 @@ function start() {
         syncKnown();
       }
       if (s.kind === 'miner') return minerScript();
+      // The keepers of the temples give the spyglass to anyone who comes without one.
+      if (s.kind === 'keeper' && !save.has('spyglass')) {
+        return {
+          lines: KEEPER.gift.map(text),
+          done: () => given('spyglass'),
+        };
+      }
+      // A goat herder gives the flute to someone who has ridden a wild animal.
+      if (s.kind === 'herder') {
+        if (save.has('flute')) return { lines: [(lastLine = pick(HERDER.after, lastLine))] };
+        if (save.data.deeds.rode) return { lines: HERDER.gift.map(text), done: () => given('flute') };
+        if (herderAsked) return { lines: [HERDER.pending] };
+        return { lines: HERDER.ask.map(text), done: () => void (herderAsked = true) };
+      }
+      // A pilgrim gives the star chart to someone who has stood at a sundial.
+      if (s.kind === 'pilgrim' && !save.has('chart') && save.data.found.includes('sundial')) {
+        return { lines: PILGRIM.gift.map(text), done: () => given('chart') };
+      }
       if (s.kind === 'pilgrim' || s.kind === 'keeper') {
         const lines = s.kind === 'pilgrim' ? PILGRIM : KEEPER;
         const dark = day.day < 0.22 || day.day > 0.78;
         const pool = [...lines.any, ...(dark ? [...lines.night, ...lines.night] : [])];
+        if (s.kind === 'pilgrim' && !save.has('chart')) pool.push(...PILGRIM.dial, ...PILGRIM.dial);
         if (s.kind === 'keeper' && save.data.items.relic) pool.push(...KEEPER.relic, ...KEEPER.relic);
         return { lines: [(lastLine = pick(pool, lastLine))] };
       }
@@ -614,7 +713,29 @@ function start() {
             },
           };
         }
+        // At a camp fire after dark, someone with nothing to sleep on is given a bedroll.
+        if (!save.has('bedroll') && (day.day < 0.22 || day.day > 0.78) && caravans.personAt(s.ref, trav) && trav.camp) {
+          return { lines: TRAVELLER.bedroll.map(text), done: () => given('bedroll') };
+        }
         return { lines: [(lastLine = pick(TRAVELLER.after, lastLine))] };
+      }
+      // The keeper of the market stall has a carpet, and wants something old for it.
+      if (people.personAt(s.ref as number, folk) && folk.stall) {
+        if (save.has('carpet')) return { lines: [(lastLine = pick(WEAVER.after, lastLine))] };
+        if (save.data.items.relic) {
+          return {
+            lines: WEAVER.gift.map(text),
+            done() {
+              save.setItem('relic', false);
+              save.setRole('weaver', 2);
+              figure.relic = false;
+              player.carpet = figure.carpet = true;
+              given('carpet');
+            },
+          };
+        }
+        if (save.data.roles.weaver === 1) return { lines: [WEAVER.pending] };
+        return { lines: WEAVER.ask.map(text), done: () => save.setRole('weaver', 1) };
       }
       const site = cities.active?.site;
       const d = day.day;
@@ -634,8 +755,13 @@ function start() {
   });
   onLook = (l) => talk.setColours(l.ink, l.paper);
   onLook(look);
-  discoveries.onReach = (kind) => {
+  discoveries.onReach = (kind, key) => {
     audio.chime();
+    // a place marked through the spyglass has been reached: its mark comes down
+    if (save.data.sighted.includes(key)) {
+      save.unsight(key);
+      syncMarks();
+    }
     // The first of each kind adds to the count in the corner.
     if (isFindKind(kind) && save.find(kind)) {
       ui.setFinds(save.data.found.length);
@@ -770,6 +896,7 @@ function start() {
   }, true);
   const touch = new TouchControls(touchHost, {
     onLook(dx, dy) {
+      if (glassK > 0.5) return glassLook(dx * 2, dy * 2);
       camYaw -= dx * 0.0052;
       camPitch = Math.min(1.25, Math.max(-0.35, camPitch + dy * 0.0044));
     },
@@ -788,6 +915,17 @@ function start() {
     onBoard() {
       if (ui.state === 'playing') toggleBoard();
     },
+    // (touch has no key to hold: the spyglass is raised by one tap and lowered by the next)
+    onSpyglass() {
+      if (ui.state === 'playing') glassHeld = !glassHeld;
+    },
+    onFlute() {
+      if (ui.state === 'playing') playFlute();
+    },
+    onBedroll() {
+      if (ui.state === 'playing') useBedroll();
+    },
+    // wired by the tool logic
   });
   // ---- the pick: with nobody in reach, the key that talks swings it instead
   const SWING = 0.62; // seconds, start to finish
@@ -807,6 +945,7 @@ function start() {
     if (a && fauna.mount(a)) steed = fauna;
     else if (c && caravans.mount(c)) steed = caravans;
     else return false;
+    save.setDeed('rode');
     player.board = false;
     figure.boardOn = false;
     figure.seated = true;
@@ -907,6 +1046,7 @@ function start() {
     // The ground answers: dull over solid sand, hollow near a buried chamber, and on the spot
     // itself the crust cracks a little further with each blow until it gives.
     const hit = discoveries.strike(x, z);
+    save.setDeed('dug');
     audio.strike('sand', hit.hollow);
     if (hit.level > 0 || hit.broke) {
       const n = hit.broke ? 14 : 3 + hit.level * 3;
@@ -925,6 +1065,79 @@ function start() {
       } else audio.crack(hit.level);
     }
   };
+
+  // ---- the spyglass: held to the eye, the view goes out along it to a far place. One held
+  // steady at its centre until the ring closes is marked, and the mark stands until it is reached.
+  const GLASS_FOV = 9; // degrees, as first raised; the wheel draws it in and out
+  const SIGHT_HOLD = 0.9; // seconds a place must be held in the ring
+  const SIGHT_RANGE = 4500;
+  let glassHeld = false;
+  let glassK = 0; // 0 lowered .. 1 at the eye, eased
+  let glassPitch = 0; // how far above level it looks
+  let glassFov = GLASS_FOV;
+  let glassHid = false; // the figure is put away while the eye is at the glass
+  let sightKey: number | null = null;
+  let sightT = 0;
+  let sightScan = 0;
+  const sightAt = { x: 0, z: 0 };
+  const sites: import('../world/discoveries').SiteRef[] = [];
+  const glassLook = (dx: number, dy: number) => {
+    const k = glassFov / 50;
+    camYaw -= dx * 0.0026 * k;
+    glassPitch = Math.min(0.9, Math.max(-0.7, glassPitch - dy * 0.0022 * k));
+  };
+  /** Whether the ground leaves a clear line from the eye to a point. */
+  const sightClear = (ex: number, ey: number, ez: number, tx: number, ty: number, tz: number) => {
+    for (let i = 1; i < 40; i++) {
+      const t = i / 40;
+      if (world.height(ex + (tx - ex) * t, ez + (tz - ez) * t) > ey + (ty - ey) * t) return false;
+    }
+    return true;
+  };
+
+  // ---- the flute: a phrase on the reed, and whatever wild thing is near enough to hear comes.
+  let fluteT = 0; // seconds of the phrase still to play
+  let fluteCall = -1; // seconds until the call goes out, or -1
+  const playFlute = () => {
+    if (!save.has('flute') || fluteT > 0 || talk.talking || swingT >= 0 || glassK > 0.1 || discoveries.deepIn) return;
+    fluteT = audio.flute();
+    fluteCall = Math.min(0.9, fluteT * 0.4);
+    buzz(10);
+  };
+
+  // ---- the bedroll: laid on open ground, it stays there. Beside it, the same key sleeps.
+  const useBedroll = () => {
+    if (!save.has('bedroll') || sleep.asleep) return;
+    if (sleep.isOpen) return sleep.confirm();
+    const st = player.state;
+    if (!st.grounded || steed || discoveries.deepIn || cities.inside || talk.talking || glassK > 0.1 || fluteT > 0) return;
+    const camp = save.data.camp;
+    if (camp && Math.hypot(camp.x - st.pos.x, camp.z - st.pos.z) < 5) {
+      sleep.open(day.day > 0.268 && day.day < 0.722 ? 'dusk' : 'dawn', touch.used);
+      return;
+    }
+    // somewhere to lie: level, dry, open ground a step ahead
+    const x = st.pos.x + Math.sin(player.facing) * 1.3;
+    const z = st.pos.z + Math.cos(player.facing) * 1.3;
+    if (world.normal(x, z, tmp).y < 0.93 || waterAt(x, z) || !clearFoot(x, z) || !clearFoot(x + Math.cos(player.facing) * 1.25, z - Math.sin(player.facing) * 1.25)) {
+      ui.toast('No room to lay it here', 2600);
+      return;
+    }
+    save.setCamp({ x, z, facing: player.facing });
+    placeCamp();
+    audio.footstep(0.7, false);
+    buzz(14);
+    ui.toast(touch.used ? 'Bedroll laid. Use it again here to sleep' : 'Bedroll laid. B beside it to sleep', 5000);
+  };
+  // ---- the rod: carried on foot, its fork pulls down toward the nearest room under the sand.
+  const ROD_R = 350; // metres at which it first stirs
+  let rodScan = 0;
+  let rodCav: ReturnType<Discoveries['nearestCavern']> = null;
+  let rodPull = 0;
+  let rodTick = 0;
+  // ---- the star chart: at night one line of stars stands over the nearest kind of place not yet found.
+  let chartScan = 0;
+  let chartAt: { x: number; z: number } | null = null;
 
   // Step on or off the board. Off, it rides on your back and you walk.
   const toggleBoard = () => {
@@ -962,6 +1175,15 @@ function start() {
   });
   window.addEventListener('keydown', (e) => {
     if (ui.state !== 'playing') return;
+    // Asked when to wake, the keys answer that and nothing else.
+    if (sleep.isOpen || sleep.asleep) {
+      if (e.code === 'KeyA' || e.code === 'ArrowLeft') sleep.move(-1);
+      else if (e.code === 'KeyD' || e.code === 'ArrowRight') sleep.move(1);
+      else if (e.code === 'KeyE' || e.code === 'Enter' || e.code === 'KeyB') sleep.confirm();
+      else if (e.code === 'Escape') sleep.close();
+      e.preventDefault();
+      return;
+    }
     if (e.code === 'Escape') {
       ui.openMenu();
       return;
@@ -972,11 +1194,20 @@ function start() {
     }
     if (e.code === 'KeyE' && !e.repeat) interact();
     if (e.code === 'KeyQ' && !e.repeat) toggleBoard();
+    if (e.code === 'KeyF' && !e.repeat) glassHeld = true;
+    if (e.code === 'KeyR' && !e.repeat) playFlute();
+    if (e.code === 'KeyB' && !e.repeat) useBedroll();
     if (e.code === 'KeyC' && !e.repeat && !e.ctrlKey && !e.metaKey) collisionDebug.toggle(); // debug: collision overlay
     keys.add(e.code);
   });
-  window.addEventListener('keyup', (e) => keys.delete(e.code));
-  window.addEventListener('blur', () => keys.clear());
+  window.addEventListener('keyup', (e) => {
+    keys.delete(e.code);
+    if (e.code === 'KeyF') glassHeld = false;
+  });
+  window.addEventListener('blur', () => {
+    keys.clear();
+    glassHeld = false;
+  });
   canvas.addEventListener('mousedown', () => {
     if (fromTouch()) return;
     dragging = true;
@@ -987,13 +1218,15 @@ function start() {
     if (fromTouch()) return;
     const locked = document.pointerLockElement === canvas;
     if (!(locked && ui.state === 'playing') && !(dragging && (ui.state === 'playing' || photo))) return;
+    if (glassK > 0.5) return glassLook(e.movementX, e.movementY);
     camYaw -= e.movementX * 0.0026;
     camPitch = Math.min(1.25, Math.max(-0.35, camPitch + e.movementY * 0.0022));
   });
   window.addEventListener(
     'wheel',
     (e) => {
-      if (ui.state === 'playing' || photo) camDist = Math.min(photo ? 60 : 16, Math.max(3, camDist * Math.exp(e.deltaY * 0.0012)));
+      if (ui.state === 'playing' && glassK > 0.5) glassFov = Math.min(20, Math.max(4, glassFov * Math.exp(e.deltaY * 0.0012)));
+      else if (ui.state === 'playing' || photo) camDist = Math.min(photo ? 60 : 16, Math.max(3, camDist * Math.exp(e.deltaY * 0.0012)));
     },
     { passive: true },
   );
@@ -1016,6 +1249,7 @@ function start() {
   const camTarget = new THREE.Vector3().copy(player.state.pos);
   const tmp = new THREE.Vector3();
   const tmp2 = new THREE.Vector3();
+  const tmpV2 = new THREE.Vector2();
   const sliders: Array<{ x: number; z: number; life: number }> = [];
   let slideStampDist = 0;
   let wakeDist = 0;
@@ -1023,6 +1257,7 @@ function start() {
   let cityNear = 0;
   let bustle = 0;
   let airCam = 0;
+  let openFov = 50; // the field of view without the spyglass, eased
   let camLift = 0; // how much steeper the eye looks down while a wall is behind it, eased
   let clearDist = -1; // how far back the eye sits clear of walls on the surface, eased
   let roomCam = 0; // 0..1 how far the eye has settled into a room's closer, higher view, eased
@@ -1164,8 +1399,21 @@ function start() {
     if (mode !== touchMode) touch.setMode((touchMode = mode));
     const kx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
     const kz = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
-    input.x = playing ? Math.max(-1, Math.min(1, kx + touch.moveX)) : 0;
-    input.z = playing ? Math.max(-1, Math.min(1, kz + touch.moveZ)) : 0;
+    // The spyglass comes up only where there is something to see through it, and whoever looks stands still.
+    {
+      if (!playing) glassHeld = false;
+      const want = glassHeld && playing && save.has('spyglass') && !talk.talking && !deepIn && !cities.inside && swingT < 0 && fluteT <= 0;
+      if (want && glassK < 0.02) {
+        glassPitch = 0.02;
+        glassFov = GLASS_FOV;
+      }
+      if (dt > 0) glassK += ((want ? 1 : 0) - glassK) * (1 - Math.exp(-dt * 11));
+      if (glassK < 0.004) glassK = 0;
+    }
+    if (!playing && sleep.isOpen) sleep.close();
+    const still = glassK > 0.5 || fluteT > 0 || sleep.isOpen || sleep.asleep;
+    input.x = playing && !still ? Math.max(-1, Math.min(1, kx + touch.moveX)) : 0;
+    input.z = playing && !still ? Math.max(-1, Math.min(1, kz + touch.moveZ)) : 0;
     input.run = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.boost);
     input.jump = playing && jumpQueued;
     input.lift = playing && (keys.has('Space') || touch.flyHeld);
@@ -1313,6 +1561,62 @@ function start() {
       if (k >= 1 || !st.grounded) {
         swingT = -1;
         figure.swing = -1;
+      }
+    }
+    // The flute: the phrase plays out, and partway through it the call carries.
+    if (fluteT > 0) {
+      fluteT -= dt;
+      if (fluteCall >= 0 && (fluteCall -= dt) < 0) fauna.call(st.pos.x, st.pos.z);
+    }
+    figure.piping = fluteT > 0.15 ? 1 : 0;
+    figure.climbing = player.roping ? 1 : 0;
+    // The rod is held out wherever the wanderer goes on foot within its reach of a sealed room,
+    // and pulls harder the nearer the spot and the more squarely it is faced.
+    {
+      const onFoot = playing && save.has('rod') && st.grounded && !steed && (!player.board || st.onRock > 0.5) && !deepIn && !cities.inside && !talk.talking && swingT < 0 && fluteT <= 0 && glassK < 0.1;
+      rodScan -= dt;
+      if (rodScan <= 0) {
+        rodScan = 0.5;
+        rodCav = onFoot ? discoveries.nearestCavern(st.pos.x, st.pos.z, true) : null;
+      }
+      let pull = 0;
+      let held = 0;
+      if (onFoot && rodCav && rodCav.open <= 0) {
+        const dx = rodCav.x + rodCav.dx * rodCav.spot - st.pos.x;
+        const dz = rodCav.z + rodCav.dz * rodCav.spot - st.pos.z;
+        const d = Math.hypot(dx, dz);
+        const near = Math.min(1, Math.max(0, 1 - d / ROD_R));
+        if (near > 0) {
+          held = 1;
+          const facing = d > 1 ? (dx * Math.sin(player.facing) + dz * Math.cos(player.facing)) / d : 1;
+          pull = d < 5 ? 1 : Math.pow(near, 1.6) * (0.3 + 0.7 * Math.max(0, facing));
+        }
+      }
+      rodPull += (pull - rodPull) * (1 - Math.exp(-dt * 5));
+      figure.dowsing = held;
+      figure.dip = rodPull;
+      audio.dowse(held ? rodPull : 0);
+      // (in the hand it is felt before it is seen)
+      if (rodPull > 0.25 && (rodTick -= dt) <= 0) {
+        rodTick = 1.3 - rodPull;
+        buzz(6 + Math.round(rodPull * 14));
+      }
+    }
+    // The chart's line of stars: over the nearest kind of place not yet come upon.
+    {
+      chartScan -= dt;
+      if (chartScan <= 0) {
+        chartScan = 2.5;
+        chartAt = save.has('chart') && day.night > 0.3 ? discoveries.nearestUnfound(st.pos.x, st.pos.z, new Set<string>(save.data.found), 12000) : null;
+      }
+      const want = chartAt && !deepIn ? smooth(0.5, 0.95, day.night) : 0;
+      u.uChart.value += (want - (u.uChart.value as number)) * (1 - Math.exp(-dt * 1.5));
+      if (chartAt) {
+        const dx = chartAt.x - st.pos.x;
+        const dz = chartAt.z - st.pos.z;
+        const dl = Math.hypot(dx, dz) || 1;
+        const dir = u.uChartDir.value as THREE.Vector2;
+        dir.lerp(tmpV2.set(dx / dl, dz / dl), 1 - Math.exp(-dt * 2)).normalize();
       }
     }
     {
@@ -1494,7 +1798,7 @@ function start() {
     const tooNear = (!!deepIn || walled) && dist < 0.75;
     if (tooNear !== figNear) {
       figNear = tooNear;
-      figure.group.visible = !tooNear;
+      figure.group.visible = !tooNear && !glassHid;
     }
     if (camera.position.y >= above) {
       camera.position.y = Math.max(camera.position.y, topAt(camera.position.x, camera.position.z) + 0.7);
@@ -1509,11 +1813,71 @@ function start() {
     }
     camera.lookAt(camTarget);
     const fov = 50 + Math.min(14, st.speed * 0.55);
+    openFov += (fov - openFov) * (1 - Math.exp(-dt * 3));
     // Underground the eye is often a hand's width from a wall, and the half metre it does not
     // draw in front of itself up on the sand would cut a window through one.
     const near = deepIn || walled ? 0.06 : 0.5;
-    if (Math.abs(camera.fov - fov) > 0.05 || camera.near !== near) {
-      camera.fov += (fov - camera.fov) * (1 - Math.exp(-dt * 3));
+    // At the spyglass the eye leaves its place behind the figure for the figure's own, and
+    // looks out along the glass.
+    const gk = glassK * glassK * (3 - 2 * glassK);
+    if (gk > 0) {
+      const gp = Math.cos(glassPitch);
+      const fx = -Math.sin(camYaw) * gp;
+      const fy = Math.sin(glassPitch);
+      const fz = -Math.cos(camYaw) * gp;
+      const ex = st.pos.x + fx * 0.3;
+      const ey = st.pos.y + 1.6;
+      const ez = st.pos.z + fz * 0.3;
+      camera.position.lerp(tmp.set(ex, ey, ez), gk);
+      camera.lookAt(tmp.set(ex + fx * 400, ey + fy * 400, ez + fz * 400).lerp(camTarget, 1 - gk));
+      // A far place held near the middle of the glass, in plain sight, is being sighted.
+      if (glassK > 0.9 && dt > 0) {
+        sightScan -= dt;
+        if (sightScan <= 0) {
+          sightScan = 0.2;
+          let best: number | null = null;
+          let bestCos = Math.cos((glassFov * Math.PI) / 180 * 0.3);
+          for (const sr of discoveries.sitesNear(st.pos.x, st.pos.z, SIGHT_RANGE, sites)) {
+            // (a sealed cavern is only sand to look at: there is nothing of it to sight)
+            if (sr.reached || sr.kind === 'cavern' || save.data.sighted.includes(sr.key)) continue;
+            const ty = sr.y + 7;
+            const dx = sr.x - ex;
+            const dy = ty - ey;
+            const dz = sr.z - ez;
+            const dl = Math.hypot(dx, dy, dz);
+            if (dl < 150) continue;
+            const c = (dx * fx + dy * fy + dz * fz) / dl;
+            if (c < bestCos || Math.exp(-dl * (u.uFog.value as number)) < 0.05 || !sightClear(ex, ey, ez, sr.x, ty, sr.z)) continue;
+            bestCos = c;
+            best = sr.key;
+            sightAt.x = sr.x;
+            sightAt.z = sr.z;
+          }
+          if (best !== sightKey) {
+            sightKey = best;
+            sightT = 0;
+          }
+        }
+        if (sightKey !== null && (sightT += dt) >= SIGHT_HOLD) {
+          save.sight(sightKey, sightAt.x, sightAt.z);
+          syncMarks();
+          audio.chime();
+          buzz(20);
+          ui.toast('Marked', 2200);
+          sightKey = null;
+          sightT = 0;
+          sightScan = 0.6;
+        }
+      }
+    } else sightKey = null;
+    glassView.set(glassK, sightKey !== null ? sightT / SIGHT_HOLD : 0);
+    if (glassK > 0.5 !== glassHid) {
+      glassHid = glassK > 0.5;
+      figure.group.visible = !glassHid && !figNear;
+    }
+    const wantFov = openFov + (glassFov - openFov) * gk;
+    if (Math.abs(camera.fov - wantFov) > 0.01 || camera.near !== near) {
+      camera.fov = wantFov;
       camera.near = near;
       camera.updateProjectionMatrix();
     }
@@ -1561,6 +1925,12 @@ function start() {
         figure.relic = true;
         pickedUp(st.pos.x, st.pos.y + 1, st.pos.z);
       }
+      if (discoveries.ropeNear(st.pos.x, st.pos.y, st.pos.z, 1.5)) {
+        discoveries.setRope(null);
+        given('rope');
+        pickedUp(st.pos.x, st.pos.y + 0.4, st.pos.z);
+        talk.tell({ x: st.pos.x, y: st.pos.y + 1.8, z: st.pos.z }, 'A rope and a hook. Rock too steep to walk can be climbed now.');
+      }
       if (discoveries.lampNear(st.pos.x, st.pos.y, st.pos.z, 1.5)) {
         discoveries.setLamps([]); // one is enough: the other is left for nobody
         save.setItem('lamp', true);
@@ -1583,6 +1953,8 @@ function start() {
         }
       }
       discoveries.setLamps(at);
+      // A rope and hook lies beside the nearest great bones, until it is picked up.
+      discoveries.setRope(save.has('rope') ? null : discoveries.ropeSpot(st.pos.x, st.pos.z, 2500));
     }
     // Over a sealed cavern the sand drifts slowly, where everywhere else the wind takes it.
     {

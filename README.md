@@ -31,6 +31,9 @@ There are 20 of these in [docs/screenshots](docs/screenshots).
 | `Space` | Leap. Hold to rise, let go to glide, double-tap to drop |
 | `Q` | Step on or off the board, once you have one (or get off an animal) |
 | `E` | Talk, or climb onto a wild ass or oryx (walk up to one, don't run) and get off again |
+| `F` | Hold up the spyglass, once you have one |
+| `R` | Play the flute, once you have one |
+| `B` | Lay the bedroll and sleep in it, once you have one |
 | `Esc` | Menu and photo mode |
 
 It plays on a phone too, with touch controls.
@@ -57,7 +60,7 @@ The dev server has a few extra pages that aren't part of the build:
 - `/characters.html` and `/equipment.html` show the figures, boards, carpets and picks
 - `/social.html` runs the game in a 1200 × 630 frame for capturing screenshots like the ones above
 
-Two URL options help when testing. `?tools=board,carpet,pick` lends you the tools for one visit, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), and `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start).
+Two URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope` lends you the tools for one visit, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), and `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start).
 
 ## Built with
 

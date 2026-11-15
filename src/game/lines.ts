@@ -37,6 +37,16 @@ export const TRAVELLER = {
     'I\'ve crossed this country nine times. It\'s never looked the same twice.',
     'The wind moved the ridge again last night. It does that.',
   ],
+  /** Said once, at a camp fire after dark, to someone with a board and nothing to sleep on: the bedroll. */
+  bedroll: [
+    'Out this late, with nothing to lie on?',
+    'Take a roll. We carry more than we have backs for.',
+    {
+      keys: 'Press B to lay it out on open ground. Press B beside it to sleep until dawn or dusk.',
+      touch: 'Tap Tools, then the bedroll, to lay it out on open ground. Tap it again beside it to sleep until dawn or dusk.',
+    },
+    'It stays where you leave it. Lay it somewhere new and the old place is given up.',
+  ] as Line[],
 };
 
 /** Pilgrims walking the avenues out from the temples. One line each. */
@@ -55,6 +65,14 @@ export const PILGRIM = {
     'We carry our own light. The temple keeps the rest.',
     'The stones hold the day\'s heat. Put your hand on one.',
   ],
+  /** To someone with no star chart who has not yet found a sundial: mixed in with the rest. */
+  dial: ['There are sundials out in the sand, older than the avenue. Find one, then come and tell me.'],
+  /** Said once, to someone who has found a sundial: the star chart. */
+  gift: [
+    'You\'ve stood at one of the old dials. It shows in how you look at shadows.',
+    'The dials are for the day. This is for the night. Take it. I know it by heart.',
+    'After dark, look up. One line of stars burns brighter than the rest. Something you haven\'t seen lies under it.',
+  ] as Line[],
 };
 
 /** The keepers who tend each temple, by the door and at the foot of the stair. One line each. */
@@ -73,6 +91,69 @@ export const KEEPER = {
   ],
   /** Only to someone carrying a relic from under the sand. */
   relic: ['What you carry came from under the sand. So did we, if you go back far enough.'],
+  /** Said once, to anyone who comes to the temple without one: the spyglass. */
+  gift: [
+    'You look past the stair, out at the dunes. Most who come here don\'t.',
+    'Take this. We watch for walkers with it, and there are more glasses than keepers.',
+    'Hold it steady on a far place until the ring closes. A thread of light will stand there until you reach it.',
+    {
+      keys: 'Hold F to raise it. The wheel draws it in and out.',
+      touch: 'Tap Tools, then the spyglass, to raise it. Tap it again to lower it.',
+    },
+  ] as Line[],
+};
+
+/** The goat herders out with their flocks. Someone who has ridden a wild animal is given the flute. */
+export const HERDER = {
+  /** The first time, to someone who has never ridden. */
+  ask: [
+    'Mind the goats. They go where I go.',
+    'You walk past the wild ones as if they were rocks. Sit on one first. An ass or an oryx, it makes no difference.',
+    'Then come back, and I\'ll show you how to ask them properly.',
+  ] as Line[],
+  /** Asked already, and still not ridden. */
+  pending: 'Still on your own feet? Walk up to one slowly and climb on. They forgive it.',
+  /** To someone who has ridden. */
+  gift: [
+    'You\'ve ridden. I can smell it on you.',
+    'Here. Cut from the reeds at the spring. The goats come to it, and so will a wild one, if it\'s near enough to hear.',
+    {
+      keys: 'Press R to play. If nothing comes, nothing was near.',
+      touch: 'Tap Tools, then the flute, to play. If nothing comes, nothing was near.',
+    },
+  ] as Line[],
+  after: [
+    'Play it badly and they still come. They\'re not critics.',
+    'The goats know the way home better than I do.',
+    'An oryx will carry you further. An ass will complain less.',
+    'I count them every evening. The number is never the same.',
+  ],
+};
+
+/** The keeper of the market stall in each city: trades the carpet for a relic. */
+export const WEAVER = {
+  /** The first time, to someone with no relic. */
+  ask: [
+    'Looking, or buying? Looking is free.',
+    'The good one isn\'t on the table. It won\'t lie flat, for one thing.',
+    'I\'d part with it for something old. Properly old. The kind that comes out from under the sand.',
+  ] as Line[],
+  /** Asked already, and still no relic. */
+  pending: 'Nothing old yet? It can wait. So can I.',
+  /** With a relic at the belt, asked or not. */
+  gift: [
+    'Now that is old. Let me see it in the light.',
+    'Done. Take the carpet. It was my aunt\'s, and it never liked her either.',
+    {
+      keys: 'Leap, then hold Space. It carries you faster, and climbs for twice as long.',
+      touch: 'Leap, then hold the button. It carries you faster, and climbs for twice as long.',
+    },
+  ] as Line[],
+  after: [
+    'Does it behave? It never did for me.',
+    'Everything else on the table is for walking on.',
+    'Shake it out now and then. It sulks if you don\'t.',
+  ],
 };
 
 /** People in the cities. One line each, drawn from these pools. */
@@ -205,4 +286,12 @@ export const MINER = {
   ],
   /** Afterwards, to someone carrying a relic. */
   relic: ['That thing on your belt is older than this city. Keep it dry.'],
+  /** Afterwards, to someone who has not swung the pick yet and has no rod. */
+  rodAsk: 'Swing that pick somewhere first. Then come back. I\'ve something that saves the arm.',
+  /** Afterwards, once the pick has been swung: the dowsing rod. */
+  rod: [
+    'You\'ve been swinging. There\'s sand in the pick\'s eye.',
+    'Hitting and listening is the slow way. Take this. I cut it from a tree that grew over a well.',
+    'Carry it on foot. When the fork pulls down, there\'s a room near. The harder it pulls, the closer you stand.',
+  ] as Line[],
 };
