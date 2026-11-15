@@ -82,3 +82,115 @@ describe('an eagle feather', () => {
     expect(light).toBeGreaterThan(0);
   });
 });
+
+describe('a board', () => {
+  const rider = (slope: number) => {
+    const p = new Player(rock(slope));
+    p.board = true;
+    p.place(0, 0);
+    return p;
+  };
+  const rest = (p: Player, seconds: number) => {
+    for (let i = 0; i < seconds * 60; i++) p.update(1 / 60, input(), Math.PI, ev);
+  };
+
+  it('rides level rock as it rides sand, faster than feet walk it', () => {
+    const p = rider(0);
+    walk(p, 4);
+    expect(p.state.sliding).toBe(true);
+    expect(p.state.pos.z).toBeGreaterThan(4 * 5.2 * 1.5);
+  });
+
+  it('rides up a mountainside', () => {
+    const p = rider(0.8);
+    walk(p, 4);
+    expect(p.state.grounded).toBe(true);
+    expect(p.state.pos.z).toBeGreaterThan(20);
+    expect(p.state.pos.y).toBeCloseTo(p.state.pos.z * 0.8, 3);
+  });
+
+  it('rides up a cliff no feet could stand on, no faster than it can climb', () => {
+    for (const run of [false, true]) {
+      const p = rider(3);
+      walk(p, 3, { run });
+      expect(p.state.grounded).toBe(true);
+      expect(p.state.pos.y).toBeGreaterThan(20);
+      expect(p.state.pos.y).toBeLessThan(3 * (run ? 24 : 16) + 0.5);
+    }
+  });
+
+  it('spends speed carried into a cliff rather than rocketing up it', () => {
+    const p = rider(3);
+    p.state.vel.set(0, 0, 48);
+    walk(p, 1, { run: true });
+    expect(p.state.grounded).toBe(true);
+    expect(p.state.pos.y).toBeLessThan(60);
+  });
+
+  it('comes to rest on rock feet could stand on, and stays', () => {
+    const p = rider(0.8);
+    walk(p, 2);
+    rest(p, 5);
+    const z = p.state.pos.z;
+    expect(p.state.speed).toBeLessThan(0.05);
+    rest(p, 3);
+    expect(p.state.pos.z).toBeCloseTo(z, 2);
+  });
+
+  it('slips back down a cliff when let go, unless there is a rope to hold it', () => {
+    const loose = rider(3);
+    const roped = rider(3);
+    roped.rope = true;
+    for (const p of [loose, roped]) {
+      walk(p, 2);
+      rest(p, 4);
+    }
+    expect(loose.state.pos.z).toBeLessThan(0);
+    expect(roped.state.pos.z).toBeGreaterThan(3);
+    expect(roped.state.speed).toBeLessThan(0.05);
+  });
+
+  it('is held at rest on rock too steep for bare feet by nailed boots', () => {
+    const bare = rider(1.3);
+    const shod = rider(1.3);
+    shod.boots = true;
+    for (const p of [bare, shod]) {
+      walk(p, 2);
+      rest(p, 5);
+    }
+    expect(shod.state.speed).toBeLessThan(0.05);
+    expect(bare.state.pos.z).toBeLessThan(shod.state.pos.z - 5);
+  });
+
+  it('starts up a steep sand face from a standstill', () => {
+    const sand = rock(0.6);
+    const p = new Player({
+      ...sand,
+      sample: (x, z, out) => {
+        sand.sample(x, z, out).rock = 0;
+        return out;
+      },
+    });
+    p.board = true;
+    p.place(0, 0);
+    walk(p, 3);
+    expect(p.state.onRock).toBe(0);
+    expect(p.state.pos.z).toBeGreaterThan(10);
+  });
+
+  it('is still stopped by what stands on steep ground', () => {
+    const p = rider(2);
+    p.roof = (_x, z) => (z > 6 && z < 7 ? z * 2 + 4 : -Infinity);
+    walk(p, 4);
+    expect(p.state.pos.z).toBeLessThan(6);
+  });
+
+  it('is walked underground', () => {
+    const p = rider(0);
+    p.floor = () => 0;
+    walk(p, 4);
+    expect(p.riding).toBe(false);
+    expect(p.state.sliding).toBe(false);
+    expect(p.state.pos.z).toBeLessThan(4 * 5.3);
+  });
+});
