@@ -350,9 +350,9 @@ export class MapView {
     if (this.isOpen) return;
     this.isOpen = true;
     this.state = s;
+    // (wherever it was last slid to, it opens on the wanderer; the zoom is left as it was)
     this.cx = s.x;
     this.cz = s.z;
-    this.scale = OPEN_SCALE;
     this.root.classList.add('is-on');
     this.root.setAttribute('aria-hidden', 'false');
     this.button.classList.remove('is-on');

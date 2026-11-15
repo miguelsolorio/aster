@@ -529,6 +529,7 @@ function start() {
   // A tool changes hands: kept, shown on the figure, and counted.
   const given = (t: Parameters<Save['give']>[0]) => {
     save.give(t);
+    if (t === 'rope' || t === 'boots' || t === 'feather') atlas.setErrand(t, null);
     wear();
     figure.flourish = 1;
     audio.chime();
@@ -538,11 +539,10 @@ function start() {
   let herderAsked = false;
   /** What the village people have sent the wanderer after this visit: said in full once, and shortly after that. */
   const sent = new Set<'rope' | 'boots' | 'feather'>();
-  /** Where each of those was said to lie, for the map. */
-  const sentAt: Partial<Record<'rope' | 'boots' | 'feather', { x: number; z: number }>> = {};
+  /** Sent after something: where it was said to lie goes on the map, and stays there until it is in hand. */
   const send = (what: 'rope' | 'boots' | 'feather', at: { x: number; z: number }) => {
     sent.add(what);
-    sentAt[what] = { x: at.x, z: at.z };
+    atlas.setErrand(what, at);
     marked();
   };
   /** An errand has gone onto the map: say so, and how to see it. */
@@ -1294,10 +1294,11 @@ function start() {
       const cav = discoveries.nearestCavern(p.x, p.z);
       if (cav) out.push({ ...areaAround(cav.x + cav.dx * cav.spot, cav.z + cav.dz * cav.spot, 450), label: 'A room under the sand' });
     }
-    if (d.roles.weaver === 1 && d.items.relic && !save.has('carpet') && town) out.push({ x: town.cx, z: town.cz, r: town.radius, label: 'Take the relic to a weaver' });
-    if (sentAt.rope && !save.has('rope')) out.push({ ...areaAround(sentAt.rope.x, sentAt.rope.z, 320), label: 'A rope, by the great bones' });
-    if (sentAt.boots && !save.has('boots')) out.push({ ...areaAround(sentAt.boots.x, sentAt.boots.z, 380), label: 'Boots, in a mountain cave' });
-    if (sentAt.feather && !save.has('feather')) out.push({ ...areaAround(sentAt.feather.x, sentAt.feather.z, 380), label: 'A feather, on the summit' });
+    if (d.roles.weaver === 1 && d.items.relic && !save.has('carpet') && town) out.push({ x: town.cx, z: town.cz, r: town.radius, label: 'Take the relic to the carpet stall' });
+    const { rope, boots, feather } = atlas.errands;
+    if (rope && !save.has('rope')) out.push({ ...areaAround(rope.x, rope.z, 320), label: 'A rope, by the great bones' });
+    if (boots && !save.has('boots')) out.push({ ...areaAround(boots.x, boots.z, 380), label: 'Boots, in a mountain cave' });
+    if (feather && !save.has('feather')) out.push({ ...areaAround(feather.x, feather.z, 380), label: 'A feather, on the summit' });
     return out;
   };
   const mapState: MapState = { x: 0, z: 0, heading: 0, camp: null, sighted: save.data.sightedAt, hints: [] };
@@ -1397,7 +1398,8 @@ function start() {
       return;
     }
     if (e.code === 'Escape') {
-      ui.openMenu();
+      // (the same press that has just put the map away does not go on to open the menu)
+      if (performance.now() - mapShutAt > 300) ui.openMenu();
       return;
     }
     if (e.code === 'KeyM' && !e.repeat) toggleMap();

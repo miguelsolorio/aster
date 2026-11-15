@@ -86,6 +86,26 @@ describe('atlas', () => {
     expect(b.dirty).toBe(false);
   });
 
+  it('keeps an errand until the thing is found, across visits', () => {
+    const a = new Atlas();
+    a.setErrand('rope', { x: 120.4, z: -80.6 });
+    a.setErrand('boots', { x: Number.NaN, z: 0 });
+    expect(a.errands).toEqual({ rope: { x: 120, z: -81 } });
+    a.store();
+    const b = Atlas.load();
+    expect(b.errands).toEqual({ rope: { x: 120, z: -81 } });
+    expect(b.dirty).toBe(false);
+    b.setErrand('rope', null);
+    expect(b.errands).toEqual({});
+    expect(b.dirty).toBe(true);
+    b.dirty = false;
+    b.setErrand('rope', null);
+    expect(b.dirty).toBe(false);
+    // a map stored before errands were kept has none
+    expect(Atlas.decode('{"v":1,"rows":{},"places":[]}').errands).toEqual({});
+    expect(Atlas.decode('{"v":1,"rows":{},"places":[],"errands":{"rope":{"x":"a","z":1},"hat":{"x":1,"z":1}}}').errands).toEqual({});
+  });
+
   it('stores a walked path as runs, not cell by cell', () => {
     const a = new Atlas();
     for (let x = 0; x < 20000; x += 100) a.reveal(x, 0, 480);

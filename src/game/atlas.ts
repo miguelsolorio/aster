@@ -25,11 +25,17 @@ export interface Place {
   z: number;
 }
 
+/** What someone has sent the wanderer after, that lies in one place. */
+export const ERRANDS = ['rope', 'boots', 'feather'] as const;
+export type Errand = (typeof ERRANDS)[number];
+
 interface Stored {
   v: 1;
   /** For each row (z) that has anything: start, length, start, length... along x. */
   rows: Record<string, number[]>;
   places: Place[];
+  // Added since the first maps were stored; one without it has no errands.
+  errands?: Partial<Record<Errand, { x: number; z: number }>>;
 }
 
 const whole = (v: unknown): v is number => typeof v === 'number' && Number.isInteger(v);
@@ -38,6 +44,8 @@ const inRange = (c: number): boolean => c >= -OFF && c < OFF;
 export class Atlas {
   readonly cells = new Set<number>();
   readonly places: Place[] = [];
+  /** Where each thing the wanderer has been sent after was said to lie, until it is in hand. */
+  readonly errands: Partial<Record<Errand, { x: number; z: number }>> = {};
   private readonly ids = new Set<string>();
   /** Something has changed since it was last stored. */
   dirty = false;
@@ -83,6 +91,18 @@ export class Atlas {
     return true;
   }
 
+  /** Someone has said where a thing lies, or (null) it has been found. */
+  setErrand(what: Errand, at: { x: number; z: number } | null): void {
+    if (!at) {
+      if (!this.errands[what]) return;
+      delete this.errands[what];
+    } else {
+      if (!Number.isFinite(at.x) || !Number.isFinite(at.z)) return;
+      this.errands[what] = { x: Math.round(at.x), z: Math.round(at.z) };
+    }
+    this.dirty = true;
+  }
+
   /** The map as it is stored. */
   encode(): string {
     const byRow = new Map<number, number[]>();
@@ -104,7 +124,7 @@ export class Atlas {
       }
       rows[cz] = runs;
     }
-    const out: Stored = { v: 1, rows, places: this.places };
+    const out: Stored = { v: 1, rows, places: this.places, errands: this.errands };
     return JSON.stringify(out);
   }
 
@@ -134,6 +154,10 @@ export class Atlas {
             a.addPlace({ id: p.id, kind: p.kind, x: p.x, z: p.z });
           }
         }
+      }
+      for (const e of ERRANDS) {
+        const at = raw.errands?.[e];
+        if (at && typeof at.x === 'number' && typeof at.z === 'number') a.setErrand(e, at);
       }
     } catch {
       /* an unreadable map is an empty one */
