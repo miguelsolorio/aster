@@ -54,8 +54,9 @@ describe('mountain villages among the discoveries', () => {
     const keys = sites.map((s) => s.key);
     expect(new Set(keys).size).toBe(keys.length);
     for (const k of keys) expect(Number.isSafeInteger(k)).toBe(true);
+    // a second cold scan of every cell within 12 km: a few seconds on a slow machine, hence the timeout
     expect(new Discoveries(world, {}).sitesNear(0, 0, 12000, []).filter((s) => s.kind === 'mountain-village')).toEqual(sites);
-  });
+  }, 30000);
 
   it('has none on the frostland mountain, which has its snow villages', () => {
     const fr = frostRegion(world)!;
