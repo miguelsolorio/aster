@@ -38,7 +38,6 @@ import { findName, isFindKind } from './finds';
 import { Talk, type Speaker } from './talk';
 import { FOUND, HERDER, KEEPER, MINER, PILGRIM, TOWNSFOLK, TRAVELLER, WEAVER, type Line } from './lines';
 import { offeringAt } from './offerings';
-import { Beacons } from './beacons';
 import { Marks } from './marks';
 import { SpyglassView } from './spyglass';
 import { SleepView } from './sleep';
@@ -265,8 +264,6 @@ function start() {
   // The places marked through the spyglass: a thread of light over each, until it is reached.
   const marks = new Marks(u);
   scene.add(marks.group);
-  // a shaft of light over each sealed cavern near by
-  scene.add(new Beacons(u).group);
   const syncMarks = () => marks.set(save.data.sightedAt, (x, z) => world.height(x, z));
   syncMarks();
   const glassView = new SpyglassView(canvasHost); // under the touch buttons and the interface, over the scene
