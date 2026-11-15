@@ -25,6 +25,7 @@ import { CollisionOverlay } from './collisionDebug';
 import { AudioEngine } from '../audio/audio';
 import { UI } from '../ui/ui';
 import { TouchControls, type TouchMode } from './touch';
+import { installTouchGuards } from './guards';
 import { AutoQuality, QUALITY, applyQuality, defaultTier } from './quality';
 import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
@@ -882,6 +883,11 @@ function start() {
   let wasTalking = false;
   let talkEase = 0;
   let talkYaw = 0;
+
+  // Going back on a phone opens the menu instead of leaving the game.
+  installTouchGuards(() => {
+    if (ui.state === 'playing') ui.openMenu();
+  });
 
   // ---- touch: a floating stick, drag to look (pinch zooms in photo mode only), one button to leap and fly
   const touchHost = document.createElement('div');
