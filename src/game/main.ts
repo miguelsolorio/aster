@@ -596,9 +596,9 @@ function start() {
         },
       };
     }
-    if (save.data.roles.miner === 1) return { lines: [MINER.pending, where] };
+    if (save.data.roles.miner === 1) return { lines: [MINER.pending, where, MINER.anyFall] };
     return {
-      lines: [...MINER.ask.map(text), where, MINER.askEnd],
+      lines: [...MINER.ask.map(text), where, MINER.anyFall, MINER.askEnd],
       done() {
         save.setRole('miner', 1);
       },
@@ -1952,6 +1952,10 @@ function start() {
           const spot = lampSpot(near);
           at.push(spot);
           if (spot.mouth) at.push(spot.mouth); // a spring has a second, up in its cave mouth
+        }
+        // Once the miner has asked, there is one by the pool of every fall in the mountains near.
+        if (save.data.roles.miner === 1) {
+          for (const f of discoveries.fallLamps(st.pos.x, st.pos.z)) if (!at.some((a) => a.x === f.x && a.z === f.z)) at.push(f);
         }
       }
       discoveries.setLamps(at);

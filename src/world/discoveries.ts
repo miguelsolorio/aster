@@ -3322,9 +3322,9 @@ export class Discoveries {
       }
     }
     if (this.scanDeeps(px, pz, near)) return true;
-    for (let i = 0; i < this.lampAt.length; i++) {
-      if (this.isBuilt(LAMP_KEY - i) || Math.hypot(this.lampAt[i].x - px, this.lampAt[i].z - pz) >= BUILD_R) continue;
-      this.buildLamp(i);
+    for (const a of this.lampAt) {
+      if (this.isBuilt(a.key) || Math.hypot(a.x - px, a.z - pz) >= BUILD_R) continue;
+      this.buildLamp(a);
       return true;
     }
     return false;
@@ -3572,21 +3572,62 @@ export class Discoveries {
 
   // ---------------------------------------------------------------- the lost lamp
 
-  private lampAt: { x: number; z: number }[] = [];
+  private lampAt: { x: number; z: number; key: number }[] = [];
+  /** The site key of the lamp at each spot it has ever been put, so one that stays put keeps its site. */
+  private readonly lampKeys = new Map<string, number>();
+  private readonly springLamps = new Map<Spring, { x: number; z: number; mouth: { x: number; z: number } }>();
+
+  /**
+   * Where the two lamps of a spring stand: one at the foot of the fall, on the bank of the pool
+   * just clear of the water, and one (`mouth`) up in the cave mouth the water pours from, which
+   * is high on a headwall nobody can walk and has to be flown to.
+   */
+  private springLamp(sp: Spring): { x: number; z: number; mouth: { x: number; z: number } } {
+    let at = this.springLamps.get(sp);
+    if (at) return at;
+    // Out from the mouth to where the fall has reached the pool, a little further, then
+    // off to one side to the first level ground clear of the water. (Failing that it
+    // stands in the shallows.)
+    const low = TERRAIN.waterY + TERRAIN.riverBank + 1.5;
+    let out = 8;
+    while (out < 90 && this.world.height(sp.x - sp.dx * out, sp.z - sp.dz * out) > low) out += 2;
+    const bx = sp.x - sp.dx * (out + 6);
+    const bz = sp.z - sp.dz * (out + 6);
+    // and the other: a few steps in from the lip, on the floor of the notch, off the middle
+    at = { x: bx, z: bz, mouth: { x: sp.x + sp.dx * 5 - sp.dz * 3, z: sp.z + sp.dz * 5 + sp.dx * 3 } };
+    search: for (let lat = 10; lat <= 34; lat += 1) {
+      for (const side of [-1, 1]) {
+        const tx = bx - sp.dz * side * lat;
+        const tz = bz + sp.dx * side * lat;
+        if (this.riverAt(tx, tz) < TERRAIN.riverHalf + 2.5 || this.world.height(tx, tz) > low) continue;
+        at.x = tx;
+        at.z = tz;
+        break search;
+      }
+    }
+    this.springLamps.set(sp, at);
+    return at;
+  }
+
+  private springsOf(gi: number, gj: number, m: Massif): Spring[] {
+    const id = (gi + 32768) * 65536 + (gj + 32768);
+    let springs = this.springCache.get(id);
+    if (!springs) this.springCache.set(id, (springs = this.findSprings(m)));
+    return springs;
+  }
 
   /**
    * Where a lamp lost near a point would be: at the nearest spring to it, failing that just
    * inside a massif's cave, and null where there is no mountain by at all. `kind` says which.
-   * A spring has two lamps, and either will do: one at the foot of the fall, on the bank of the
-   * pool just clear of the water, and one (`mouth`) up in the cave mouth the water pours from,
-   * which is high on a headwall nobody can walk and has to be flown to.
+   * A spring has two lamps, and either will do: one on the bank of its pool, one (`mouth`) up
+   * in the cave mouth the water pours from.
    */
   lampSpot(x: number, z: number): { x: number; z: number; kind: 'spring' | 'cave'; mouth?: { x: number; z: number } } | null {
     const w = this.world as Partial<{ massif(gi: number, gj: number): Massif | null; cave(gi: number, gj: number): Cave | null }>;
     if (!w.massif || !w.cave) return null;
     const gi0 = Math.floor(x / CITY_CELL);
     const gj0 = Math.floor(z / CITY_CELL);
-    let best: { x: number; z: number; kind: 'spring' | 'cave'; mouth?: { x: number; z: number } } | null = null;
+    let best: Spring | null = null;
     let bd = Infinity;
     let cave: { x: number; z: number; kind: 'spring' | 'cave' } | null = null;
     let cd = Infinity;
@@ -3594,33 +3635,11 @@ export class Discoveries {
       for (let gi = gi0; gi <= gi0 + 1; gi++) {
         const m = w.massif(gi, gj);
         if (!m) continue;
-        const id = (gi + 32768) * 65536 + (gj + 32768);
-        let springs = this.springCache.get(id);
-        if (!springs) this.springCache.set(id, (springs = this.findSprings(m)));
-        for (const sp of springs) {
+        for (const sp of this.springsOf(gi, gj, m)) {
           const d = Math.hypot(sp.x - x, sp.z - z);
           if (d >= bd) continue;
           bd = d;
-          // Out from the mouth to where the fall has reached the pool, a little further, then
-          // off to one side to the first level ground clear of the water. (Failing that it
-          // stands in the shallows.)
-          const low = TERRAIN.waterY + TERRAIN.riverBank + 1.5;
-          let out = 8;
-          while (out < 90 && this.world.height(sp.x - sp.dx * out, sp.z - sp.dz * out) > low) out += 2;
-          const bx = sp.x - sp.dx * (out + 6);
-          const bz = sp.z - sp.dz * (out + 6);
-          best = { x: bx, z: bz, kind: 'spring' };
-          search: for (let lat = 10; lat <= 34; lat += 1) {
-            for (const side of [-1, 1]) {
-              const tx = bx - sp.dz * side * lat;
-              const tz = bz + sp.dx * side * lat;
-              if (this.riverAt(tx, tz) < TERRAIN.riverHalf + 2.5 || this.world.height(tx, tz) > low) continue;
-              best = { x: tx, z: tz, kind: 'spring' };
-              break search;
-            }
-          }
-          // and the other: a few steps in from the lip, on the floor of the notch, off the middle
-          best.mouth = { x: sp.x + sp.dx * 5 - sp.dz * 3, z: sp.z + sp.dz * 5 + sp.dx * 3 };
+          best = sp;
         }
         const cv = w.cave(gi, gj)!;
         const d = Math.hypot(cv.x - x, cv.z - z);
@@ -3630,25 +3649,59 @@ export class Discoveries {
         }
       }
     }
-    return best ?? cave;
+    if (!best) return cave;
+    const at = this.springLamp(best);
+    return { x: at.x, z: at.z, kind: 'spring', mouth: at.mouth };
   }
 
-  /** Put the lost lamps out in the world, or take them all away (an empty list). Each is built when the player comes near. */
+  /**
+   * The pool bank of every mountain fall within r of a point: where a lamp stands at each once
+   * the miner has asked for one, so that any fall will do and not only the one that was named.
+   */
+  fallLamps(x: number, z: number, r = BUILD_R): { x: number; z: number }[] {
+    const out: { x: number; z: number }[] = [];
+    const w = this.world as Partial<{ massif(gi: number, gj: number): Massif | null }>;
+    if (!w.massif) return out;
+    const gi0 = Math.round(x / CITY_CELL);
+    const gj0 = Math.round(z / CITY_CELL);
+    for (let gj = gj0 - 1; gj <= gj0 + 1; gj++) {
+      for (let gi = gi0 - 1; gi <= gi0 + 1; gi++) {
+        const m = w.massif(gi, gj);
+        if (!m || Math.hypot(m.x - x, m.z - z) > r + m.r * 1.3) continue;
+        for (const sp of this.springsOf(gi, gj, m)) {
+          if (Math.hypot(sp.x - x, sp.z - z) >= r) continue;
+          const at = this.springLamp(sp);
+          out.push({ x: at.x, z: at.z });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Put the lost lamps out in the world, or take them all away (an empty list). Each is built
+   * when the player comes near; one already standing where the new list has one is left alone.
+   */
   setLamps(at: readonly { x: number; z: number }[]): void {
     if (at.length === this.lampAt.length && at.every((a, i) => a.x === this.lampAt[i].x && a.z === this.lampAt[i].z)) return;
-    this.lampAt = at.map((a) => ({ x: a.x, z: a.z }));
+    this.lampAt = at.map((a) => {
+      const id = `${a.x},${a.z}`;
+      let key = this.lampKeys.get(id);
+      if (key === undefined) this.lampKeys.set(id, (key = LAMP_KEY - this.lampKeys.size));
+      return { x: a.x, z: a.z, key };
+    });
     for (let i = this.sites.length - 1; i >= 0; i--) {
-      if (this.sites[i].kind !== 'lamp') continue;
-      this.disposeSite(this.sites[i]);
+      const s = this.sites[i];
+      if (s.kind !== 'lamp' || this.lampAt.some((a) => a.key === s.key)) continue;
+      this.disposeSite(s);
       this.sites.splice(i, 1);
     }
   }
 
   /** Whether one of the lost lamps lies within reach of (x, y, z). */
   lampNear(x: number, y: number, z: number, reach: number): boolean {
-    for (let i = 0; i < this.lampAt.length; i++) {
-      const a = this.lampAt[i];
-      if (this.isBuilt(LAMP_KEY - i) && Math.hypot(a.x - x, a.z - z) < reach && Math.abs(this.world.height(a.x, a.z) - y) < 2.5) return true;
+    for (const a of this.lampAt) {
+      if (this.isBuilt(a.key) && Math.hypot(a.x - x, a.z - z) < reach && Math.abs(this.world.height(a.x, a.z) - y) < 2.5) return true;
     }
     return false;
   }
@@ -3736,8 +3789,7 @@ export class Discoveries {
     return Math.hypot(m.position.x - x, m.position.z - z) < r && Math.abs(m.position.y - y) < 2.5;
   }
 
-  private buildLamp(n: number): void {
-    const at = this.lampAt[n];
+  private buildLamp(at: { x: number; z: number; key: number }): void {
     const baseY = this.world.height(at.x, at.z);
     const c = new Ctx(this.world, at.x, at.z, baseY, mulberry32(0x1a3f), 0);
     const st = c.stone;
@@ -3751,7 +3803,7 @@ export class Discoveries {
     c.prim(UNIT_BOX, 0.03, 0.25, 0, 0.2, 0.34, 0.2, 0.4, 0, 0.12);
     c.glow(0.03, 0.25, 0, 0.9);
     c.glow(0.03, 0.25, 0, 4.5);
-    this.finishSite(LAMP_KEY - n, 'lamp', at.x, at.z, baseY, c);
+    this.finishSite(at.key, 'lamp', at.x, at.z, baseY, c);
     this.sites[this.sites.length - 1].reachR = 0; // found by picking it up, not by coming near
   }
 
@@ -3976,8 +4028,7 @@ export class Discoveries {
           return true;
         }
         // the rock over each spring: the notch a river pours from becomes a cave mouth
-        let springs = this.springCache.get(id);
-        if (!springs) this.springCache.set(id, (springs = this.findSprings(m)));
+        const springs = this.springsOf(gi, gj, m);
         for (let k = 0; k < springs.length && k < 12; k++) {
           const sp = springs[k];
           const key = -(id * 16 + 3 + k);

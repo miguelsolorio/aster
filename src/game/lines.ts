@@ -257,6 +257,8 @@ export const MINER = {
   lampSpring: 'I had two, and left both at the spring under the mountain to the {way}, {far}. One is by the pool. The other is up in the mouth the water falls from. Either will do.',
   lampCave: 'It\'s in the cave on the mountain to the {way}, {far}. Just inside the mouth.',
   lampSand: 'It\'s out on the sand to the {way}, {far}. It\'ll be the only light out there.',
+  /** After any of the three: once asked, a lamp stands by the pool of every fall in the mountains. */
+  anyFall: 'Or try any fall in the mountains. I\'ve worked them all, and left a lamp by every pool.',
   askEnd: 'Bring it back and I\'ll make it worth the walk.',
   /** Asked already, and still no lamp. The `lamp` line follows again. */
   pending: 'No lamp? It won\'t have walked off.',
