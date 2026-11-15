@@ -1,0 +1,144 @@
+/* The map: a sheet of parchment laid over the view. */
+.aster-map {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: calc(14px + env(safe-area-inset-top, 0px)) calc(14px + env(safe-area-inset-right, 0px))
+    calc(14px + env(safe-area-inset-bottom, 0px)) calc(14px + env(safe-area-inset-left, 0px));
+  box-sizing: border-box;
+  background: rgba(8, 6, 5, 0.5);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.28s ease, visibility 0s 0.28s;
+  /* over the count in the corner and the touch buttons; the menu never opens over it */
+  z-index: 101;
+}
+.aster-map.is-on {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 0.28s ease;
+}
+.aster-map__sheet {
+  position: relative;
+  width: min(1120px, 100%);
+  height: min(780px, 100%);
+  border-radius: 5px;
+  overflow: hidden;
+  background: #b7a27d;
+  /* a ruled border a little way in from the deckle, as on a surveyed sheet */
+  box-shadow:
+    inset 0 0 0 1px rgba(58, 42, 29, 0.55),
+    0 18px 60px rgba(0, 0, 0, 0.55),
+    0 2px 6px rgba(0, 0, 0, 0.4);
+  transform: translateY(10px) scale(0.985);
+  transition: transform 0.32s cubic-bezier(0.2, 0.7, 0.2, 1);
+}
+.aster-map.is-on .aster-map__sheet {
+  transform: none;
+}
+.aster-map__sheet::after {
+  content: "";
+  position: absolute;
+  inset: 9px;
+  border: 1px solid rgba(58, 42, 29, 0.42);
+  border-radius: 2px;
+  pointer-events: none;
+}
+.aster-map__canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: grab;
+}
+.aster-map__canvas:active {
+  cursor: grabbing;
+}
+.aster-map__title,
+.aster-map__hint {
+  position: absolute;
+  left: 22px;
+  color: #3a2a1d;
+  pointer-events: none;
+  text-shadow: 0 0 6px rgba(236, 220, 185, 0.9), 0 0 2px rgba(236, 220, 185, 0.9);
+}
+.aster-map__title {
+  top: 20px;
+  font: italic 600 1.08rem/1.2 "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  letter-spacing: 0.01em;
+}
+.aster-map__hint {
+  top: 44px;
+  font: 0.72rem/1.3 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: rgba(58, 42, 29, 0.78);
+}
+.aster-map__close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  width: 44px;
+  height: 44px;
+  padding: 0 0 3px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: #3a2a1d;
+  font: 1.7rem/1 "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  cursor: pointer;
+  /* with a keyboard, M puts the map away */
+  display: none;
+}
+.aster-map.is-touch .aster-map__close {
+  display: block;
+}
+.aster-map__close:focus-visible {
+  outline: 2px solid #a23a22;
+  outline-offset: -4px;
+}
+
+/* Touch: the button that unrolls it, beside the pause button */
+.aster-map-btn {
+  position: absolute;
+  top: calc(8px + env(safe-area-inset-top, 0px));
+  right: calc(56px + env(safe-area-inset-right, 0px));
+  width: 44px;
+  height: 44px;
+  padding: 8px;
+  border: 0;
+  background: transparent;
+  color: #efe6d8;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transition: opacity 0.6s ease, visibility 0s linear 0.6s;
+  z-index: 101;
+}
+.aster-map-btn.is-on {
+  opacity: 0.55;
+  visibility: visible;
+  pointer-events: auto;
+  transition: opacity 0.6s ease, visibility 0s;
+}
+.aster-map-btn svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(0 0 4px rgba(0, 0, 0, 0.5));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aster-map,
+  .aster-map.is-on,
+  .aster-map__sheet {
+    transition: none;
+  }
+}

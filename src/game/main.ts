@@ -40,6 +40,8 @@ import { CLIMBER, FOUND, HERDER, KEEPER, MINER, PILGRIM, SAND, SNOWFOLK, TOWNSFO
 import { CavernHints } from './hints';
 import { offeringAt } from './offerings';
 import { Marks } from './marks';
+import { Atlas, areaAround } from './atlas';
+import { MapView, groundInk, type MapHint, type MapState } from './mapView';
 import { SpyglassView } from './spyglass';
 import { SleepView } from './sleep';
 import { bedGeometry, hearthGeometry, solidMaterial } from './equipment';
@@ -96,6 +98,8 @@ function start() {
   const player = new Player(world);
   // What the wanderer has been given so far. It starts with nothing: on foot.
   const save = new Save(qs);
+  // The map: the ground seen so far and the places come upon, kept between visits.
+  const atlas = Atlas.load();
   // A board, once given, is ridden until you step off it (Q); stepping off puts it on your back.
   let boardOn = true;
   player.board = save.has('board');
@@ -525,6 +529,7 @@ function start() {
   // A tool changes hands: kept, shown on the figure, and counted.
   const given = (t: Parameters<Save['give']>[0]) => {
     save.give(t);
+    if (t === 'rope' || t === 'boots' || t === 'feather') atlas.setErrand(t, null);
     wear();
     figure.flourish = 1;
     audio.chime();
@@ -534,6 +539,14 @@ function start() {
   let herderAsked = false;
   /** What the village people have sent the wanderer after this visit: said in full once, and shortly after that. */
   const sent = new Set<'rope' | 'boots' | 'feather'>();
+  /** Sent after something: where it was said to lie goes on the map, and stays there until it is in hand. */
+  const send = (what: 'rope' | 'boots' | 'feather', at: { x: number; z: number }) => {
+    sent.add(what);
+    atlas.setErrand(what, at);
+    marked();
+  };
+  /** An errand has gone onto the map: say so, and how to see it. */
+  const marked = () => ui.toast(touch.used ? 'Marked on your map' : 'Marked on your map. M to open it', 5000);
 
   // ---- talking: anyone in reach can be spoken to. Travellers give the board to someone on foot.
   const pick = <T,>(list: T[], avoid: T | null): T => {
@@ -623,6 +636,7 @@ function start() {
           audio.chime();
           buzz(20);
           syncKnown();
+          if (cav && save.data.opened.length === 0) marked();
         },
       };
     }
@@ -631,6 +645,7 @@ function start() {
       lines: [...MINER.ask.map(text), where, MINER.anyFall, MINER.askEnd],
       done() {
         save.setRole('miner', 1);
+        if (!save.data.items.lamp) marked();
       },
     };
   };
@@ -719,7 +734,7 @@ function start() {
         const rope = save.has('rope') ? null : discoveries.ropeSpot(s.x, s.z, 2500);
         if (rope) {
           if (sent.has('rope')) return { lines: [directions(WATCHER.pending, s.x, s.z, rope.x, rope.z)] };
-          return { lines: WATCHER.ask.map((l) => directions(text(l), s.x, s.z, rope.x, rope.z)), done: () => void sent.add('rope') };
+          return { lines: WATCHER.ask.map((l) => directions(text(l), s.x, s.z, rope.x, rope.z)), done: () => send('rope', rope) };
         }
         const pool = [...WATCHER.after, ...(dark() ? [...WATCHER.night, ...WATCHER.night] : []), ...(save.has('rope') ? [...WATCHER.rope, ...WATCHER.rope] : [])];
         return { lines: [(lastLine = pick(pool, lastLine))] };
@@ -731,7 +746,7 @@ function start() {
         if (want && at) {
           const pending = want === 'boots' ? CLIMBER.bootsPending : CLIMBER.featherPending;
           if (sent.has(want)) return { lines: [directions(pending, s.x, s.z, at.x, at.z)] };
-          return { lines: CLIMBER[want].map((l) => directions(text(l), s.x, s.z, at.x, at.z)), done: () => void sent.add(want) };
+          return { lines: CLIMBER[want].map((l) => directions(text(l), s.x, s.z, at.x, at.z)), done: () => send(want, at) };
         }
         return { lines: [(lastLine = pick(CLIMBER.after, lastLine))] };
       }
@@ -828,8 +843,9 @@ function start() {
   });
   onLook = (l) => talk.setColours(l.ink, l.paper);
   onLook(look);
-  discoveries.onReach = (kind, key) => {
+  discoveries.onReach = (kind, key, x, z) => {
     audio.chime();
+    if (isFindKind(kind)) atlas.addPlace({ id: `s${key}`, kind, x, z });
     // a place marked through the spyglass has been reached: its mark comes down
     if (save.data.sighted.includes(key)) {
       save.unsight(key);
@@ -842,7 +858,10 @@ function start() {
     }
   };
   fauna.onCall = (_sp, dist) => audio.yip(dist);
-  cities.onReach = () => audio.chime();
+  cities.onReach = (site) => {
+    audio.chime();
+    atlas.addPlace({ id: `c${site.id}`, kind: `city:${site.kind}`, x: site.cx, z: site.cz });
+  };
   // Roofs you can land on: buildings, and the rock over a cave once you are above its ceiling.
   // (ceilings: the caves in the massifs, the caps over the springs, and the sand left over an open cavern)
   const ceilAt = (x: number, z: number) => Math.min(world.caveCeil(x, z), discoveries.capCeil(x, z), world.cavernCeil(x, z));
@@ -949,6 +968,17 @@ function start() {
     window.addEventListener('pagehide', keepSpot);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') keepSpot();
+    });
+  }
+  // ---- and the map with it, whatever kind of visit this is
+  {
+    const keepMap = () => {
+      if (!resetting) atlas.store();
+    };
+    window.setInterval(keepMap, 5000);
+    window.addEventListener('pagehide', keepMap);
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') keepMap();
     });
   }
   let camDist = 7.5;
@@ -1217,6 +1247,92 @@ function start() {
   let chartScan = 0;
   let chartAt: { x: number; z: number } | null = null;
 
+  // ---- the map: the ground seen so far in ink and wash, and a round over each errand.
+  const inkS = { h: 0, rock: 0, salt: 0, green: 0 };
+  const mapInk = (x: number, z: number): number => {
+    world.sample(x, z, inkS);
+    const h = inkS.h;
+    const rock = inkS.rock;
+    const salt = inkS.salt;
+    const green = inkS.green ?? 0;
+    // a river is narrower than a cell: a cell is water if the river's line crosses near its middle
+    let water = false;
+    const rd = world.river(x, z);
+    if (Math.abs(rd) < 72) {
+      const gx = world.river(x + 6, z) - rd;
+      const gz = world.river(x, z + 6) - rd;
+      const gl = Math.hypot(gx, gz) || 1;
+      // (rivers fade out by cities and on the mountains: only where one is really running)
+      water = (world.sample(x - (gx / gl) * rd, z - (gz / gl) * rd, inkS).green ?? 0) > 0.6;
+    }
+    const site = world.cities.at(x, z);
+    return groundInk({
+      lit: (world.height(x + 48, z) + world.height(x, z + 48) - 2 * h) / 48,
+      rock,
+      salt,
+      green,
+      snow: Math.max(frost ? frostCover(frost, x, z) : 0, smooth(TERRAIN.snowLine, TERRAIN.snowLine + 70, h)),
+      water,
+      town: 1 - smooth(site.radius * 0.72, site.radius * 0.98, Math.hypot(site.cx - x, site.cz - z)),
+    });
+  };
+  /** What there is to go and look for now, each as a round that holds it. */
+  const mapHints = (): MapHint[] => {
+    const out: MapHint[] = [];
+    const p = player.state.pos;
+    const d = save.data;
+    const town = world.cities.near(p.x, p.z)[0];
+    if (d.roles.miner === 1 && town) {
+      if (d.items.lamp) out.push({ x: town.cx, z: town.cz, r: town.radius, label: 'Take the lamp to a miner' });
+      else {
+        const lamp = lampSpot(town);
+        out.push({ ...areaAround(lamp.x, lamp.z, 380), label: 'The miner\'s lamp' });
+      }
+    }
+    // a pick that has opened nothing yet: the nearest room under the sand
+    if (save.has('pick') && d.opened.length === 0) {
+      const cav = discoveries.nearestCavern(p.x, p.z);
+      if (cav) out.push({ ...areaAround(cav.x + cav.dx * cav.spot, cav.z + cav.dz * cav.spot, 450), label: 'A room under the sand' });
+    }
+    if (d.roles.weaver === 1 && d.items.relic && !save.has('carpet') && town) out.push({ x: town.cx, z: town.cz, r: town.radius, label: 'Take the relic to the carpet stall' });
+    const { rope, boots, feather } = atlas.errands;
+    if (rope && !save.has('rope')) out.push({ ...areaAround(rope.x, rope.z, 320), label: 'A rope, by the great bones' });
+    if (boots && !save.has('boots')) out.push({ ...areaAround(boots.x, boots.z, 380), label: 'Boots, in a mountain cave' });
+    if (feather && !save.has('feather')) out.push({ ...areaAround(feather.x, feather.z, 380), label: 'A feather, on the summit' });
+    return out;
+  };
+  const mapState: MapState = { x: 0, z: 0, heading: 0, camp: null, sighted: save.data.sightedAt, hints: [] };
+  let mapHintT = 0;
+  const readMap = (dt: number): MapState => {
+    const p = player.state.pos;
+    mapState.x = p.x;
+    mapState.z = p.z;
+    mapState.heading = player.facing;
+    mapState.camp = save.data.camp;
+    mapState.sighted = save.data.sightedAt;
+    if ((mapHintT -= dt) <= 0) {
+      mapHintT = 1;
+      mapState.hints = mapHints();
+    }
+    return mapState;
+  };
+  let mapShutAt = -1e9; // when the map was last put away
+  const toggleMap = () => {
+    if (map.isOpen) {
+      map.close();
+      mapShutAt = performance.now();
+      return;
+    }
+    if (ui.state !== 'playing' || talk.talking || sleep.isOpen || sleep.asleep || glassK > 0.1) return;
+    mapHintT = 0;
+    map.open(readMap(0));
+    buzz(8);
+  };
+  const map = new MapView(uiHost, atlas, mapInk, toggleMap);
+  let mapButton = false;
+  let revealT = 0;
+  const freshCells: number[] = [];
+
   // Step on or off the board. Off, it rides on your back and you walk.
   const toggleBoard = () => {
     if (steed) return dismount();
@@ -1229,9 +1345,16 @@ function start() {
     touch.setBoard(true, boardOn);
   };
   syncKnown();
-  touch.onFirstTouch = () => ui.setTouch(true);
+  map.setTouch(false);
+  touch.onFirstTouch = () => {
+    ui.setTouch(true);
+    map.setTouch(true);
+  };
   // A phone has not been touched yet when the title card appears, so show touch hints from the start.
-  if (window.matchMedia?.('(pointer: coarse)').matches) ui.setTouch(true);
+  if (window.matchMedia?.('(pointer: coarse)').matches) {
+    ui.setTouch(true);
+    map.setTouch(true);
+  }
   let touchMode: TouchMode = 'off';
   const buzz = (ms: number) => {
     if (touch.used && typeof navigator.vibrate === 'function') navigator.vibrate(ms);
@@ -1249,7 +1372,10 @@ function start() {
     }
   };
   document.addEventListener('pointerlockchange', () => {
-    if (document.pointerLockElement !== canvas && ui.state === 'playing') ui.openMenu();
+    if (document.pointerLockElement === canvas || ui.state !== 'playing') return;
+    // Esc with the map open puts the map away, and no more than that.
+    if (map.isOpen) toggleMap();
+    else if (performance.now() - mapShutAt > 300) ui.openMenu();
   });
   window.addEventListener('keydown', (e) => {
     if (ui.state !== 'playing') return;
@@ -1262,10 +1388,21 @@ function start() {
       e.preventDefault();
       return;
     }
-    if (e.code === 'Escape') {
-      ui.openMenu();
+    // With the map open the keys move the sheet about, and nothing else.
+    if (map.isOpen) {
+      if ((e.code === 'KeyM' || e.code === 'Escape') && !e.repeat) toggleMap();
+      else if (e.code === 'Equal' || e.code === 'NumpadAdd') map.zoomBy(1.25);
+      else if (e.code === 'Minus' || e.code === 'NumpadSubtract') map.zoomBy(0.8);
+      else keys.add(e.code);
+      if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
       return;
     }
+    if (e.code === 'Escape') {
+      // (the same press that has just put the map away does not go on to open the menu)
+      if (performance.now() - mapShutAt > 300) ui.openMenu();
+      return;
+    }
+    if (e.code === 'KeyM' && !e.repeat) toggleMap();
     if (e.code === 'Space') {
       if (!e.repeat) jumpQueued = true;
       e.preventDefault();
@@ -1296,6 +1433,7 @@ function start() {
     if (fromTouch()) return;
     const locked = document.pointerLockElement === canvas;
     if (!(locked && ui.state === 'playing') && !(dragging && (ui.state === 'playing' || photo))) return;
+    if (map.isOpen) return;
     if (glassK > 0.5) return glassLook(e.movementX, e.movementY);
     camYaw -= e.movementX * 0.0026;
     camPitch = Math.min(1.25, Math.max(-0.35, camPitch + e.movementY * 0.0022));
@@ -1303,7 +1441,8 @@ function start() {
   window.addEventListener(
     'wheel',
     (e) => {
-      if (ui.state === 'playing' && glassK > 0.5) glassFov = Math.min(20, Math.max(4, glassFov * Math.exp(e.deltaY * 0.0012)));
+      if (map.isOpen) map.zoomBy(Math.exp(-e.deltaY * 0.0015));
+      else if (ui.state === 'playing' && glassK > 0.5) glassFov = Math.min(20, Math.max(4, glassFov * Math.exp(e.deltaY * 0.0012)));
       else if (ui.state === 'playing' || photo) camDist = Math.min(photo ? 60 : 16, Math.max(3, camDist * Math.exp(e.deltaY * 0.0012)));
     },
     { passive: true },
@@ -1489,13 +1628,27 @@ function start() {
       if (glassK < 0.004) glassK = 0;
     }
     if (!playing && sleep.isOpen) sleep.close();
-    const still = glassK > 0.5 || fluteT > 0 || sleep.isOpen || sleep.asleep;
+    // The map: what is stood in is seen (not from down in a deep), and while the sheet is open
+    // the wanderer stands and the keys slide it about.
+    if (!playing && map.isOpen) map.close();
+    if (playing !== mapButton) map.setButton((mapButton = playing));
+    if ((revealT -= dt) <= 0) {
+      revealT = 0.25;
+      if (!deepIn && !player.under) {
+        freshCells.length = 0;
+        // (from the air more of it lies in view)
+        if (atlas.reveal(st.pos.x, st.pos.z, 480 + Math.min(420, Math.max(0, player.alt) * 14), freshCells) > 0) map.fresh(freshCells);
+      }
+    }
+    const mapOpen = map.isOpen;
+    map.update(dt, mapOpen ? readMap(dt) : null, kx, -kz);
+    const still = glassK > 0.5 || fluteT > 0 || sleep.isOpen || sleep.asleep || mapOpen;
     input.x = playing && !still ? Math.max(-1, Math.min(1, kx + touch.moveX)) : 0;
     input.z = playing && !still ? Math.max(-1, Math.min(1, kz + touch.moveZ)) : 0;
-    input.run = playing && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.boost);
-    input.jump = playing && jumpQueued;
-    input.lift = playing && (keys.has('Space') || touch.flyHeld);
-    input.drop = playing && touch.dropHeld;
+    input.run = playing && !mapOpen && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.boost);
+    input.jump = playing && !mapOpen && jumpQueued;
+    input.lift = playing && !mapOpen && (keys.has('Space') || touch.flyHeld);
+    input.drop = playing && !mapOpen && touch.dropHeld;
     jumpQueued = false;
     // Near the things found in the desert a fast move is taken in short steps, so a rib a
     // hand's width across is not stepped clean over between two frames.
@@ -2197,7 +2350,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, save, talk, figure, trail, dust, bake, renderer, discoveries, props, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
+        player, day, keys, world, save, atlas, map, talk, figure, trail, dust, bake, renderer, discoveries, props, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
   }
 
   let frozen = false;

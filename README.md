@@ -12,6 +12,8 @@ A calm desert to wander, glide and fly through. It runs in the browser, there's 
 
 You start on foot in open sand with a city somewhere in sight. The rest is yours to find: dune seas, salt pans, river gorges, walled towns, caravans on the road between them, and a snow-capped mountain on most horizons. Out on the sand there are empty hamlets round their wells and lone watchtowers with a fire lit at night. Most mountains have a village or two at their foot, with garden terraces, a tower and goats grazing outside. People live in them: stop and talk. The watcher under the tower, in blue, and the old climber by the fire, in green, each know where something useful was left. One of those mountains has a road to it: follow the torches out of the desert, through a stone gate where the sand turns to snow, and up the flank to three villages and a lantern hold at the top. The sun rises and sets while you walk, so the same ridge looks different every time you come back to it.
 
+You carry a map, and it starts empty. Ground is washed in as you see it, towns and finds are inked in once you reach them, and it's all kept between visits. When someone sends you after something, a dashed circle goes on the map over roughly where to look.
+
 | | |
 |---|---|
 | ![First light on a mountain above rippled sand](docs/screenshots/02-first-light.jpg) | ![Dusk over dark ripples with two peaks behind](docs/screenshots/04-after-sunset.jpg) |
@@ -34,6 +36,7 @@ There are 20 of these in [docs/screenshots](docs/screenshots).
 | `F` | Hold up the spyglass, once you have one |
 | `R` | Play the flute, once you have one |
 | `B` | Lay the bedroll and sleep in it, once you have one |
+| `M` | Open the map. `W` `A` `S` `D` move it, the wheel zooms |
 | `Esc` | Menu and photo mode |
 
 It plays on a phone too, with touch controls.
