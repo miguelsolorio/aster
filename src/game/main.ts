@@ -36,9 +36,9 @@ import { Massifs } from '../world/massifs';
 import { Save, loadSpawn, saveSpawn, clearSpawn, clearProgress } from './save';
 import { findName, isFindKind } from './finds';
 import { Talk, type Speaker } from './talk';
-import { CLIMBER, FOUND, HERDER, KEEPER, MINER, PILGRIM, SNOWFOLK, TOWNSFOLK, TRAVELLER, VILLAGER, WATCHER, WEAVER, type Line } from './lines';
+import { CLIMBER, FOUND, HERDER, KEEPER, MINER, PILGRIM, SAND, SNOWFOLK, TOWNSFOLK, TRAVELLER, VILLAGER, WATCHER, WEAVER, type Line } from './lines';
+import { CavernHints } from './hints';
 import { offeringAt } from './offerings';
-import { Beacons } from './beacons';
 import { Marks } from './marks';
 import { SpyglassView } from './spyglass';
 import { SleepView } from './sleep';
@@ -282,8 +282,6 @@ function start() {
   // The places marked through the spyglass: a thread of light over each, until it is reached.
   const marks = new Marks(u);
   scene.add(marks.group);
-  // a shaft of light over each sealed cavern near by
-  scene.add(new Beacons(u).group);
   const syncMarks = () => marks.set(save.data.sightedAt, (x, z) => world.height(x, z));
   syncMarks();
   const glassView = new SpyglassView(canvasHost); // under the touch buttons and the interface, over the scene
@@ -653,6 +651,10 @@ function start() {
   const layOffers = () => discoveries.setOffers((key) => offeringAt(key, (t) => save.has(t), save.data.gathered.includes(key)));
   let lampT = 0;
   const digAt = { x: 0, y: 0, z: 0 };
+  // ---- the lit sand over a sealed cavern says what it is to whoever walks onto it
+  const cavernHints = new CavernHints();
+  let hintScan = 0;
+  let lastHint: string | null = null;
 
   const setFolk = (out: Speaker) => {
     out.kind = 'townsfolk';
@@ -1979,6 +1981,19 @@ function start() {
         digAt.z = stoneAt[2];
       }
       talk.mark(camera, stoneAt || cv ? digAt : null);
+    }
+
+    // On the lit sand itself, on foot or on the board: a line about what lies under it.
+    if ((hintScan -= dt) <= 0) {
+      hintScan = 0.25;
+      if (playing && st.grounded && !steed && !deepIn && !cities.inside && !talk.talking && !talk.telling && !discoveries.drainingCavern) {
+        const cv = discoveries.sealedNear(st.pos.x, st.pos.z, discoveries.digReach); // (said where a strike would count)
+        const hint = cv && cavernHints.take(cv.x, cv.z, save.has('pick'), save.data.opened.length > 0);
+        if (hint) {
+          const line = hint === 'again' ? (lastHint = pick(SAND.again, lastHint)) : text(SAND[hint]);
+          talk.tell({ x: st.pos.x, y: st.pos.y + 1.8, z: st.pos.z }, line, hint === 'again' ? 4.5 : 7);
+        }
+      }
     }
 
     cities.update(dt, st.pos);

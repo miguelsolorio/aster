@@ -4,6 +4,7 @@ import type { DesertWorld } from '../world/surface';
 import { MAX_SITES } from './cityGlsl';
 import { buildCity, type CityMeshes } from './build';
 import { planCity } from './plan';
+import { PlanAhead } from './planAhead';
 import type { CityKind, CityPlan, CitySite } from './types';
 import type { FrameState } from '../game/contract';
 import { EMITTER_KINDS, SolidIndex, createExtraCtx, type EmitterKind, type Extra, type ExtraCtx } from './extras';
@@ -21,6 +22,8 @@ const KIND_ID: Record<CityKind, number> = { hill: 1, canyon: 2, oasis: 3, trade:
 
 const FAR_IN = 9000 * WORLD_SCALE; // skyline appears (distance to the city's edge)
 const FAR_OUT = 11000 * WORLD_SCALE;
+const PLAN_IN = FAR_IN + 1200; // its plan is asked for (off the main thread) this far out, to be ready by FAR_IN
+const PLAN_NOW = 3000; // a city this near with no plan yet (the game has just begun) is planned on the spot
 const NEAR_IN = 1500; // full buildings appear
 const NEAR_OUT = 1800;
 const REACH = 40; // metres inside the edge that counts as arriving
@@ -71,6 +74,7 @@ export class Cities {
   private cutFade = 0;
 
   private loaded = new Map<number, Loaded>();
+  private readonly plans = new PlanAhead();
   private reachedIds = new Set<number>();
   private sites: CitySite[] = [];
   private blank: THREE.DataTexture;
@@ -351,8 +355,7 @@ export class Cities {
     return true;
   }
 
-  private load(site: CitySite): Loaded {
-    const plan = planCity(site);
+  private load(site: CitySite, plan: CityPlan): Loaded {
     const meshes = buildCity(plan, this.u);
     const holder = new THREE.Group();
     holder.position.set(site.cx, site.groundY, site.cz);
@@ -397,12 +400,18 @@ export class Cities {
     let built = false;
     // Bring cities into range one at a time so a single frame never builds two.
     for (const site of this.sites) {
+      if (this.loaded.has(site.id)) continue;
       const d = Math.hypot(site.cx - pos.x, site.cz - pos.z) - site.radius;
-      if (d < FAR_IN && !this.loaded.has(site.id)) {
-        this.load(site);
-        built = true;
-        break;
-      }
+      if (d > FAR_OUT) this.plans.forget(site.id);
+      else if (d < PLAN_IN) this.plans.request(site);
+      if (d >= FAR_IN || built) continue;
+      // Its plan was asked for on the way here and is nearly always waiting. One still being
+      // worked out is waited for, unless the city is close enough to be missed.
+      const plan = this.plans.take(site) ?? (d < PLAN_NOW || !this.plans.working ? planCity(site) : null);
+      if (!plan) continue;
+      this.plans.forget(site.id);
+      this.load(site, plan);
+      built = true;
     }
     // Then fill in their extras, nearest city first, one piece per scan.
     if (!built) {
