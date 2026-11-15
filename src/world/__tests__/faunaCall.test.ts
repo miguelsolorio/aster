@@ -113,6 +113,11 @@ describe('Fauna.call', () => {
     const p = f.player.pos;
     fa.call(p.x, p.z);
     run(fa, f, 45, () => Math.hypot(beast.x - p.x, beast.z - p.z) < MOUNT_REACH);
+    // the key cap goes over its back
+    const at = { x: 0, y: 0, z: 0 };
+    fa.rideMark(fa.nearestRideable(p.x, p.z), at);
+    expect([at.x, at.z]).toEqual([beast.x, beast.z]);
+    expect(at.y).toBeGreaterThan(0.8);
     expect(fa.mount(fa.nearestRideable(p.x, p.z))).toBe(true);
     expect(fa.called).toBe(false);
     fa.dismount();

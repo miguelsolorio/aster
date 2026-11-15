@@ -666,6 +666,14 @@ function start() {
   const layOffers = () => discoveries.setOffers((key) => offeringAt(key, (t) => save.has(t), save.data.gathered.includes(key)));
   let lampT = 0;
   const digAt = { x: 0, y: 0, z: 0 };
+  // Riding: a wild ass, an oryx or a caravan's camel. Both kinds are ridden the same way.
+  type Steeds = Pick<Fauna, 'mounted' | 'nearestRideable' | 'rideMark' | 'mount' | 'dismount' | 'ride' | 'seat'>;
+  // The beast in reach that could be climbed onto now (src null when there is none), how far its
+  // middle is, and where the key cap sits on its back. Worked out once a frame, before the talking.
+  const rideNear: { src: Steeds | null; ref: unknown; d: number } = { src: null, ref: null, d: Infinity };
+  const rideAt = { x: 0, y: 0, z: 0 };
+  /** A beast is about this far (m) from its middle to its flank: taken off its distance when it is weighed against someone to talk to. */
+  const RIDE_GIRTH = 0.7;
   // ---- the lit sand over a sealed cavern says what it is to whoever walks onto it
   const cavernHints = new CavernHints();
   let hintScan = 0;
@@ -680,23 +688,29 @@ function start() {
     out.y = player.state.pos.y + (1.7 - 0.6 * folk.sit) * folk.h;
     out.pitch = folk.h < 0.8 ? 330 + (folk.id % 7) * 12 : 130 + (folk.id % 11) * 11;
   };
+  /** Whoever is in reach to talk to: the miner, someone of the roads and camps, or one of a city's people. */
+  const findPerson = (out: Speaker): boolean => {
+    const p = player.state.pos;
+    if (!player.state.grounded) return false;
+    if (people.minerNear(3, minerP)) {
+      setMiner(out);
+      return true;
+    }
+    if (caravans.nearestPerson(p.x, p.z, 3.4, trav) && Math.abs(trav.y - p.y) < 2) {
+      setTraveller(out);
+      return true;
+    }
+    if (people.nearestPerson(2.8, folk)) {
+      setFolk(out);
+      return true;
+    }
+    return false;
+  };
   const talk = new Talk(uiHost, {
+    // (a beast to ride that is nearer than anyone to talk to has the key instead: see scanRide)
     find(out) {
       const p = player.state.pos;
-      if (!player.state.grounded) return false;
-      if (people.minerNear(3, minerP)) {
-        setMiner(out);
-        return true;
-      }
-      if (caravans.nearestPerson(p.x, p.z, 3.4, trav) && Math.abs(trav.y - p.y) < 2) {
-        setTraveller(out);
-        return true;
-      }
-      if (people.nearestPerson(2.8, folk)) {
-        setFolk(out);
-        return true;
-      }
-      return false;
+      return findPerson(out) && !(rideNear.src && rideNear.d - RIDE_GIRTH < Math.hypot(out.x - p.x, out.z - p.z));
     },
     hold(s) {
       if (s.kind === 'miner') {
@@ -1042,17 +1056,36 @@ function start() {
   let swingHit = false;
   // ---- riding: a wild ass, an oryx or a caravan's camel, walked up to and climbed onto. The board and carpet are stowed meanwhile.
   // Both kinds are ridden the same way; only one at a time.
-  type Steeds = Pick<Fauna, 'mounted' | 'nearestRideable' | 'mount' | 'dismount' | 'ride' | 'seat'>;
   let steed: Steeds | null = null;
-  const tryMount = () => {
+  /**
+   * Look for a beast to climb onto: the nearest in reach, wild or a camel, kept in rideNear with
+   * where its key cap goes. Nothing while riding, in the air, underground or inside a city.
+   */
+  const scanRide = () => {
+    rideNear.src = null;
+    rideNear.ref = null;
+    rideNear.d = Infinity;
     const p = player.state.pos;
-    if (steed || !player.state.grounded || discoveries.deepIn || cities.inside || ui.state !== 'playing') return false;
-    // (a wild one in reach first, then a camel)
-    const a = fauna.nearestRideable(p.x, p.z);
-    const c = a ? null : caravans.nearestRideable(p.x, p.z);
-    if (a && fauna.mount(a)) steed = fauna;
-    else if (c && caravans.mount(c)) steed = caravans;
-    else return false;
+    if (steed || !player.state.grounded || discoveries.deepIn || cities.inside || ui.state !== 'playing') return;
+    for (const src of [fauna, caravans] as Steeds[]) {
+      const ref = src.nearestRideable(p.x, p.z);
+      if (!ref) continue;
+      src.rideMark(ref, rideAt);
+      const d = Math.hypot(rideAt.x - p.x, rideAt.z - p.z);
+      if (d < rideNear.d) {
+        rideNear.src = src;
+        rideNear.ref = ref;
+        rideNear.d = d;
+      }
+    }
+    if (rideNear.src) rideNear.src.rideMark(rideNear.ref, rideAt);
+  };
+  const tryMount = () => {
+    scanRide();
+    const src = rideNear.src;
+    if (!src?.mount(rideNear.ref)) return false;
+    steed = src;
+    rideNear.src = null;
     save.setDeed('rode');
     player.board = false;
     figure.boardOn = false;
@@ -2117,9 +2150,11 @@ function start() {
 
     // Speech is drawn over the scene, so it is placed once the camera has settled.
     talk.setKey(touch.used ? '' : 'E');
+    if (playing && !talk.talking) scanRide();
+    else rideNear.src = null;
     talk.update(camera, st.pos.x, st.pos.z, playing);
     const stoneAt = playing && !talk.talking ? discoveries.stoneAt(st.pos.x, st.pos.y, st.pos.z) : null;
-    touch.setTalk(talk.available || stoneAt !== null, canDig() && st.onRock < 0.5);
+    touch.setTalk(talk.available || stoneAt !== null, canDig() && st.onRock < 0.5, !playing ? null : steed ? 'off' : rideNear.src ? 'on' : null);
     // Standing where a strike would count, with a pick: the key shows over the cracked sand.
     {
       const cv = playing && canDig() && !discoveries.drainingCavern ? discoveries.sealedNear(st.pos.x + Math.sin(player.facing) * 0.75, st.pos.z + Math.cos(player.facing) * 0.75, discoveries.digReach) : null;
@@ -2133,7 +2168,8 @@ function start() {
         digAt.y = stoneAt[1] + 0.4;
         digAt.z = stoneAt[2];
       }
-      talk.mark(camera, stoneAt || cv ? digAt : null);
+      // (in the order the key takes them: a stone to wake, a beast to climb onto, sand to strike)
+      talk.mark(camera, stoneAt ? digAt : rideNear.src ? rideAt : cv ? digAt : null);
     }
 
     // On the lit sand itself, on foot or on the board: a line about what lies under it.

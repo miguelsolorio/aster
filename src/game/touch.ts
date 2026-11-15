@@ -47,6 +47,11 @@ const TALK_SVG =
 const PICK_SVG =
   '<svg class="aster-touch__pick" viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
   '<path d="M6 12.5c3.5-4.6 12.5-4.6 16 0"/><path d="M14 9v13"/></svg>';
+// a camel from the side: rump, hump, neck and head, the belly and a leg at each end
+const RIDE_SVG =
+  '<svg class="aster-touch__ride" viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
+  '<path d="M5.5 22v-7.5c0-1.700 1-2.700 2.500-2.700 1.100 0 1.700-.7 2.300-2 .6-1.400 1.500-2.300 2.900-2.300s2.300.9 2.900 2.300c.5 1.200 1.100 1.900 2.100 1.900 1.200 0 2-.9 2-2.100V7.500c0-1 .8-1.800 1.800-1.800h1.500"/>' +
+  '<path d="M5.5 17h12M17.5 11.6V22"/></svg>';
 const BOARD_SVG =
   '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
   '<path d="M5 19.5c0-1.2 4-2 9-2s9 .8 9 2-4 2-9 2-9-.8-9-2z"/><path d="M11 17V9.5M17 17V9.5"/></svg>';
@@ -144,7 +149,7 @@ export class TouchControls {
     talk.className = 'aster-touch__talk';
     talk.setAttribute('aria-label', 'Talk');
     talk.tabIndex = -1;
-    talk.innerHTML = TALK_SVG + PICK_SVG;
+    talk.innerHTML = TALK_SVG + PICK_SVG + RIDE_SVG;
     this.talk = talk;
 
     // Board: appears once there is a board to step on or off.
@@ -213,12 +218,17 @@ export class TouchControls {
 
   /**
    * Show the talk button while there is someone to talk to. With nobody in reach it becomes
-   * the pick's button instead, wherever there is ground to strike (`dig`).
+   * the button for a beast in reach to climb onto, or for getting off the one ridden (`ride`),
+   * and failing that the pick's, wherever there is ground to strike (`dig`).
    */
-  setTalk(on: boolean, dig = false): void {
-    this.layer.classList.toggle('aster-touch--talk', on || dig);
-    this.layer.classList.toggle('aster-touch--dig', dig && !on);
-    this.talk.setAttribute('aria-label', dig && !on ? 'Swing the pick' : 'Talk');
+  setTalk(on: boolean, dig = false, ride: 'on' | 'off' | null = null): void {
+    const riding = ride !== null && !on;
+    const digging = dig && !on && !riding;
+    this.layer.classList.toggle('aster-touch--talk', on || dig || riding);
+    this.layer.classList.toggle('aster-touch--ride', riding);
+    this.layer.classList.toggle('aster-touch--dig', digging);
+    const label = riding ? (ride === 'on' ? 'Ride' : 'Get off') : digging ? 'Swing the pick' : 'Talk';
+    if (this.talk.getAttribute('aria-label') !== label) this.talk.setAttribute('aria-label', label);
   }
 
   /** Show the board button once there is a board; it reads as pressed while riding. */
