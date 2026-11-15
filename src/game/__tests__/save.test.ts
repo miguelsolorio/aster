@@ -116,6 +116,16 @@ describe('Save', () => {
     expect(d.found).toEqual([]);
   });
 
+  it('remembers which temples have given their offering', () => {
+    const s = new Save(qs());
+    s.gather(41);
+    s.gather(41);
+    s.gather(7);
+    expect(new Save(qs()).data.gathered).toEqual([41, 7]);
+    store.setItem('aster.save', JSON.stringify({ v: 1, gathered: 'all' }));
+    expect(new Save(qs()).data.gathered).toEqual([]);
+  });
+
   it('sanitizes the found kinds: known ones only, each once, in order', () => {
     store.setItem('aster.save', JSON.stringify({ v: 1, found: ['grove', 'lamp', 3, null, 'grove', 'summit'] }));
     expect(new Save(qs()).data.found).toEqual(['grove', 'summit']);

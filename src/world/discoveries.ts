@@ -14,7 +14,8 @@ import { Solids, type SolidKind } from './solids';
 import { createDeep } from './deep/index';
 import { frostLayout, frostRegion, frostCover, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
 import { footVillages, type FootVillage } from './foothills';
-import { ropeCoilGeometry, solidMaterial } from '../game/equipment';
+import { CHOSEN, bedrollGeometry, carpetGeometry, chartGeometry, fluteGeometry, rodGeometry, ropeCoilGeometry, rugMaterial, solidMaterial } from '../game/equipment';
+import type { Offering } from '../game/offerings';
 import { isFindKind } from '../game/finds';
 import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types';
 
@@ -498,7 +499,7 @@ class Ctx {
   /** Where a relic lies, local. */
   relic: [number, number, number] | null = null;
   /** A temple's marks, local: the stair's foot, the avenue's end, the way out, and where keepers stand (x, y, z, yaw). */
-  temple: { foot: [number, number, number]; end: [number, number, number]; yaw: number; keep: [number, number, number, number][] } | null = null;
+  temple: { foot: [number, number, number]; end: [number, number, number]; yaw: number; keep: [number, number, number, number][]; offer: [number, number, number] } | null = null;
   /** What the wanderer walks into and stands on: one shape per stone, drum and length of bone. */
   readonly solids = new Solids();
   /** Off while building things you pass straight through (scrub, paving flush with the ground). */
@@ -2605,6 +2606,12 @@ function buildTemple(c: Ctx): void {
   c.prim(UNIT_BOX, au, top + 1.35, 0, 0.5, 0.3, 0.5, 0.6);
   c.glow(au, top + 1.6, 0, 0.9);
   c.glow(au, top + 1.8, 0, 4.5);
+  // A low stone before the altar, where something is left for whoever walks in (see setOffers).
+  const ou = au + 2.7;
+  sand(0.92, 0.04);
+  c.prim(UNIT_BOX, ou, top + 0.22, 0, 1.0, 0.44, 1.0);
+  st.set(0.98 * tk, 0.82 * tk, 0.68 * tk, 0, 0.04);
+  c.prim(UNIT_BOX, ou, top + 0.49, 0, 1.16, 0.1, 1.16);
 
   // Braziers: either side of the door and of the stair's foot. They burn after dark.
   const brazier = (u: number, v: number, gy: number) => {
@@ -2672,6 +2679,7 @@ function buildTemple(c: Ctx): void {
     foot: local(foot + 2.5, 0, c.g(foot + 2.5, 0)),
     end: local(foot + A, 0, c.g(foot + A, 0)),
     yaw: yawOut,
+    offer: local(ou, 0, top + 0.54),
     keep: [
       [...local(keepU, D / 2 + 1.6, top), yawOut + c.r(-0.4, 0.2)],
       [...local(foot + 1.6, kv, c.g(foot + 1.6, kv)), yawOut + c.r(0.4, 1.2)],
@@ -2866,6 +2874,8 @@ interface Site {
   light?: THREE.Vector4;
   relic?: { x: number; y: number; z: number; obj: THREE.Object3D };
   temple?: TempleMarks;
+  /** For a temple: what lies on the stone before its altar now, if anything. */
+  offer?: { kind: Offering; obj: THREE.Group };
 }
 
 /** Where people go at a temple, in world coordinates. */
@@ -2878,6 +2888,8 @@ export interface TempleMarks {
   yaw: number;
   /** Where the keepers stand, and which way they face. */
   keep: { x: number; y: number; z: number; yaw: number }[];
+  /** The top of the stone before the altar, where an offering lies. */
+  offer: { x: number; y: number; z: number };
 }
 
 /** A built place in the open desert that people might walk to. */
@@ -3709,7 +3721,8 @@ export class Discoveries {
   // ---------------------------------------------------------------- the rope beside the bones
 
   private ropeMesh: THREE.Mesh | null = null;
-  private ropeMat: THREE.ShaderMaterial | null = null;
+  /** One material for every small thing left lying about: the rope, the temples' offerings. */
+  private toolMat: THREE.ShaderMaterial | null = null;
   /** What the bones of a cell are made of, by cell key (for keeping a rope clear of them). */
   private readonly boneSolids = new Map<number, Solids | null>();
 
@@ -3773,8 +3786,7 @@ export class Discoveries {
       return;
     }
     if (!this.ropeMesh) {
-      this.ropeMat = solidMaterial(this.u);
-      this.ropeMesh = new THREE.Mesh(ropeCoilGeometry(), this.ropeMat);
+      this.ropeMesh = new THREE.Mesh(ropeCoilGeometry(), (this.toolMat ??= solidMaterial(this.u)));
       this.ropeMesh.name = 'rope';
       this.group.add(this.ropeMesh);
     }
@@ -3787,6 +3799,140 @@ export class Discoveries {
     const m = this.ropeMesh;
     if (!m?.visible) return false;
     return Math.hypot(m.position.x - x, m.position.z - z) < r && Math.abs(m.position.y - y) < 2.5;
+  }
+
+  // ---------------------------------------------------------------- the offerings in the temples
+
+  /**
+   * Lay on each built temple's stone whatever `pick` says it holds now (by site key), or clear
+   * it (null). Cheap to call often: a stone that already holds the right thing is left alone.
+   */
+  setOffers(pick: (key: number) => Offering | null): void {
+    for (const s of this.sites) {
+      if (!s.temple) continue;
+      const kind = pick(s.key);
+      if ((s.offer?.kind ?? null) === kind) continue;
+      if (s.offer) {
+        s.group.remove(s.offer.obj);
+        s.offer.obj.traverse((o) => {
+          if (o instanceof THREE.Mesh) (o.geometry as THREE.BufferGeometry).dispose();
+        });
+      }
+      s.offer = kind ? { kind, obj: this.buildOffer(kind, s) } : undefined;
+    }
+  }
+
+  /** The offering lying within reach of (x, y, z): which temple's, and what it is. */
+  offerNear(x: number, y: number, z: number, reach: number): { key: number; kind: Offering } | null {
+    for (const s of this.sites) {
+      if (!s.offer || !s.temple) continue;
+      const o = s.temple.offer;
+      if (Math.hypot(o.x - x, o.z - z) < reach && Math.abs(o.y - y) < 2.5) return { key: s.key, kind: s.offer.kind };
+    }
+    return null;
+  }
+
+  /** Whether a temple within r of (x, z) still has something on its stone. */
+  offerWithin(x: number, z: number, r: number): boolean {
+    return this.sites.some((s) => s.offer && Math.hypot(s.x - x, s.z - z) < r);
+  }
+
+  /** A tool laid on a temple's stone, larger than life so it reads from the door, under a small light. */
+  private buildOffer(kind: Offering, s: Site): THREE.Group {
+    let g: THREE.BufferGeometry;
+    switch (kind) {
+      case 'chart': g = chartGeometry().rotateZ(Math.PI / 2).scale(2.4, 2.4, 2.4).translate(0, 0.08, 0); break;
+      // (the finger holes turned up)
+      case 'flute': g = fluteGeometry().translate(0, -0.2, 0).rotateZ(Math.PI / 2).rotateX(-Math.PI / 2).scale(2.4, 2.4, 2.4).translate(0, 0.04, 0); break;
+      case 'bedroll': g = bedrollGeometry().scale(1.7, 1.7, 1.7).translate(0, 0.135, 0); break;
+      case 'rod': g = rodGeometry().translate(0, 0.012, -0.17).scale(2.4, 2.4, 2.4); break;
+      default: g = ropeCoilGeometry().scale(1.5, 1.5, 1.5);
+    }
+    const o = s.temple!.offer;
+    const lx = o.x - s.ox;
+    const ly = o.y - s.oy;
+    const lz = o.z - s.oz;
+    // askew on the stone, the same way every time
+    g.rotateY(0.5 + (s.key % 7) * 0.3).translate(lx, ly, lz);
+    const obj = new THREE.Group();
+    obj.name = `offer:${kind}`;
+    obj.add(new THREE.Mesh(g, (this.toolMat ??= solidMaterial(this.u))));
+    obj.add(this.glowMesh([lx, ly + 0.25, lz, 0.7, lx, ly + 0.25, lz, 2.6], this.relicGlowMat));
+    s.group.add(obj);
+    return obj;
+  }
+
+  // ---------------------------------------------------------------- the carpet in the deeps
+
+  private carpetOn = false;
+  private carpetIn: CavernSite | null = null;
+  private carpet: { group: THREE.Group; mat: THREE.ShaderMaterial; pos: THREE.Vector3; speed: { value: number }; loose: boolean } | null = null;
+
+  /**
+   * Whether a carpet waits under the sand. While it does, one hangs in the air at the heart of
+   * whichever open deep the wanderer is in (or nearest); once they come to the heart it flies to them.
+   */
+  setCarpet(on: boolean): void {
+    this.carpetOn = on;
+    if (!on && this.carpet) this.carpet.group.visible = false;
+  }
+
+  /** Whether the carpet has come within r of someone whose feet are at (x, y, z). */
+  carpetNear(x: number, y: number, z: number, r: number): boolean {
+    const c = this.carpet;
+    return !!c && this.carpetOn && c.group.visible && Math.hypot(c.pos.x - x, c.pos.y - y - 1.1, c.pos.z - z) < r;
+  }
+
+  /** Per frame: hang the carpet at the heart of a deep, and send it to the wanderer once they reach it. */
+  private driftCarpet(f: FrameState, inside: CavernSite | null): void {
+    const cs = this.carpetOn ? (inside ?? this.deeps.find((d) => d.cav.open >= 1) ?? null) : null;
+    if (!cs) {
+      if (this.carpet) this.carpet.group.visible = false;
+      this.carpetIn = null;
+      return;
+    }
+    if (!this.carpet) {
+      const { geo, len } = carpetGeometry(CHOSEN.carpet);
+      const speed = { value: 0 };
+      const mat = rugMaterial(this.u, speed, { value: len });
+      const group = new THREE.Group();
+      group.name = 'carpet';
+      group.rotation.order = 'YXZ';
+      group.add(new THREE.Mesh(geo, mat), this.glowMesh([0, 0.1, 0, 1.1, 0, 0.1, 0, 5.5], this.relicGlowMat));
+      this.group.add(group);
+      this.carpet = { group, mat, pos: new THREE.Vector3(), speed, loose: false };
+    }
+    const c = this.carpet;
+    const home = cs.deep!.centre;
+    if (this.carpetIn !== cs) {
+      this.carpetIn = cs;
+      c.pos.set(home[0], home[1] + 1.5, home[2]);
+      c.loose = false;
+    }
+    const p = f.player.pos;
+    // (the same reach at which the heart counts as found)
+    if (!c.loose && inside === cs && Math.hypot(home[0] - p.x, home[1] - p.y, home[2] - p.z) < 14) c.loose = true;
+    if (c.loose) {
+      const dx = p.x - c.pos.x;
+      const dy = p.y + 1.1 - c.pos.y;
+      const dz = p.z - c.pos.z;
+      const d = Math.hypot(dx, dy, dz);
+      if (d > 1e-3) {
+        // quick while it is far off, easing in as it arrives
+        const k = Math.min(1, (Math.min(16, 3 + d * 1.6) * f.dt) / d);
+        c.pos.set(c.pos.x + dx * k, c.pos.y + dy * k, c.pos.z + dz * k);
+        if (Math.hypot(dx, dz) > 0.3) c.group.rotation.y = Math.atan2(dx, dz);
+      }
+      c.speed.value = Math.min(1, d / 8);
+    } else {
+      c.speed.value = 0;
+      c.group.rotation.y += f.dt * 0.35;
+    }
+    // waiting, it hangs tipped so its pattern shows from across the room; flying, it levels out
+    const tip = c.loose ? 0 : 0.3;
+    c.group.rotation.x += (tip - c.group.rotation.x) * Math.min(1, f.dt * 4);
+    c.group.position.set(c.pos.x, c.pos.y + Math.sin(f.time * 1.3) * 0.12, c.pos.z);
+    c.group.visible = true;
   }
 
   private buildLamp(at: { x: number; z: number; key: number }): void {
@@ -3893,6 +4039,7 @@ export class Discoveries {
       }
     }
     this.inside = inside;
+    this.driftCarpet(f, inside);
     // What lights the things that move underground, and the rock of the antechamber: down in
     // a deep, its nearest lamp; up in the antechamber, whatever burns at the head of the stair,
     // or failing that the faint light that comes up the hole.
@@ -4886,14 +5033,20 @@ export class Discoveries {
     this.shaftMat.dispose();
     this.underWaterMat.dispose();
     this.ropeMesh?.geometry.dispose();
-    this.ropeMat?.dispose();
+    this.toolMat?.dispose();
+    if (this.carpet) {
+      this.carpet.group.traverse((o) => {
+        if (o instanceof THREE.Mesh) (o.geometry as THREE.BufferGeometry).dispose();
+      });
+      this.carpet.mat.dispose();
+    }
   }
 }
 
 function templeMarks(ctx: Ctx, baseY: number): TempleMarks {
   const t = ctx.temple!;
   const w = (p: readonly number[]) => ({ x: ctx.x + p[0], y: baseY + p[1], z: ctx.z + p[2] });
-  return { foot: w(t.foot), end: w(t.end), yaw: t.yaw, keep: t.keep.map((k) => ({ ...w(k), yaw: k[3] })) };
+  return { foot: w(t.foot), end: w(t.end), yaw: t.yaw, offer: w(t.offer), keep: t.keep.map((k) => ({ ...w(k), yaw: k[3] })) };
 }
 
 function cellKey(cx: number, cz: number): number {

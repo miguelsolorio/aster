@@ -44,6 +44,8 @@ export interface SaveData {
   taken: number[];
   /** Waking stones touched in their deeps (by site key). */
   woken: number[];
+  /** Temples whose offering has been carried off (by site key): each gives once. */
+  gathered: number[];
   /** The first-run intro (controls and what to do) has been seen and put away. */
   introSeen: boolean;
   /** The kinds of discovery come upon so far, each once, in the order they were found. */
@@ -119,6 +121,7 @@ const fresh = (): SaveData => ({
   opened: [],
   taken: [],
   woken: [],
+  gathered: [],
   introSeen: false,
   found: [],
   deeds: { rode: false, dug: false },
@@ -160,6 +163,7 @@ export class Save {
         this.data.opened = keys(raw.opened);
         this.data.taken = keys(raw.taken);
         this.data.woken = keys(raw.woken);
+        this.data.gathered = keys(raw.gathered);
         // A save from before the intro existed belongs to someone who has already played.
         this.data.introSeen = raw.introSeen === undefined ? true : raw.introSeen === true;
         if (Array.isArray(raw.found)) this.data.found = [...new Set((raw.found as unknown[]).filter(isFindKind))];
@@ -229,6 +233,13 @@ export class Save {
   take(key: number): void {
     if (this.data.taken.includes(key)) return;
     this.data.taken.push(key);
+    this.write();
+  }
+
+  /** A temple's offering has been carried off: nothing more is left there. */
+  gather(key: number): void {
+    if (this.data.gathered.includes(key)) return;
+    this.data.gathered.push(key);
     this.write();
   }
 

@@ -91,6 +91,8 @@ export const KEEPER = {
   ],
   /** Only to someone carrying a relic from under the sand. */
   relic: ['What you carry came from under the sand. So did we, if you go back far enough.'],
+  /** While this temple still has something lying on its stone: mixed in with the rest. */
+  offering: ['Something is left on the stone inside. It\'s for whoever walks in. Take it.'],
   /** Said once, to anyone who comes to the temple without one: the spyglass. */
   gift: [
     'You look past the stair, out at the dunes. Most who come here don\'t.',
@@ -149,6 +151,8 @@ export const WEAVER = {
       touch: 'Leap, then hold the button. It carries you faster, and climbs for twice as long.',
     },
   ] as Line[],
+  /** To someone who came by a carpet under the sand instead. */
+  own: 'You found one of your own. Then you know why mine isn\'t on the table.',
   after: [
     'Does it behave? It never did for me.',
     'Everything else on the table is for walking on.',
@@ -288,6 +292,8 @@ export const MINER = {
   ],
   /** Afterwards, to someone carrying a relic. */
   relic: ['That thing on your belt is older than this city. Keep it dry.'],
+  /** Afterwards, to someone with no carpet: one waits at the heart of every room under the sand. */
+  carpet: ['Something hangs in the air at the bottom of those rooms. Cloth, I think. I left it alone.'],
   /** Afterwards, to someone who has not swung the pick yet and has no rod. */
   rodAsk: 'Swing that pick somewhere first. Then come back. I\'ve something that saves the arm.',
   /** Afterwards, once the pick has been swung: the dowsing rod. */
@@ -296,4 +302,23 @@ export const MINER = {
     'Hitting and listening is the slow way. Take this. I cut it from a tree that grew over a well.',
     'Carry it on foot. When the fork pulls down, there\'s a room near. The harder it pulls, the closer you stand.',
   ] as Line[],
+};
+
+/** Said over a thing picked up where it lay: what it is, and how it is used. */
+export const FOUND: Record<'chart' | 'flute' | 'bedroll' | 'rod' | 'rope' | 'carpet', Line> = {
+  chart: 'A star chart. After dark, the brightest line of stars stands over something you haven\'t seen.',
+  flute: {
+    keys: 'A reed flute. Press R to play. A wild one comes, if it\'s near enough to hear.',
+    touch: 'A reed flute. Tap Tools, then the flute, to play. A wild one comes, if it\'s near enough to hear.',
+  },
+  bedroll: {
+    keys: 'A bedroll. Press B to lay it on open ground. Press B beside it to sleep.',
+    touch: 'A bedroll. Tap Tools, then the bedroll, to lay it on open ground. Tap it again beside it to sleep.',
+  },
+  rod: 'A dowsing rod. Carry it on foot. The fork pulls down when there\'s a room under the sand.',
+  rope: 'A rope and a hook. Rock too steep to walk can be climbed now.',
+  carpet: {
+    keys: 'A carpet that won\'t lie flat. Leap, then hold Space. It flies faster, and climbs for twice as long.',
+    touch: 'A carpet that won\'t lie flat. Leap, then hold the button. It flies faster, and climbs for twice as long.',
+  },
 };
