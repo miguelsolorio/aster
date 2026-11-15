@@ -4,7 +4,7 @@
 // suitable snow-capped massif to the start (a snow cone or an alpine range), far enough off that
 // it is a journey. Inside `rIn` of its centre the ground is under snow; out to `rOut` the snow
 // thins to frost and then to bare sand (the terrain shader paints that, from the uniform
-// uFrost = (x, z, rIn, rOut)). A torchlit road runs out from the nearest city to the foot of the
+// uFrost = (x, z, rIn, rOut)). A road marked by lantern cairns runs out from the nearest city to the foot of the
 // mountain and then winds up its flank to three villages, the highest with a lantern hold.
 //
 // The layout is laid out lazily, the first time the player comes within reach of the region, by
@@ -284,4 +284,39 @@ export function nearestWayIndex(layout: FrostLayout, x: number, z: number): numb
     }
   }
   return best;
+}
+
+/** Points of the way between one lantern cairn and the next: sparse over the open desert, closer on the climb. */
+export const WAY_MARK_APPROACH = 25;
+export const WAY_MARK_CLIMB = 12;
+/** No cairn this many points either side of the gate or a village: they carry their own light. */
+const WAY_MARK_CLEAR = 4;
+
+export interface WayMark {
+  /** Index into `way` of the point it stands beside. */
+  i: number;
+  /** Which side of the road: they alternate, as the waymarkers between the towns do. */
+  side: -1 | 1;
+}
+
+/**
+ * The lantern cairns beside the stretch of road from point i0 up to (not including) i1: one
+ * every 300 m out on the sand, one every 150 m or so up the mountain, on alternate sides. A
+ * function of the layout alone, so the chunks the road is built in agree at their seams.
+ */
+export function frostWayMarks(layout: FrostLayout, i0: number, i1: number): WayMark[] {
+  const out: WayMark[] = [];
+  const { climbAt, gateAt, villages } = layout;
+  for (let i = Math.max(1, i0); i < i1; i++) {
+    const climb = i >= climbAt;
+    const k = climb ? i - climbAt : i;
+    const every = climb ? WAY_MARK_CLIMB : WAY_MARK_APPROACH;
+    if (k % every !== 0) continue;
+    if (Math.abs(i - gateAt) < WAY_MARK_CLEAR) continue;
+    if (villages.some((v) => Math.abs(i - v.at) < WAY_MARK_CLEAR)) continue;
+    // the last cairn of the approach is not crowded by the first of the climb
+    if (!climb && climbAt - i < WAY_MARK_CLIMB) continue;
+    out.push({ i, side: (k / every) % 2 === 0 ? 1 : -1 });
+  }
+  return out;
 }
