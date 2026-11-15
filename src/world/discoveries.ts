@@ -12,6 +12,8 @@ import { CITY_CELL } from '../city/placement';
 import { Solids, type SolidKind } from './solids';
 import { createDeep } from './deep/index';
 import { frostLayout, frostRegion, frostCover, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
+import { ropeCoilGeometry, solidMaterial } from '../game/equipment';
+import { isFindKind } from '../game/finds';
 import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types';
 
 const CELL = 900 * WORLD_SCALE;
@@ -2117,6 +2119,20 @@ export interface CavernSite {
  */
 const roofKey = (cs: CavernSite): number => cs.key + 0.5;
 
+/** What the outside world calls a built site's key: an integer, a cavern's kept apart from its cell's surface find. */
+const CAVERN_REF = -2e12;
+const refKey = (key: number): number => (Number.isInteger(key) ? key : CAVERN_REF - Math.floor(key));
+
+/** A discovery site as the tools see it, built yet or not. `key` is stable across visits and unique per site. */
+export interface SiteRef {
+  key: number;
+  kind: string;
+  x: number;
+  y: number;
+  z: number;
+  reached: boolean;
+}
+
 const sstep = (a: number, b: number, x: number): number => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
@@ -2286,7 +2302,7 @@ const NOT_LANDMARKS = new Set(['cavern', 'lamp', 'summit', 'cave', 'spring', 'sn
 export class Discoveries {
   readonly group = new THREE.Group();
   /** Called (at most once per site) when the player first comes within ~25 m of a site. */
-  onReach: ((kind: string) => void) | null = null;
+  onReach: ((kind: string, key: number) => void) | null = null;
 
   private readonly world: World;
   private readonly stoneMat: THREE.ShaderMaterial;
@@ -3039,6 +3055,89 @@ export class Discoveries {
     return false;
   }
 
+  // ---------------------------------------------------------------- the rope beside the bones
+
+  private ropeMesh: THREE.Mesh | null = null;
+  private ropeMat: THREE.ShaderMaterial | null = null;
+  /** What the bones of a cell are made of, by cell key (for keeping a rope clear of them). */
+  private readonly boneSolids = new Map<number, Solids | null>();
+
+  /** The solids of the bones a cell holds as buildSite would make them, built or not. */
+  private bonesSolids(key: number, cx: number, cz: number): Solids | null {
+    let so = this.boneSolids.get(key);
+    if (so === undefined) {
+      const w = this.world;
+      const rng = mulberry32(Math.floor(hash4(cx, cz, w.seed | 0, 7) * 4294967296));
+      const at = this.placeSite(cx, cz, rng);
+      const ctx = new Ctx(w, at.x, at.z, w.height(at.x, at.z), rng, rng() * Math.PI * 2);
+      buildBones(ctx);
+      so = ctx.solids.count > 0 ? ctx.solids : null;
+      this.boneSolids.set(key, so);
+    }
+    return so;
+  }
+
+  /**
+   * Where a rope lies for a wanderer near (x, z): about 3 m from the nearest great bones within
+   * maxR, on ground clear of the bones' own stones, the same every time (it does not depend on
+   * whether the bones are built). Null where there are no bones in range.
+   */
+  ropeSpot(x: number, z: number, maxR: number): { x: number; z: number } | null {
+    let best: Landmark | null = null;
+    let bd = Infinity;
+    for (const p of this.surfaceSitesNear(x, z, maxR, [])) {
+      if (p.kind !== 'bones') continue;
+      const d = Math.hypot(p.x - x, p.z - z);
+      if (d < bd || (d === bd && best && p.key < best.key)) {
+        bd = d;
+        best = p;
+      }
+    }
+    if (!best) return null;
+    const cx = Math.floor(best.key / 65536) - 32768;
+    const cz = (best.key % 65536) - 32768;
+    const so = this.bonesSolids(best.key, cx, cz);
+    const oy = this.world.height(best.x, best.z);
+    const a0 = hash4(cx, cz, this.world.seed | 0, 61) * Math.PI * 2;
+    let first: { x: number; z: number } | null = null;
+    for (let k = 0; k < 48; k++) {
+      const a = a0 + k * 2.399963;
+      const rad = 3 + Math.floor(k / 8) * 1.5;
+      const tx = best.x + Math.cos(a) * rad;
+      const tz = best.z + Math.sin(a) * rad;
+      first ??= { x: tx, z: tz };
+      if (so) {
+        const gy = this.world.height(tx, tz) - oy;
+        if (so.contains(tx - best.x, gy + 0.2, tz - best.z, 0.9) || so.contains(tx - best.x, gy + 0.8, tz - best.z, 0.9)) continue;
+      }
+      return { x: tx, z: tz };
+    }
+    return first;
+  }
+
+  /** Lays the rope coil at a spot on the ground, or takes it away (null). */
+  setRope(at: { x: number; z: number } | null): void {
+    if (!at) {
+      if (this.ropeMesh) this.ropeMesh.visible = false;
+      return;
+    }
+    if (!this.ropeMesh) {
+      this.ropeMat = solidMaterial(this.u);
+      this.ropeMesh = new THREE.Mesh(ropeCoilGeometry(), this.ropeMat);
+      this.ropeMesh.name = 'rope';
+      this.group.add(this.ropeMesh);
+    }
+    this.ropeMesh.position.set(at.x, this.world.height(at.x, at.z), at.z);
+    this.ropeMesh.visible = true;
+  }
+
+  /** Whether the rope lies within reach of (x, y, z). */
+  ropeNear(x: number, y: number, z: number, r: number): boolean {
+    const m = this.ropeMesh;
+    if (!m?.visible) return false;
+    return Math.hypot(m.position.x - x, m.position.z - z) < r && Math.abs(m.position.y - y) < 2.5;
+  }
+
   private buildLamp(n: number): void {
     const at = this.lampAt[n];
     const baseY = this.world.height(at.x, at.z);
@@ -3137,7 +3236,7 @@ export class Discoveries {
         const c = deep.centre;
         if (Math.hypot(c[0] - px, c[1] - py, c[2] - pz) < 14) {
           this.reached.add(roofKey(cs));
-          this.onReach?.('cavern');
+          this.onReach?.('cavern', refKey(roofKey(cs)));
         }
       }
     }
@@ -3174,7 +3273,7 @@ export class Discoveries {
       if (inside || this.reached.has(s.key)) continue;
       if (d2 < s.reachR * s.reachR) {
         this.reached.add(s.key);
-        if (this.onReach) this.onReach(s.kind);
+        if (this.onReach) this.onReach(s.kind, refKey(s.key));
       }
     }
   }
@@ -3668,6 +3767,139 @@ export class Discoveries {
     return out;
   }
 
+  // ---------------------------------------------------------------- every site, built or not
+
+  private pushRef(out: SiteRef[], key: number, kind: string, x: number, z: number, reachedKey: number): void {
+    out.push({ key, kind, x, y: this.world.height(x, z), z, reached: this.reached.has(reachedKey) });
+  }
+
+  /**
+   * Calls `each` for every massif site (summit, cave mouth, springs) of the massifs whose grid
+   * cells could reach within r of (x, z), with the key it is built under. `want` leaves out
+   * kinds the caller has no use for, so springs (the dear ones to work out) are only found when asked for.
+   */
+  private eachMassifSite(x: number, z: number, r: number, want: (kind: string) => boolean, each: (key: number, kind: string, sx: number, sz: number) => void): void {
+    const w = this.world as Partial<{ massif(gi: number, gj: number): Massif | null; cave(gi: number, gj: number): Cave | null }>;
+    if (!w.massif || !w.cave) return;
+    const gi0 = Math.floor((x - r) / CITY_CELL) - 1;
+    const gi1 = Math.floor((x + r) / CITY_CELL) + 1;
+    const gj0 = Math.floor((z - r) / CITY_CELL) - 1;
+    const gj1 = Math.floor((z + r) / CITY_CELL) + 1;
+    for (let gj = gj0; gj <= gj1; gj++) {
+      for (let gi = gi0; gi <= gi1; gi++) {
+        const m = w.massif(gi, gj);
+        if (!m) continue;
+        const id = (gi + 32768) * 65536 + (gj + 32768);
+        if (want('summit')) each(-(id * 16 + 1), 'summit', m.x, m.z);
+        if (want('cave')) {
+          const cv = w.cave(gi, gj);
+          if (cv) each(-(id * 16 + 2), 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6);
+        }
+        if (want('spring')) {
+          let springs = this.springCache.get(id);
+          if (!springs) {
+            springs = this.findSprings(m);
+            this.springCache.set(id, springs);
+          }
+          for (let k = 0; k < springs.length && k < 12; k++) each(-(id * 16 + 3 + k), 'spring', springs[k].x, springs[k].z);
+        }
+      }
+    }
+  }
+
+  /** The frostland's villages, when the layout is awake for a wanderer at (x, z). */
+  private eachFrostVillage(x: number, z: number, each: (key: number, vx: number, vz: number) => void): void {
+    const lay = this.frostLayoutNear(x, z);
+    if (!lay) return;
+    for (let i = 0; i < lay.villages.length; i++) each(FROST_KEY - 1000 - i, lay.villages[i].x, lay.villages[i].z);
+  }
+
+  /**
+   * Every discovery site within r of (x, z), built yet or not: the surface finds, the caverns,
+   * and the summits, caves and springs of the massifs, and the snow villages once the frostland
+   * is within reach (as when they are built). `out` is cleared, filled and returned. Keys: a surface
+   * find keeps its cell's key, a cavern is CAVERN_REF minus its cell's key (so as not to clash with
+   * a find on the same cell), a massif's and a village's are the ones they are built under.
+   */
+  sitesNear(x: number, z: number, r: number, out: SiteRef[]): SiteRef[] {
+    out.length = 0;
+    const c0x = Math.floor((x - r) / CELL);
+    const c1x = Math.floor((x + r) / CELL);
+    const c0z = Math.floor((z - r) / CELL);
+    const c1z = Math.floor((z + r) / CELL);
+    for (let cz = c0z; cz <= c1z; cz++) {
+      for (let cx = c0x; cx <= c1x; cx++) {
+        const p = this.surfaceSite(cx, cz);
+        if (p && Math.hypot(p.x - x, p.z - z) <= r) this.pushRef(out, p.key, p.kind, p.x, p.z, p.key);
+        const cs = this.cavernAt(cx, cz);
+        if (cs) {
+          const cv = cs.cav;
+          const sx = cv.x + cv.dx * cv.spot;
+          const sz = cv.z + cv.dz * cv.spot;
+          if (Math.hypot(sx - x, sz - z) <= r) this.pushRef(out, CAVERN_REF - cs.key, 'cavern', sx, sz, roofKey(cs));
+        }
+      }
+    }
+    this.eachMassifSite(x, z, r, () => true, (key, kind, sx, sz) => {
+      if (Math.hypot(sx - x, sz - z) <= r) this.pushRef(out, key, kind, sx, sz, key);
+    });
+    this.eachFrostVillage(x, z, (key, vx, vz) => {
+      if (Math.hypot(vx - x, vz - z) <= r) this.pushRef(out, key, 'snow-village', vx, vz, key);
+    });
+    return out;
+  }
+
+  /**
+   * The nearest site (as sitesNear knows them) of a kind the wanderer has not found, within
+   * maxR, or null. Massif sites first (few), then rings of cells outward, stopping once no
+   * further ring can beat what is in hand.
+   */
+  nearestUnfound(x: number, z: number, found: ReadonlySet<string>, maxR: number): SiteRef | null {
+    let bd = maxR;
+    let bk = 0;
+    let bkind = '';
+    let bx = 0;
+    let bz = 0;
+    let bkey = 0;
+    let have = false;
+    const take = (key: number, kind: string, sx: number, sz: number, reachedKey: number): void => {
+      const d = Math.hypot(sx - x, sz - z);
+      if (d > bd || (d === bd && have)) return;
+      bd = d;
+      bkey = key;
+      bkind = kind;
+      bx = sx;
+      bz = sz;
+      bk = reachedKey;
+      have = true;
+    };
+    const want = (kind: string): boolean => isFindKind(kind) && !found.has(kind);
+    this.eachMassifSite(x, z, maxR, want, (key, kind, sx, sz) => take(key, kind, sx, sz, key));
+    if (want('snow-village')) this.eachFrostVillage(x, z, (key, vx, vz) => take(key, 'snow-village', vx, vz, key));
+    const pcx = Math.floor(x / CELL);
+    const pcz = Math.floor(z / CELL);
+    const wantCavern = want('cavern');
+    const rings = Math.ceil(maxR / CELL) + 1;
+    for (let r = 0; r <= rings; r++) {
+      // a cell r rings out is at least (r - 1) cells away
+      if ((r - 1) * CELL > bd) break;
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
+          const cx = pcx + dx;
+          const cz = pcz + dz;
+          const p = this.surfaceSite(cx, cz);
+          if (p && want(p.kind)) take(p.key, p.kind, p.x, p.z, p.key);
+          if (!wantCavern) continue;
+          const cs = this.cavernAt(cx, cz);
+          if (cs) take(CAVERN_REF - cs.key, 'cavern', cs.cav.x + cs.cav.dx * cs.cav.spot, cs.cav.z + cs.cav.dz * cs.cav.spot, roofKey(cs));
+        }
+      }
+    }
+    if (!have) return null;
+    return { key: bkey, kind: bkind, x: bx, y: this.world.height(bx, bz), z: bz, reached: this.reached.has(bk) };
+  }
+
   /**
    * Where a cell's find settles and what kind it is. Takes the cell's own rng and leaves it where
    * buildSite carries on from, so a find placed here and one built match exactly.
@@ -3928,6 +4160,8 @@ export class Discoveries {
     this.relicGlowMat.dispose();
     this.shaftMat.dispose();
     this.underWaterMat.dispose();
+    this.ropeMesh?.geometry.dispose();
+    this.ropeMat?.dispose();
   }
 }
 

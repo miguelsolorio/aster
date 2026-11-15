@@ -9,6 +9,7 @@ const RUN_SAND = 9.5; // on foot in sand with Shift: soft ground, hard going
 const GRAVITY = 20;
 const LIFT_TIME = 3.5; // seconds of climbing in the reserve; refilled on landing
 const LIFT_SPEED = 8; // climb rate while jump is held
+const ROPE_CLIMB = 2.6; // metres a second up a face on the rope, along the rock
 const LIFT_DELAY = 0.2; // a jump held this long turns into a climb; shorter is a plain jump
 const GLIDE_SINK = 2; // steady sink in a glide
 const GLIDE_SPEED = 16; // forward speed in flight
@@ -90,6 +91,10 @@ export class Player {
   board = false;
   /** Has a carpet: flying is faster and the climb lasts longer. */
   carpet = false;
+  /** Has a rope and hook: rock too steep to walk is climbed. */
+  rope = false;
+  /** Climbing a face on the rope this step. */
+  roping = false;
 
   private n = new THREE.Vector3();
   private s: SurfaceSample = { h: 0, rock: 0, salt: 0 };
@@ -169,6 +174,7 @@ export class Player {
   }
 
   update(dt: number, input: PlayerInput, camYaw: number, ev: PlayerEvents) {
+    this.roping = false;
     const st = this.state;
     const { pos, vel } = st;
     const w = this.world;
@@ -228,8 +234,14 @@ export class Player {
         const rate = 1 - Math.exp(-dt * 6);
         vel.x += (this.wish.x * target - vel.x) * rate;
         vel.z += (this.wish.y * target - vel.z) * rate;
-        // Cliffs are barriers: cancel motion into them.
-        if (slope > 1.15) {
+        // Cliffs are barriers: cancel motion into them. With a rope and hook they are climbed
+        // instead: slowly, hand over hand, and held wherever the climbing stops.
+        if (slope > 1.15 && this.rope) {
+          const sp = wishing ? ROPE_CLIMB / Math.sqrt(1 + slope * slope) : 0;
+          vel.x = this.wish.x * sp;
+          vel.z = this.wish.y * sp;
+          this.roping = wishing && climb > 0;
+        } else if (slope > 1.15) {
           const up = (vel.x * gx + vel.z * gz) / slope;
           if (up > 0) {
             vel.x -= (gx / slope) * up;

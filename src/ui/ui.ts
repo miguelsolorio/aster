@@ -1,5 +1,8 @@
 import './ui.css';
 import { findsText } from '../game/finds';
+import { TOOLS } from '../game/save';
+
+const TOOL_TOTAL = TOOLS.length;
 
 export type Quality = 'mobile' | 'low' | 'high';
 /** How long the title card stays up before it fades into the game by itself. */
@@ -67,6 +70,9 @@ export interface Known {
   board: boolean;
   carpet: boolean;
   dig: boolean;
+  spyglass: boolean;
+  flute: boolean;
+  bedroll: boolean;
 }
 
 /** One line of the controls list: what you do, the keys for it, and a short note. */
@@ -105,6 +111,9 @@ function keyControls(k: Known): ControlSection[] {
   if (k.talk) act.push({ action: 'Talk', keys: ['E'] });
   if (k.dig) act.push({ action: 'Swing pick', keys: ['E'], note: 'when nobody is near' });
   if (k.board) act.push({ action: 'Board', keys: ['Q'], note: 'step on or off. On it, WASD glide and Shift boosts' });
+  if (k.spyglass) act.push({ action: 'Spyglass', keys: ['F'], note: 'hold it up to look far' });
+  if (k.flute) act.push({ action: 'Flute', keys: ['R'], note: 'play a tune' });
+  if (k.bedroll) act.push({ action: 'Bedroll', keys: ['B'], note: 'lay it down, and sleep in it' });
   if (act.length) out.push({ title: 'Interact', rows: act });
   out.push({ title: 'Menu', rows: [{ action: 'Pause', keys: ['Esc'] }] });
   return out;
@@ -134,6 +143,9 @@ function touchControls(k: Known): ControlSection[] {
   if (k.talk) act.push({ action: 'Talk', note: 'Speech button, when someone is near' });
   if (k.dig) act.push({ action: 'Swing pick', note: 'Pick button, when nobody is near' });
   if (k.board) act.push({ action: 'Board', note: 'Board button to step on or off. On it, the stick glides' });
+  if (k.spyglass) act.push({ action: 'Spyglass', note: 'Tools button, then Spyglass' });
+  if (k.flute) act.push({ action: 'Flute', note: 'Tools button, then Flute' });
+  if (k.bedroll) act.push({ action: 'Bedroll', note: 'Tools button, then Bedroll. Lay it down, and sleep in it' });
   if (act.length) out.push({ title: 'Interact', rows: act });
   out.push({ title: 'Menu', rows: [{ action: 'Pause', note: 'Pause button' }] });
   return out;
@@ -233,6 +245,8 @@ export class UI {
   /** The intro is still to be shown, once, after the title card. */
   private introPending: boolean;
   private readonly finds: HTMLElement;
+  private foundCount = 0;
+  private toolsHeld = 0;
   private readonly menu: HTMLElement;
   private readonly panel: HTMLElement;
   private readonly photo: HTMLElement;
@@ -261,7 +275,7 @@ export class UI {
   private readonly rotateEl: HTMLElement;
   private readonly portraitMq: MediaQueryList | null;
   private touch = false;
-  private known: Known = { talk: false, board: false, carpet: false, dig: false };
+  private known: Known = { talk: false, board: false, carpet: false, dig: false, spyglass: false, flute: false, bedroll: false };
   private touchIdleTimer = 0;
   private rotateTimer = 0;
   private rotateDone = false;
@@ -285,6 +299,8 @@ export class UI {
       intro?: boolean;
       /** How many kinds of discovery have been found so far. */
       finds?: number;
+      /** How many tools are in hand. */
+      tools?: number;
     },
   ) {
     this.hooks = hooks;
@@ -332,6 +348,7 @@ export class UI {
 
     // How many kinds of discovery have been found: a quiet count in the corner while playing.
     this.finds = el('p', 'aster-finds');
+    this.toolsHeld = initial?.tools ?? 0;
     this.setFinds(initial?.finds ?? 0);
 
     // Menu
@@ -624,10 +641,28 @@ export class UI {
 
   /** The count of kinds of discovery found so far. */
   setFinds(found: number): void {
-    const { text, label } = findsText(found);
+    this.foundCount = found;
+    this.renderFinds();
+  }
+
+  /** How many of the tools are in hand. Shown beside the discoveries, and hidden while there are none. */
+  setTools(n: number): void {
+    this.toolsHeld = n;
+    this.renderFinds();
+  }
+
+  private renderFinds(): void {
+    const { text, label } = findsText(this.foundCount);
     const shown = el('span', undefined, text);
     shown.setAttribute('aria-hidden', 'true');
-    this.finds.replaceChildren(shown, el('span', 'aster-sr', label));
+    const out: HTMLElement[] = [shown, el('span', 'aster-sr', label)];
+    const n = Math.max(0, Math.min(TOOL_TOTAL, Math.floor(this.toolsHeld)));
+    if (n > 0) {
+      const t = el('span', undefined, `  ·  Tools ${n} / ${TOOL_TOTAL}`);
+      t.setAttribute('aria-hidden', 'true');
+      out.push(t, el('span', 'aster-sr', `Tools in hand: ${n} of ${TOOL_TOTAL}`));
+    }
+    this.finds.replaceChildren(...out);
   }
 
   /** Put the intro away and set out. Any key, click or tap does it. */

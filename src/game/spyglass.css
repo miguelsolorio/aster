@@ -1,0 +1,62 @@
+/* The view through the spyglass: a round of glass in the dark of the tube. */
+.aster-glass {
+  --k: 0;
+  --d: min(88vw, 88vh);
+  position: fixed;
+  inset: 0;
+  display: none;
+  pointer-events: none;
+  opacity: calc(var(--k) * var(--k));
+}
+/* the tube: black all round, opening as it comes up to the eye */
+.aster-glass__tube {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at 50% 50%,
+    rgba(8, 6, 5, 0) calc(var(--d) * 0.5 * (1.55 - 0.55 * var(--k)) - 5px),
+    rgba(8, 6, 5, 1) calc(var(--d) * 0.5 * (1.55 - 0.55 * var(--k)))
+  );
+}
+/* the glass itself: darker toward its edge, with a thin warm rim where the brass catches light */
+.aster-glass__rim {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: calc(var(--d) * (1.55 - 0.55 * var(--k)));
+  height: calc(var(--d) * (1.55 - 0.55 * var(--k)));
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  box-shadow:
+    inset 0 0 0 1.5px rgba(214, 170, 96, 0.34),
+    inset 0 0 calc(var(--d) * 0.09) calc(var(--d) * 0.02) rgba(8, 6, 5, 0.62);
+}
+.aster-glass__mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 56px;
+  height: 56px;
+  transform: translate(-50%, -50%);
+  fill: none;
+  overflow: visible;
+}
+.aster-glass__ring {
+  stroke: rgba(239, 230, 216, 0.2);
+  stroke-width: 0.7;
+}
+.aster-glass__arc {
+  stroke: rgba(255, 226, 170, 0.95);
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-dasharray: 0 100;
+  transform: rotate(-90deg);
+  opacity: 0;
+  transition: opacity 0.18s;
+}
+.aster-glass.is-sighting .aster-glass__arc {
+  opacity: 1;
+}
+.aster-glass__dot {
+  fill: rgba(239, 230, 216, 0.5);
+}

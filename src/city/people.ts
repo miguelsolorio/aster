@@ -1139,6 +1139,17 @@ function figureGeometry(): THREE.InstancedBufferGeometry {
 }
 
 /** One person on the dev review sheet. */
+/** A townsperson, as the talking needs them (see People.nearestPerson). */
+export interface FolkOut {
+  id: number;
+  x: number;
+  z: number;
+  h: number;
+  sit: number;
+  /** Keeping a market stall: standing behind its goods (slot 0 of a market or stall spot). */
+  stall?: boolean;
+}
+
 export interface SheetPerson {
   x: number;
   z: number;
@@ -1573,9 +1584,10 @@ export class People {
   /** How busy the surroundings are right now, 0..1. */
   /**
    * The nearest townsperson within maxD metres of the player, in world space.
-   * out.h is their height scale and out.sit how far they are sat down (0..1).
+   * out.h is their height scale and out.sit how far they are sat down (0..1); out.stall is true
+   * for a shopkeeper standing behind the goods at a market stall.
    */
-  nearestPerson(maxD: number, out: { id: number; x: number; z: number; h: number; sit: number }): boolean {
+  nearestPerson(maxD: number, out: FolkOut): boolean {
     if (!this.city) return false;
     let best = -1;
     let bd = maxD;
@@ -1591,7 +1603,7 @@ export class People {
   }
 
   /** Where a townsperson is now. False once they have gone. */
-  personAt(i: number, out: { id: number; x: number; z: number; h: number; sit: number }): boolean {
+  personAt(i: number, out: FolkOut): boolean {
     const c = this.city;
     if (!c || i < 0 || !this.alive[i] || this.ph[i] === P_GONE) return false;
     out.id = i;
@@ -1599,6 +1611,7 @@ export class People {
     out.z = c.site.cz + c.si * this.x[i] + c.co * this.z[i];
     out.h = this.hgt[i];
     out.sit = this.sit[i];
+    out.stall = this.keeper[i] === 1 && this.ph[i] === P_DWELL;
     return true;
   }
 

@@ -1053,10 +1053,12 @@ const KEEPER_ROBES: V3[] = [
   [0.78, 0.5, 0.2],
 ];
 const PILGRIM_LOADS = [0, 1, 1, 2, 3, 0];
-/** Who someone is, for what they say: a traveller, a pilgrim, or a temple keeper. */
+/** Who someone is, for what they say: a traveller, a pilgrim, a temple keeper, or a goat herder. */
 export const ROLE_TRAVELLER = 0;
 export const ROLE_PILGRIM = 1;
 export const ROLE_KEEPER = 2;
+/** Someone out with a shepherd's flock (the shepherd, or whoever walks with them). */
+export const ROLE_HERDER = 3;
 
 interface Agent {
   animal: boolean;
@@ -1361,7 +1363,11 @@ function newAgent(animal: boolean, rng: () => number): Agent {
   return a;
 }
 
-/** Someone out on the sand, as the talking needs them. role is ROLE_TRAVELLER, ROLE_PILGRIM or ROLE_KEEPER. */
+/**
+ * Someone out on the sand, as the talking needs them. role is ROLE_TRAVELLER, ROLE_PILGRIM,
+ * ROLE_KEEPER or ROLE_HERDER; camp is true for someone who belongs to a camp (sitting or standing
+ * at its fire), false for someone walking (a caravan, a pilgrim, a shepherd) or at a temple.
+ */
 export interface PersonOut {
   ref: unknown;
   x: number;
@@ -1371,6 +1377,7 @@ export interface PersonOut {
   sit: number;
   seed: number;
   role: number;
+  camp?: boolean;
 }
 
 class Inst {
@@ -1565,6 +1572,7 @@ export class Caravans {
    */
   nearestPerson(px: number, pz: number, maxD: number, out: PersonOut): boolean {
     let best: Agent | null = null;
+    let bestG: Group | null = null;
     let bd = maxD;
     for (let i = 0; i < this.live.length; i++) {
       const g = this.live[i];
@@ -1576,17 +1584,29 @@ export class Caravans {
         if (d < bd) {
           bd = d;
           best = a;
+          bestG = g;
         }
       }
     }
-    return best !== null && this.personAt(best, out);
+    return best !== null && this.fillPerson(best, bestG, out);
   }
 
   /** Where a traveller is now. */
   personAt(ref: unknown, out: PersonOut): boolean {
     const a = ref as Agent;
+    return this.fillPerson(a, this.groupOf(a), out);
+  }
+
+  /** The group on the live list that someone belongs to, or null. */
+  private groupOf(a: Agent): Group | null {
+    for (let i = 0; i < this.live.length; i++) if (this.live[i].agents.includes(a)) return this.live[i];
+    return null;
+  }
+
+  private fillPerson(a: Agent, g: Group | null, out: PersonOut): boolean {
     out.ref = a;
-    out.role = a.role;
+    out.role = g?.kind === 6 ? ROLE_HERDER : a.role;
+    out.camp = g?.kind === 1;
     out.x = a.x;
     out.y = a.y;
     out.z = a.z;
@@ -2026,9 +2046,16 @@ export class Caravans {
 
   // ---------------------------------------------------------------- routes between cities
 
+  /** A fire of the wanderer's own, beside a laid bedroll: where its flames stand, or null for none. */
+  hearth: { x: number; y: number; z: number } | null = null;
+
   /** How loud the nearest camp fires are at (px, pz), 0..1 (the fire ambience, as a city's fires make it). */
   fireLevel(px: number, pz: number): number {
     let v = 0;
+    if (this.hearth) {
+      const d = Math.hypot(this.hearth.x - px, this.hearth.z - pz);
+      if (d < 25) v = 0.5 * (1 - d / 25);
+    }
     for (let i = 0; i < this.live.length; i++) {
       const g = this.live[i];
       if (g.kind !== 1 || !g.active) continue;
@@ -2983,6 +3010,23 @@ export class Caravans {
       else this.stepCamp(g, f, dt, px, pz);
     }
 
+    // the wanderer's own fire: the same glow, tongues and smoke as any camp's
+    const h = this.hearth;
+    if (h && this.nF + 13 <= CAP_FIRE && Math.hypot(h.x - px, h.z - pz) < 1800) {
+      for (let i = 0; i < 13; i++) {
+        const o = this.nF * 4;
+        const kind = i === 0 ? 0 : i < 5 ? 1 : 2;
+        this.fBase.arr[o] = h.x;
+        this.fBase.arr[o + 1] = h.y;
+        this.fBase.arr[o + 2] = h.z;
+        this.fBase.arr[o + 3] = 0.8;
+        this.fKind.arr[o] = kind;
+        this.fKind.arr[o + 1] = (0.37 * 7.31 + i * 0.173) % 1;
+        this.fKind.arr[o + 2] = kind === 2 ? ((i - 5) / 8 + 0.37) % 1 : 0;
+        this.fKind.arr[o + 3] = 0;
+        this.nF++;
+      }
+    }
     this.animalGeo.instanceCount = this.nA;
     this.personGeo.instanceCount = this.nP;
     this.propGeo.instanceCount = this.nR;

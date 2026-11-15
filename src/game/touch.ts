@@ -13,6 +13,12 @@ export interface TouchHooks {
   onTalk(): void;
   /** Board button pressed: step on or off. */
   onBoard(): void;
+  /** Spyglass chosen from the Tools fan. */
+  onSpyglass(): void;
+  /** Flute chosen from the Tools fan. */
+  onFlute(): void;
+  /** Bedroll chosen from the Tools fan. */
+  onBedroll(): void;
 }
 
 export type TouchMode = 'off' | 'play' | 'photo';
@@ -44,6 +50,22 @@ const PICK_SVG =
 const BOARD_SVG =
   '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
   '<path d="M5 19.5c0-1.2 4-2 9-2s9 .8 9 2-4 2-9 2-9-.8-9-2z"/><path d="M11 17V9.5M17 17V9.5"/></svg>';
+const DOT = 'style="fill:currentColor;stroke:none"';
+// a satchel: what is carried
+const TOOLS_SVG =
+  '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
+  '<path d="M6.5 11.5h15l-1.2 10h-12.6z"/><path d="M10.5 11.5V9a3.5 3.5 0 0 1 7 0v2.5"/><path d="M11 15.5h6"/></svg>';
+// a glass drawn out, wide end up
+const SPYGLASS_SVG =
+  '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
+  '<path d="M5.5 20.5 8 23l5.5-5-2.5-2.5z"/><path d="M11 15.5 13.5 18l8-7.5L17.500 6.500z"/><path d="M16.500 5.500 22.500 11.500"/></svg>';
+// a reed, with its finger holes
+const FLUTE_SVG =
+  '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
+  `<path d="M5 21 20.5 5.500 22.500 7.500 7 23z"/><circle cx="11" cy="17" r="0.9" ${DOT}/><circle cx="14" cy="14" r="0.9" ${DOT}/><circle cx="17" cy="11" r="0.9" ${DOT}/></svg>`;
+const BEDROLL_SVG =
+  '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
+  '<path d="M6 11h13a4 4 0 0 1 0 8H6a2.5 4 0 0 1 0-8z"/><path d="M19 11v8"/></svg>';
 const DROP_SVG =
   '<svg viewBox="0 0 28 28" aria-hidden="true" focusable="false">' +
   '<path d="M7 11.5l7 7 7-7"/></svg>';
@@ -66,6 +88,8 @@ export class TouchControls {
   private readonly drop: HTMLButtonElement;
   private readonly talk: HTMLButtonElement;
   private readonly boardBtn: HTMLButtonElement;
+  private readonly toolsBtn: HTMLButtonElement;
+  private readonly toolItems: { btn: HTMLButtonElement; fire: () => void }[];
 
   private mode: TouchMode = 'off';
   private mouseActive = false;
@@ -132,7 +156,28 @@ export class TouchControls {
     board.innerHTML = BOARD_SVG;
     this.boardBtn = board;
 
-    layer.append(this.ring, this.dot, fly, drop, talk, board);
+    // Tools: left of the talk button, shown once any of the spyglass, flute or bedroll is owned.
+    // Tapped, it fans the owned ones out above it.
+    const mk = (cls: string, label: string, svg: string): HTMLButtonElement => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `aster-touch__talk aster-touch__tool ${cls}`;
+      b.setAttribute('aria-label', label);
+      b.tabIndex = -1;
+      b.innerHTML = svg;
+      return b;
+    };
+    this.toolsBtn = mk('aster-touch__tools', 'Tools', TOOLS_SVG);
+    const spyglass = mk('aster-touch__tool-item aster-touch__tool-spyglass', 'Spyglass', SPYGLASS_SVG);
+    const flute = mk('aster-touch__tool-item aster-touch__tool-flute', 'Flute', FLUTE_SVG);
+    const bedroll = mk('aster-touch__tool-item aster-touch__tool-bedroll', 'Bedroll', BEDROLL_SVG);
+    this.toolItems = [
+      { btn: spyglass, fire: () => hooks.onSpyglass() },
+      { btn: flute, fire: () => hooks.onFlute() },
+      { btn: bedroll, fire: () => hooks.onBedroll() },
+    ];
+
+    layer.append(this.ring, this.dot, fly, drop, talk, board, this.toolsBtn, spyglass, flute, bedroll);
     root.appendChild(layer);
 
     layer.addEventListener('pointerdown', this.onDown);
@@ -150,6 +195,7 @@ export class TouchControls {
     if (mode === this.mode) return;
     this.mode = mode;
     this.releaseAll();
+    this.closeFan();
     const cl = this.layer.classList;
     cl.toggle('aster-touch--play', mode === 'play');
     cl.remove('aster-touch--idle');
@@ -179,6 +225,25 @@ export class TouchControls {
   setBoard(has: boolean, on: boolean): void {
     this.layer.classList.toggle('aster-touch--board', has);
     this.boardBtn.classList.toggle('is-held', on);
+  }
+
+  /** Show the Tools button when any of the three is owned; the fan lists only those owned. */
+  setTools(t: { spyglass: boolean; flute: boolean; bedroll: boolean }): void {
+    const own = [t.spyglass, t.flute, t.bedroll];
+    const cl = this.layer.classList;
+    cl.toggle('aster-touch--tools', own.some(Boolean));
+    // Owned items stack upward from the Tools button with no gaps.
+    let slot = 0;
+    this.toolItems.forEach(({ btn }, i) => {
+      btn.classList.toggle('is-owned', own[i]);
+      if (own[i]) btn.style.setProperty('--aster-slot', String(slot++));
+    });
+    if (!own.some(Boolean)) this.closeFan();
+  }
+
+  private closeFan(): void {
+    this.layer.classList.remove('aster-touch--fan');
+    this.toolsBtn.classList.remove('is-held');
   }
 
   private syncPointerEvents(): void {
@@ -234,6 +299,23 @@ export class TouchControls {
 
     if (this.mode === 'play') {
       const t = e.target as Node | null;
+      const onTools = !!t && (t === this.toolsBtn || this.toolsBtn.contains(t));
+      const item = t ? this.toolItems.find((i) => i.btn === t || i.btn.contains(t)) : undefined;
+      if (this.layer.classList.contains('aster-touch--fan') && !onTools && !item) this.closeFan();
+      if (onTools) {
+        if (this.layer.classList.contains('aster-touch--tools')) {
+          const open = this.layer.classList.toggle('aster-touch--fan');
+          this.toolsBtn.classList.toggle('is-held', open);
+        }
+        return;
+      }
+      if (item) {
+        if (this.layer.classList.contains('aster-touch--fan') && item.btn.classList.contains('is-owned')) {
+          this.closeFan();
+          item.fire();
+        }
+        return;
+      }
       if (t && (t === this.fly || this.fly.contains(t))) {
         if (this.flyId < 0) {
           this.flyId = id;

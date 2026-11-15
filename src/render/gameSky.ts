@@ -24,6 +24,8 @@ uniform float uGlow;
 uniform float uStars;
 uniform float uMoonVis;
 uniform vec2 uWind;
+uniform float uChart;   // 0..1 the star chart is being read
+uniform vec2 uChartDir; // the way it points, over the ground (x, z)
 // from the look
 uniform float uSkyCurve; // gradient exponent
 uniform float uSkyBands; // 0 = smooth gradient, N = stepped
@@ -111,6 +113,25 @@ void main() {
     float band = exp(-pow(dot(d, normalize(vec3(0.42, 0.3, 0.86))) * 4.5, 2.0));
     float dustN = fbm(d.xz * 7.0 + d.y * 4.0);
     col += vec3(0.55, 0.72, 0.9) * band * dustN * 0.16 * fade * uStars;
+
+    // The star chart: one line of stars, brighter and warmer than the rest, climbing the sky
+    // from the horizon over a place not yet found. The lowest is the largest.
+    if (uChart > 0.001) {
+      vec3 az = vec3(uChartDir.x, 0.0, uChartDir.y);
+      vec3 sd = vec3(-az.z, 0.0, az.x);
+      for (int i = 0; i < 7; i++) {
+        float fi = float(i);
+        float el = 0.15 + fi * 0.088 + 0.022 * sin(fi * 2.4);
+        vec3 c = normalize(az * cos(el) + vec3(0.0, sin(el), 0.0) + sd * 0.03 * sin(fi * 1.7 + 0.6));
+        float ang = atan(length(cross(d, c)), dot(d, c));
+        float r = 0.0036 - 0.00028 * fi;
+        float fa = max(fwidth(ang), 1e-5);
+        float pt = 1.0 - smoothstep(r - fa, r + fa, ang);
+        float halo = exp(-ang * ang / (r * r * 22.0)) * 0.3;
+        float twk = 0.82 + 0.18 * sin(uTime * (1.3 + fi * 0.37) + fi * 2.0);
+        col += vec3(1.0, 0.88, 0.62) * (pt + halo) * twk * uChart * uStars;
+      }
+    }
   }
 
   // thin high cloud, drifting with the wind

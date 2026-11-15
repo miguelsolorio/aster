@@ -719,6 +719,133 @@ export const heapGeometry = (): THREE.BufferGeometry => {
   return b.done();
 };
 
+// ------------------------------------------------------------------ tools found later
+
+/** A spyglass, closed: three brass draws along the y axis, eyepiece at the origin, bound in dark leather. */
+export const spyglassGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  const brass: V3 = [0.74, 0.56, 0.24];
+  b.tube([[0, 0, 0], [0, 0.085, 0]], [0.017, 0.019], 6, mul(brass, 0.82));
+  b.tube([[0, 0.085, 0], [0, 0.2, 0]], [0.025, 0.027], 6, DARK);
+  b.tube([[0, 0.2, 0], [0, 0.27, 0]], [0.031, 0.033], 6, brass);
+  b.tube([[0, -0.006, 0], [0, 0.008, 0]], [0.022, 0.022], 6, brass);
+  b.tube([[0, 0.262, 0], [0, 0.276, 0]], [0.037, 0.037], 6, mul(brass, 1.12));
+  return b.done();
+};
+
+/** A reed flute: a pale cane along the y axis, mouth at the top, bound in red thread at the joints. */
+export const fluteGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  b.tube([[0, 0, 0], [0, 0.4, 0]], [0.0125, 0.0105], 5, PALE);
+  for (const y of [0.05, 0.19, 0.33]) b.tube([[0, y, 0], [0, y + 0.022, 0]], [0.0155, 0.0155], 5, RED);
+  // the finger holes, as dark flecks down the front
+  for (let i = 0; i < 4; i++) b.box([0, 0.085 + i * 0.03, 0.0115], [0.007, 0.009, 0.004], DARK);
+  return b.done();
+};
+
+/** A bedroll, rolled: undyed wool lying along x, centred, with two red straps and the darker lining showing at the ends. */
+export const bedrollGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  const wool: V3 = [0.74, 0.68, 0.56];
+  const L = 0.25;
+  b.tube([[-L, 0, 0], [-L + 0.03, 0, 0], [L - 0.03, 0, 0], [L, 0, 0]], [0.062, 0.074, 0.074, 0.062], 8, wool);
+  for (const x of [-0.13, 0.13]) b.tube([[x - 0.013, 0, 0], [x + 0.013, 0, 0]], [0.079, 0.079], 8, RED);
+  for (const sx of [-1, 1]) b.tube([[sx * (L + 0.001), 0, 0], [sx * (L + 0.004), 0, 0]], [0.04, 0.04], 6, BROWN);
+  return b.done();
+};
+
+/**
+ * The bedroll laid out on the ground at y = 0: head toward +z, a pillow roll at the head and
+ * the blanket turned back at one corner.
+ */
+export const bedGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  const wool: V3 = [0.74, 0.68, 0.56];
+  const W = 0.38;
+  const L = 0.95;
+  // the mat, a little proud of the sand, and the blanket over its lower two thirds
+  b.box([0, 0.02, 0], [W * 2, 0.04, L * 2], BROWN);
+  b.box([0, 0.055, -0.28], [W * 2 - 0.04, 0.035, L * 2 - 0.62], wool);
+  for (const z of [-0.78, -0.2]) b.box([0, 0.075, z], [W * 2 - 0.035, 0.008, 0.05], RED);
+  // the corner turned back
+  b.quad([W - 0.02, 0.075, 0.03], [W - 0.34, 0.075, 0.03], [W - 0.02, 0.085, -0.3], [W - 0.02, 0.085, -0.3], mul(wool, 0.8));
+  b.tube([[-W + 0.06, 0.1, L - 0.14], [W - 0.06, 0.1, L - 0.14]], [0.075, 0.075], 7, mul(wool, 1.08));
+  return b.done();
+};
+
+/** The hearth beside a laid bedroll, on the ground at y = 0: a ring of stones round a few charred sticks. */
+export const hearthGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2 + 0.3;
+    const r = 0.085 + 0.02 * ((i * 5) % 3);
+    b.tube([[Math.cos(a) * 0.3, 0, Math.sin(a) * 0.3], [Math.cos(a) * 0.3, r * 1.1, Math.sin(a) * 0.3]], [r, r * 0.6], 5, mul(i % 2 ? STONE : SAND, 0.7 + 0.08 * (i % 3)), a);
+  }
+  const char: V3 = [0.1, 0.085, 0.08];
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI + 0.4;
+    b.tube([[Math.cos(a) * 0.2, 0.03, Math.sin(a) * 0.2], [-Math.cos(a) * 0.14, 0.11, -Math.sin(a) * 0.14]], [0.026, 0.02], 4, i === 2 ? BROWN : char);
+  }
+  return b.done();
+};
+
+/**
+ * A dowsing rod: a forked twig. The tip points toward +z and the two grips come back to
+ * either hand, so it is held level out in front and dips about the grips (the origin).
+ */
+export const rodGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  const fork: V3 = [0, 0, 0.17];
+  b.tube([fork, [0, 0.004, 0.27], [0, 0, 0.36]], [0.012, 0.01, 0.005], 5, BROWN);
+  for (const sx of [-1, 1]) {
+    b.tube([fork, [sx * 0.05, 0, 0.09], [sx * 0.095, 0, 0]], [0.011, 0.0105, 0.01], 5, BROWN);
+    b.tube([[sx * 0.095, 0, 0], [sx * 0.1, 0, -0.012]], [0.0102, 0.0102], 5, BONE); // the cut ends
+  }
+  return b.done();
+};
+
+/** A star chart in its case: a blue tube along the y axis, centred, capped in brass. */
+export const chartGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  b.tube([[0, -0.13, 0], [0, 0.13, 0]], [0.028, 0.028], 6, NAVY);
+  for (const y of [-0.13, 0.115]) b.tube([[0, y, 0], [0, y + 0.018, 0]], [0.033, 0.033], 6, GOLD);
+  b.tube([[0, -0.045, 0], [0, -0.035, 0]], [0.0305, 0.0305], 6, GOLD);
+  b.tube([[0, 0.035, 0], [0, 0.045, 0]], [0.0305, 0.0305], 6, GOLD);
+  return b.done();
+};
+
+/**
+ * A rope and hook: a coil lying flat on the ground at y = 0, centred, with an iron
+ * three-pronged hook resting across it.
+ */
+export const ropeCoilGeometry = (): THREE.BufferGeometry => {
+  const b = new Build();
+  const hemp: V3 = [0.7, 0.6, 0.42];
+  const N = 12;
+  // three turns, each a touch smaller and not quite over the last
+  [[0.17, 0.022, 0.0], [0.158, 0.058, 0.9], [0.164, 0.094, 1.9]].forEach(([r, y, ph], k) => {
+    const ring: V3[] = [];
+    for (let i = 0; i <= N; i++) {
+      const a = ph + (i / N) * Math.PI * 2;
+      ring.push([Math.cos(a) * r + (k === 1 ? 0.012 : 0), y, Math.sin(a) * r]);
+    }
+    b.tube(ring, ring.map(() => 0.021), 4, mul(hemp, 0.9 + 0.08 * k), Math.PI / 4);
+  });
+  // the loose end, run out over the side to the hook
+  b.tube([[0.15, 0.094, 0.07], [0.2, 0.07, 0.11], [0.24, 0.03, 0.12]], [0.021, 0.021, 0.021], 4, hemp, Math.PI / 4);
+  // the hook: a shank and three prongs curling back
+  const hx = 0.25;
+  const hz = 0.12;
+  b.tube([[hx, 0.03, hz], [hx + 0.13, 0.03, hz + 0.03]], [0.012, 0.012], 4, IRON);
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2 + 0.5;
+    const oy = Math.cos(a) * 0.055;
+    const oz = Math.sin(a) * 0.055;
+    b.tube([[hx + 0.13, 0.03, hz + 0.03], [hx + 0.165, 0.03 + oy * 0.7, hz + 0.038 + oz * 0.7], [hx + 0.13, 0.03 + oy, hz + 0.03 + oz], [hx + 0.095, 0.03 + oy * 0.95, hz + 0.022 + oz * 0.95]], [0.011, 0.01, 0.008, 0.003], 4, IRON);
+  }
+  return b.done();
+};
+
 // ------------------------------------------------------------------ material
 
 const solidVert = /* glsl */ `
