@@ -304,6 +304,23 @@ export const MINER = {
   ] as Line[],
 };
 
+/** Said over the lit sand above a sealed room, to whoever walks onto it. */
+export const SAND = {
+  /** To someone with nothing to dig with. */
+  noPick: 'Light comes up through the cracks. There\'s a room under this sand. A pick would break it open, and the miners in the cities keep spares.',
+  /** To someone with a pick who has not opened a room yet. */
+  dig: {
+    keys: 'Light comes up through the cracks. There\'s a room under this sand. Press E to strike it, and keep on until it gives.',
+    touch: 'Light comes up through the cracks. There\'s a room under this sand. Tap the pick button to strike it, and keep on until it gives.',
+  } as Line,
+  /** To someone who has opened one before: one of these. */
+  again: [
+    'The cracks are lit here too. Another room, a few swings down.',
+    'More light under the sand. It wants the pick.',
+    'This sand is thin. Something waits under it.',
+  ],
+};
+
 /** Said over a thing picked up where it lay: what it is, and how it is used. */
 export const FOUND: Record<'chart' | 'flute' | 'bedroll' | 'rod' | 'rope' | 'carpet', Line> = {
   chart: 'A star chart. After dark, the brightest line of stars stands over something you haven\'t seen.',
