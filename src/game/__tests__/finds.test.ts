@@ -11,7 +11,7 @@ describe('finds', () => {
   });
 
   it('names every kind in plain words', () => {
-    for (const k of FIND_KINDS) expect(findName(k)).toMatch(/^[A-Z][a-z ]+$/);
+    for (const k of FIND_KINDS) expect(findName(k)).toMatch(/^[A-Z][A-Za-z' -]+$/);
   });
 
   it('reads the count as a short line and in words', () => {

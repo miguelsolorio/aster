@@ -95,6 +95,16 @@ function glyph(c: Ctx, kind: string): void {
     case 'hamlet':
     case 'mountain-village':
     case 'snow-village':
+    case 'well-camp':
+    case 'star-house':
+    case 'salt-works':
+    case 'glass-kilns':
+    case 'ledge':
+    case 'bridge':
+    case 'caravanserai':
+    case 'dyers-town':
+    case 'wind-towers':
+    case 'stepped-city':
       // a house, and a smaller one beside it
       c.moveTo(-6, 5);
       c.lineTo(-6, -1);

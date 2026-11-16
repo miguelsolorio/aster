@@ -60,6 +60,16 @@ const CLEAR: Record<string, number> = {
   'balancing-stones': 22,
   shell: 20,
   lantern: 14,
+  'well-camp': 34,
+  'star-house': 40,
+  'salt-works': 70,
+  'glass-kilns': 52,
+  ledge: 60,
+  bridge: 70,
+  caravanserai: 50,
+  'dyers-town': 80,
+  'wind-towers': 110,
+  'stepped-city': 130,
 };
 const clearOf = (kind: string): number => CLEAR[kind] ?? 24;
 

@@ -20,6 +20,10 @@ import type { Offering } from '../game/offerings';
 import { isFindKind } from '../game/finds';
 import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types';
 import { type Lead, leadPoint } from './lead';
+import { isSettlement } from './settlementKinds';
+import { settle, type SettleWorld } from './settle';
+import { buildSettlement, type Kit } from './settlements';
+import { RouteNet, routePos, type TravelRoute } from '../city/routes';
 
 const CELL = 900 * WORLD_SCALE;
 const MARGIN = 150; // keeps sites at least 300 m apart
@@ -40,6 +44,11 @@ const SCAN_EVERY = 0.3;
 const GROVE_P = 0.7; // chance an otherwise empty cell beside a river holds a grove
 const HAMLET_P = 0.5; // chance an otherwise empty cell (away from rivers) holds a hamlet
 const TOWER_P = 0.2; // and the chance it holds a lone watchtower instead
+const SETTLE_P = 0.22; // or one of the settlements people live in, whichever suits the ground (see settle.ts)
+const RIVER_SETTLE_P = 0.6; // the chance an otherwise empty cell beside a river holds one: a bridge, or the dyers
+const INN_AT = [0.5, 0.42, 0.58, 0.34, 0.66]; // where along a route its caravanserai is tried, as shares of its length
+const INN_OFF = 44; // how far off the route's centre line it stands (m)
+const INN_EDGE = 100; // and how far inside its cell, so as to keep off the neighbours' finds (m)
 const VILLAGE_KEY = -4e12; // the keys of the mountain villages count down from here: four to a massif
 const VILLAGE_CITY_CLEAR = 450; // a mountain village keeps this far outside a city (m)
 const VILLAGE_REACH = 1.25; // no village stands further from its massif's centre than this many radii
@@ -2934,11 +2943,17 @@ export interface VillageFolk {
   sit: boolean;
   role: FolkRole;
   small: boolean;
+  /** Their cloth, where the place has colours of its own. */
+  coat?: [number, number, number];
+  /** The height they stand at, where it is not the ground (a deck, a terrace). */
+  y?: number;
 }
 
-/** A built village and its people: at the foot of a mountain, or up in the snow. */
+/** A built village and its people: at the foot of a mountain, up in the snow, or one of the settlements out on the sand. */
 export interface Village {
   key: number;
+  /** The site's kind: 'mountain-village', 'snow-village' or one of the settlements. */
+  kind: string;
   snow: boolean;
   x: number;
   z: number;
@@ -2959,6 +2974,34 @@ export interface Landmark {
 
 /** Sites that are not somewhere to walk to: underground, or up a mountain. */
 const NOT_LANDMARKS = new Set(['cavern', 'lamp', 'summit', 'cave', 'spring', 'snow-village', 'frostway']);
+
+/** The mud-brick pieces, as the settlements' builders are lent them. */
+const KIT: Kit = {
+  BOX: UNIT_BOX,
+  CYL: UNIT_CYL,
+  SLAB: UNIT_SLAB,
+  BLOB: UNIT_BLOB,
+  CONE: UNIT_CONE,
+  BIT: UNIT_BIT,
+  PEBBLE: UNIT_PEBBLE,
+  house: mudHouse,
+  well: mudWell,
+  tower: mudTower,
+  torch: frostTorch,
+  bunting,
+  cart: handCart,
+  palm: addPalm,
+  hay: hayStack,
+  merlons: frostMerlons,
+};
+
+/** Where a route's caravanserai stands, and the way its gate faces (toward the road). */
+interface Inn {
+  x: number;
+  z: number;
+  dx: number;
+  dz: number;
+}
 
 export class Discoveries {
   readonly group = new THREE.Group();
@@ -4128,11 +4171,22 @@ export class Discoveries {
     this.cellPos.z = cz * CELL + MARGIN + hash4(cx, cz, s, 3) * (CELL - 2 * MARGIN);
     // Most cells are empty, but one beside a river usually holds a grove.
     this.cellSpare = '';
-    if (hash4(cx, cz, s, 1) >= SITE_P && !(hash4(cx, cz, s, 5) < GROVE_P && this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH)) {
-      // An empty cell away from the water may hold a hamlet instead, or a watchtower.
+    const empty = hash4(cx, cz, s, 1) >= SITE_P;
+    // A cell with no find of its own is where a route's caravanserai goes, if one falls in it.
+    const inn = empty ? this.innAt(cx, cz) : null;
+    if (inn) {
+      this.cellPos.x = inn.x;
+      this.cellPos.z = inn.z;
+      this.cellSpare = 'inn';
+    } else if (empty && !(hash4(cx, cz, s, 5) < GROVE_P && this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH)) {
+      // An empty cell away from the water may hold a hamlet instead, a watchtower, or a settlement;
+      // one beside the water, a settlement that wants a river.
       const roll = hash4(cx, cz, s, 31);
-      if (roll >= HAMLET_P + TOWER_P || this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH) return false;
-      this.cellSpare = roll < HAMLET_P ? 'hamlet' : 'watchtower';
+      if (this.riverAt(this.cellPos.x, this.cellPos.z) < GROVE_REACH) {
+        if (hash4(cx, cz, s, 37) >= RIVER_SETTLE_P) return false;
+        this.cellSpare = 'settlement';
+      } else if (roll >= HAMLET_P + TOWER_P + SETTLE_P) return false;
+      else this.cellSpare = roll < HAMLET_P ? 'hamlet' : roll < HAMLET_P + TOWER_P ? 'watchtower' : 'settlement';
     }
     // The wilderness finds keep clear of cities.
     const cities = (this.world as Partial<{ cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>).cities;
@@ -4144,7 +4198,85 @@ export class Discoveries {
   }
 
   /** What an otherwise empty cell holds, as cellSite last worked out. */
-  private cellSpare: '' | 'hamlet' | 'watchtower' = '';
+  private cellSpare: '' | 'hamlet' | 'watchtower' | 'settlement' | 'inn' = '';
+  private readonly innCache = new Map<number, Inn | null>();
+  private routes: RouteNet | undefined;
+  private readonly routeOut: TravelRoute[] = [];
+  private readonly innP = { x: 0, z: 0 };
+  private readonly innQ = { x: 0, z: 0 };
+
+  /**
+   * The caravanserai that stands in a cell, if a route's falls there: beside the road, about half
+   * way between its two cities, at the first of a few places along it where the ground will do.
+   * Worked out from the routes and the seed alone, once for each cell.
+   */
+  private innAt(cx: number, cz: number): Inn | null {
+    const key = cellKey(cx, cz);
+    let inn = this.innCache.get(key);
+    if (inn !== undefined) return inn;
+    inn = null;
+    const w = this.world as Partial<DesertWorld>;
+    if (w.cities && w.river && w.massif) {
+      this.routes ??= new RouteNet(this.world as DesertWorld);
+      const s = this.world.seed | 0;
+      const P = this.innP;
+      const Q = this.innQ;
+      search: for (const r of this.routes.near((cx + 0.5) * CELL, (cz + 0.5) * CELL, this.routeOut, 4)) {
+        const side = hash4(r.a.id, r.b.id, s, 71) < 0.5 ? -1 : 1;
+        for (const f of INN_AT) {
+          routePos(r, r.len * f, 0, P);
+          routePos(r, r.len * f + 6, 0, Q);
+          const tl = Math.hypot(Q.x - P.x, Q.z - P.z) || 1;
+          const nx = (-(Q.z - P.z) / tl) * side;
+          const nz = ((Q.x - P.x) / tl) * side;
+          const x = P.x + nx * INN_OFF;
+          const z = P.z + nz * INN_OFF;
+          if (!this.innFits(r, x, z)) continue;
+          // the first place that will do is where this route's stands, whichever cell that is
+          if (Math.floor(x / CELL) === cx && Math.floor(z / CELL) === cz) {
+            inn = { x, z, dx: -nx, dz: -nz };
+            break search;
+          }
+          continue search;
+        }
+      }
+    }
+    this.innCache.set(key, inn);
+    return inn;
+  }
+
+  /** Whether a caravanserai could stand at (x, z) beside route r: a cell with no find, level sand, off the water and the route's camps. */
+  private innFits(r: TravelRoute, x: number, z: number): boolean {
+    const w = this.world;
+    const cx = Math.floor(x / CELL);
+    const cz = Math.floor(z / CELL);
+    if (hash4(cx, cz, w.seed | 0, 1) < SITE_P) return false;
+    const ex = x - cx * CELL;
+    const ez = z - cz * CELL;
+    if (ex < INN_EDGE || ez < INN_EDGE || ex > CELL - INN_EDGE || ez > CELL - INN_EDGE) return false;
+    if (Math.abs(w.height(x + 22, z) - w.height(x - 22, z)) + Math.abs(w.height(x, z + 22) - w.height(x, z - 22)) > 5) return false;
+    if (this.riverAt(x, z) < 200 || w.sample(x, z, this.sample).rock > 0.4) return false;
+    for (const camp of this.routes!.camps(r)) if (Math.hypot(camp.x - x, camp.z - z) < 75) return false;
+    return true;
+  }
+
+  /** Whether nothing else's cell point lies within r of (x, z): the room a big settlement in cell (cx, cz) needs. */
+  private settleClear(cx: number, cz: number, x: number, z: number, r: number): boolean {
+    const kx = this.cellPos.x;
+    const kz = this.cellPos.z;
+    const spare = this.cellSpare;
+    let ok = true;
+    for (let dz = -1; dz <= 1 && ok; dz++) {
+      for (let dx = -1; dx <= 1 && ok; dx++) {
+        if (dx === 0 && dz === 0) continue;
+        if (this.cellSite(cx + dx, cz + dz) && Math.hypot(this.cellPos.x - x, this.cellPos.z - z) < r) ok = false;
+      }
+    }
+    this.cellPos.x = kx;
+    this.cellPos.z = kz;
+    this.cellSpare = spare;
+    return ok;
+  }
 
   private isBuilt(key: number): boolean {
     for (let i = 0; i < this.sites.length; i++) if (this.sites[i].key === key) return true;
@@ -4668,7 +4800,7 @@ export class Discoveries {
     out.length = 0;
     for (let i = 0; i < this.sites.length; i++) {
       const s = this.sites[i];
-      if (s.folk) out.push({ key: s.key, snow: s.kind === 'snow-village', x: s.x, z: s.z, folk: s.folk });
+      if (s.folk) out.push({ key: s.key, kind: s.kind, snow: s.kind === 'snow-village', x: s.x, z: s.z, folk: s.folk });
     }
     return out;
   }
@@ -4949,7 +5081,7 @@ export class Discoveries {
    * Where a cell's find settles and what kind it is. Takes the cell's own rng and leaves it where
    * buildSite carries on from, so a find placed here and one built match exactly.
    */
-  private placeSite(cx: number, cz: number, rng: () => number): { kind: string; x: number; z: number; onSalt: boolean } {
+  private placeSite(cx: number, cz: number, rng: () => number): { kind: string; x: number; z: number; onSalt: boolean; dx?: number; dz?: number } {
     this.cellSite(cx, cz);
     let x = this.cellPos.x;
     let z = this.cellPos.z;
@@ -4962,6 +5094,18 @@ export class Discoveries {
       mean += w.height(x + Math.cos(a) * 250, z + Math.sin(a) * 250);
     }
     mean /= 8;
+    if (this.cellSpare === 'inn') {
+      const inn = this.innAt(cx, cz)!;
+      rng();
+      return { kind: 'caravanserai', x: inn.x, z: inn.z, onSalt: false, dx: inn.dx, dz: inn.dz };
+    }
+    if (this.cellSpare === 'settlement') {
+      // a settlement goes where the ground suits its kind, and faces the way that ground asks
+      const seed = w.seed | 0;
+      const at = settle(w as SettleWorld, x, z, (i) => hash4(cx, cz, seed, 60 + i), (sx, sz, r) => this.settleClear(cx, cz, sx, sz, r));
+      rng();
+      return { kind: at.kind, x: at.x, z: at.z, onSalt: false, dx: at.dx, dz: at.dz };
+    }
     if (this.cellSpare !== '') {
       // a hamlet or a watchtower settles on the level sand nearby, off rock and salt
       const spare = this.cellSpare;
@@ -5036,9 +5180,11 @@ export class Discoveries {
   private buildSite(cx: number, cz: number): void {
     const w = this.world;
     const rng = mulberry32(Math.floor(hash4(cx, cz, w.seed | 0, 7) * 4294967296));
-    const { kind, x, z, onSalt } = this.placeSite(cx, cz, rng);
+    const { kind, x, z, onSalt, dx, dz } = this.placeSite(cx, cz, rng);
     const baseY = w.height(x, z);
-    const ctx = new Ctx(w, x, z, baseY, rng, rng() * Math.PI * 2);
+    const turn = rng() * Math.PI * 2;
+    // (a settlement's frame faces the way its ground asks: +u along (dx, dz))
+    const ctx = new Ctx(w, x, z, baseY, rng, dx === undefined || dz === undefined ? turn : Math.atan2(-dz, dx));
     ctx.stone.salt = (cx * 31 + cz * 17) & 1023;
     switch (kind) {
       case 'ruins': buildRuins(ctx); break;
@@ -5073,7 +5219,10 @@ export class Discoveries {
       case 'watchtower': buildWatchtower(ctx); break;
       case 'sundial': buildSundial(ctx, onSalt); break;
       case 'temple': buildTemple(ctx); break;
-      default: buildShell(ctx); break;
+      default:
+        if (isSettlement(kind)) buildSettlement(kind, ctx, KIT);
+        else buildShell(ctx);
+        break;
     }
     this.finishSite(cellKey(cx, cz), kind, x, z, baseY, ctx);
   }
@@ -5144,7 +5293,7 @@ export class Discoveries {
       light: ctx.light ? new THREE.Vector4(ctx.x + ctx.light[0], baseY + ctx.light[1], ctx.z + ctx.light[2], ctx.light[3]) : undefined,
       relic,
       temple: ctx.temple ? templeMarks(ctx, baseY) : undefined,
-      folk: ctx.folk?.map((f) => ({ x: ctx.x + f.u, z: ctx.z + f.v, yaw: Math.atan2(f.fu - f.u, f.fv - f.v), sit: f.sit, role: f.role, small: f.small })),
+      folk: ctx.folk?.map((f) => ({ x: ctx.x + f.u, z: ctx.z + f.v, yaw: Math.atan2(f.fu - f.u, f.fv - f.v), sit: f.sit, role: f.role, small: f.small, coat: f.coat, y: f.y === undefined ? undefined : baseY + f.y })),
     });
   }
 

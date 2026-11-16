@@ -7,7 +7,7 @@ import './talk.css';
 
 /** Someone who can be spoken to, as the systems that own them describe them. */
 export interface Speaker {
-  kind: 'traveller' | 'pilgrim' | 'keeper' | 'herder' | 'townsfolk' | 'miner' | 'villager' | 'watcher' | 'climber';
+  kind: 'traveller' | 'pilgrim' | 'keeper' | 'herder' | 'townsfolk' | 'miner' | 'villager' | 'watcher' | 'climber' | 'host';
   /** Whatever the owning system needs to find this person again. */
   ref: unknown;
   /** Head position in the world. */

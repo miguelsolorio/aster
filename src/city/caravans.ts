@@ -1083,6 +1083,7 @@ export const ROLE_HERDER = 3;
 export const ROLE_VILLAGER = 4;
 export const ROLE_WATCHER = 5;
 export const ROLE_CLIMBER = 6;
+export const ROLE_HOST = 7;
 
 interface Agent {
   animal: boolean;
@@ -1240,6 +1241,8 @@ interface Trip {
 // 6 a shepherd, 7 the beasts in a pen outside a city
 interface Group {
   kind: number;
+  /** A village's kind, for the talking. */
+  place?: string;
   /** Pilgrims walk together: where they are along the route, which way, how fast, and how long they stay put. */
   s: number;
   dir: number;
@@ -1407,6 +1410,7 @@ export interface PersonOut {
   role: number;
   camp?: boolean;
   snow?: boolean;
+  place?: string;
 }
 
 class Inst {
@@ -1642,6 +1646,7 @@ export class Caravans {
     out.role = g?.kind === 6 ? ROLE_HERDER : a.role;
     out.camp = g?.kind === 1;
     out.snow = g?.snow === true;
+    out.place = g?.place;
     out.x = a.x;
     out.y = a.y;
     out.z = a.z;
@@ -2939,22 +2944,26 @@ export class Caravans {
   /** A village's people, each where the village has a place for them: they keep to it, as the temples' keepers do. */
   private buildVillage(v: Village): Group {
     const rng = mulberry32((this.world.seed ^ Math.imul(v.key | 0, 0x3d4d51cb) ^ 0x51ed270b) >>> 0);
-    const g = this.emptyGroup(4, v.x, v.z, 80);
+    let far = 0;
+    for (const f of v.folk) far = Math.max(far, Math.hypot(f.x - v.x, f.z - v.z));
+    const g = this.emptyGroup(4, v.x, v.z, Math.max(80, far + 20));
     g.snow = v.snow;
+    g.place = v.kind;
     const wool = v.snow ? SNOW_WOOL : VILLAGE_WOOL;
     for (const f of v.folk) {
       const a = newAgent(false, rng);
       const c = wool[Math.floor(rng() * wool.length)];
       const j = 0.9 + rng() * 0.18;
-      a.role = f.role === 'watcher' ? ROLE_WATCHER : f.role === 'climber' ? ROLE_CLIMBER : ROLE_VILLAGER;
-      a.coat = f.role === 'watcher' ? WATCHER_COAT : f.role === 'climber' ? CLIMBER_COAT : [c[0] * j, c[1] * j, c[2] * j];
+      a.role = f.role === 'watcher' ? ROLE_WATCHER : f.role === 'climber' ? ROLE_CLIMBER : f.role === 'host' ? ROLE_HOST : ROLE_VILLAGER;
+      a.coat = f.coat ? [f.coat[0] * j, f.coat[1] * j, f.coat[2] * j]
+        : f.role === 'watcher' ? WATCHER_COAT : f.role === 'climber' ? CLIMBER_COAT : [c[0] * j, c[1] * j, c[2] * j];
       a.variant = 0;
       if (f.small) a.scale = 0.58 + rng() * 0.1;
       let x = f.x;
       let z = f.z;
-      let y = this.world.height(x, z);
-      // (a place that turns out to be inside a wall: step aside, or stay indoors)
-      if (this.solid && blockedAt(this.solid, x, z, y)) {
+      let y = f.y ?? this.world.height(x, z);
+      // (a place that turns out to be inside a wall: step aside, or stay indoors; not on a deck or terrace)
+      if (f.y === undefined && this.solid && blockedAt(this.solid, x, z, y)) {
         let ok = false;
         for (let k = 0; k < 8 && !ok; k++) {
           const an = (k / 8) * TAU;
