@@ -1568,7 +1568,7 @@ export class Fauna {
           }
           continue;
         }
-        if ((l.kind === 'hamlet' || l.kind === 'mountain-village') && ld < BIG_R) {
+        if ((l.kind === 'hamlet' || l.kind === 'mountain-village' || l.kind === 'well-camp') && ld < BIG_R) {
           const key = GRAZE_KEY + Math.abs(l.key);
           if (this.herds.has(key) || this.empty.has(key)) continue;
           const h = this.makeGraze(l);

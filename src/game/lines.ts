@@ -3,6 +3,8 @@
 // A conversation is a list of lines stepped through one at a time. Where a line
 // names a control it comes in two forms, one for keys and one for touch.
 
+import type { SettlementKind } from '../world/settlementKinds';
+
 export interface KeyLine {
   keys: string;
   touch: string;
@@ -457,5 +459,197 @@ export const FOUND: Record<'chart' | 'flute' | 'bedroll' | 'rod' | 'rope' | 'car
   carpet: {
     keys: 'A carpet that won\'t lie flat. Leap, then hold Space. It flies faster, and climbs for twice as long.',
     touch: 'A carpet that won\'t lie flat. Leap, then hold the button. It flies faster, and climbs for twice as long.',
+  },
+};
+
+/** What the people of one settlement out on the sand have to say. */
+export interface SettledLines {
+  /** Anyone, at any hour. One line each. */
+  any: string[];
+  night: string[];
+  child: string[];
+  /** Who to ask, said until the wanderer has spoken to them this visit. */
+  askHost: string;
+  /** The one person worth stopping for: what they say the first time. */
+  host: string[];
+  /** Then where something unfound lies ({way}, {far}), which goes on the map. */
+  hostPoint: string;
+  /** Or this, when there is nothing left to point at. */
+  hostNone: string;
+  /** And after that, one of these. */
+  hostAfter: string[];
+}
+
+/** The settlements, by the kind of place (see world/settlementKinds.ts). */
+export const SETTLED: Record<SettlementKind, SettledLines> = {
+  'well-camp': {
+    any: [
+      'We go where the grass went. This month it went here.',
+      'The tents are goat hair. They let the wind through and keep the sun out.',
+      'Four tents. In spring there are six. Then somebody argues.',
+      'The camels know the way to every well. We follow and take the credit.',
+      'Tea? It\'s mostly sugar. That\'s the point of it.',
+      'We\'ll be gone in a month. The well stays.',
+    ],
+    night: ['Sit closer. The fire is small on purpose.', 'The camels sleep facing home. Nobody taught them.'],
+    child: ['That camel is mine. The bad-tempered one.', 'I can find water with a stick. Nearly.'],
+    askHost: 'Ask the well keeper, in white. Knows every well between here and the salt.',
+    host: ['Drink first. Then talk.', 'I keep the well. It was here before the tents, and it will be here after them.', 'I know this sand by its water. Where there is water, there is something else.'],
+    hostPoint: 'Go {way}, {far}. There is something there worth the walk. I\'ve marked it for you.',
+    hostNone: 'You\'ve seen everything I know of. Sit and tell me about it.',
+    hostAfter: ['The rope is forty arms long. The water is at thirty-eight.', 'A well is a promise somebody made a long time ago.', 'Fill your skin before you go. Nobody leaves here thirsty.'],
+  },
+  'star-house': {
+    any: [
+      'We sleep by day. You\'ve caught us at a bad hour, whatever hour it is.',
+      'The hill is the only reason we\'re here. Nothing between us and the sky.',
+      'No lamps past the door. House rule.',
+      'The brass ring up there took nine years to make. It\'s still a little out.',
+      'I\'ve been counting the same patch of sky since I was twelve.',
+      'The cities are too bright. You can\'t see anything from a city.',
+    ],
+    night: ['Shh. Look up. No, further left.', 'That one isn\'t a star. It moves. We don\'t know what it is.'],
+    child: ['I\'m allowed to carry the lenses. Not the big one.', 'I found a star. They said it had been found.'],
+    askHost: 'The old stargazer, in gold, knows what lies under every star. Come back after dark.',
+    host: ['You\'re standing in my light. No, stay. There isn\'t any.', 'Every star stands over some place on the ground. People forget that.', 'Pick one low on the sky and walk at it. You\'ll arrive somewhere.'],
+    hostPoint: 'That one, low to the {way}. Under it, {far}, is something you haven\'t seen. I\'ve put it on your map.',
+    hostNone: 'There\'s nothing under my stars you haven\'t walked to. I\'ll need more stars.',
+    hostAfter: ['Come back at night. I\'m no use before then.', 'The sand is a bad sky. Too close to see properly.', 'I\'ve never been to any of the places I point at.'],
+  },
+  'salt-works': {
+    any: [
+      'Let the sun do the work. We only rake.',
+      'The pink pools are nearly ready. The green ones have a month to go.',
+      'One block is a day\'s wage. Don\'t sit on it.',
+      'You\'ll want to squint. Everybody does for the first year.',
+      'The caravans pay in cloth. We have more cloth than we can wear.',
+      'Salt gets into everything. The bread, the bed, the children.',
+    ],
+    night: ['The pan is brighter than the sky tonight.', 'It creaks when it cools. That\'s the salt, not ghosts. Probably.'],
+    child: ['I licked the house once. It\'s true, it\'s salt.', 'You can slide on the white pool. Don\'t tell.'],
+    askHost: 'Talk to the tallyman, in black. He counts everything that comes in and goes out.',
+    host: ['Forty-one blocks went out. Forty were paid for.', 'I count the salt. I count the caravans. I count the days it doesn\'t rain, which is all of them.', 'Caravans talk while I count them. I know where things are.'],
+    hostPoint: 'One of them spoke of something to the {way}, {far}. I wrote it down. Now it\'s on your map as well.',
+    hostNone: 'I\'ve nothing written down that you haven\'t seen. I checked twice.',
+    hostAfter: ['Still forty.', 'If you meet a caravan with one block too many, send it back.', 'Everything here is worth exactly its weight.'],
+  },
+  'glass-kilns': {
+    any: [
+      'Don\'t touch the racks. Or the glass. Or anything.',
+      'It\'s only sand. Hot enough, everything is only sand.',
+      'The pale sand melts clear. The red sand melts the colour of tea.',
+      'We light them at dusk. It\'s cooler for us and it looks better.',
+      'Every city window you\'ve looked through came out of that kiln.',
+      'I\'ve had no eyebrows since I was fifteen.',
+    ],
+    night: ['Stand back from the mouth. Further. There.', 'They can see us from the mountain. We\'re somebody\'s star.'],
+    child: ['I made a bead. It\'s nearly round.', 'I carry sand. Next year I carry glass.'],
+    askHost: 'The kiln master, in amber, is the one to talk to. Wait till the pipe is down.',
+    host: ['Mind the pipe.', 'I\'ve looked through every piece of glass we ever made. You see a long way through good glass.', 'Hold this up. No, the other way. There.'],
+    hostPoint: 'To the {way}, {far}. See it? No. Well, it\'s there. I\'ve marked your map.',
+    hostNone: 'Nothing out there you haven\'t found. The glass doesn\'t lie.',
+    hostAfter: ['Sand, fire and breath. There\'s nothing else in it.', 'A bubble in the glass is a breath somebody took forty years ago.', 'Bring me a sand I haven\'t seen and I\'ll show you its colour.'],
+  },
+  ledge: {
+    any: [
+      'You get used to the ladders. Then you get used to nothing else.',
+      'The rock keeps the sun off till noon and the wind off all year.',
+      'My house is my neighbour\'s roof. We\'re polite to each other.',
+      'The clay comes out of the same rock. We just move it up a little.',
+      'Pots dry along the edge. Nothing has ever fallen. Almost nothing.',
+      'Nobody here sleepwalks. Not twice.',
+    ],
+    night: ['The ladders are up for the night. You\'re down here with me.', 'You can hear the whole desert from under the rock.'],
+    child: ['I can climb faster than the ladder keeper.', 'I dropped a pot once. Everybody remembers.'],
+    askHost: 'The ladder keeper, in ochre, says who comes up. Ask nicely.',
+    host: ['Hold the rails, not the rungs.', 'I\'ve kept the ladders thirty years. Up at dawn, down at dusk. Nobody has ever thanked a ladder.', 'From the top one you see over the rock. Further than you\'d think.'],
+    hostPoint: 'There\'s something to the {way}, {far}. You can see it from the top rung. It\'s on your map now.',
+    hostNone: 'There\'s nothing to see from up there that you haven\'t walked to.',
+    hostAfter: ['Up is the easy way. It\'s down that people get wrong.', 'I count them up and I count them down. The numbers should match.', 'A rung went last winter. We don\'t talk about it.'],
+  },
+  bridge: {
+    any: [
+      'Left bank people and right bank people. We meet in the middle and disagree.',
+      'The bridge was here before us. We just moved in.',
+      'My floor is the river. You stop hearing it after a year.',
+      'Fish from this side taste better. Ask anyone on this side.',
+      'Don\'t lean on the rail there. Lean on it over there.',
+      'When the water\'s low you can see the old piers. There was a bridge before this one.',
+    ],
+    night: ['The river is louder at night. Or everything else is quieter.', 'We hang a lamp at each end. For the boats, and the drunk.'],
+    child: ['I can spit into the river from my bed.', 'I caught a fish as long as my arm. This arm.'],
+    askHost: 'You\'ll have to see the toll keeper, in red. Nobody crosses without a word.',
+    host: ['Toll.', 'Not coin. News. What\'s on the far bank, what you saw on the way. That\'s what a bridge is for.', 'I\'ll give you some back. Fair is fair.'],
+    hostPoint: 'Somebody crossed last week from the {way}. Said there was something {far} from here. I\'ve marked your map.',
+    hostNone: 'You\'ve seen more than anyone who crosses here. Go on. No charge.',
+    hostAfter: ['Everything crosses here in the end.', 'A river is a road that doesn\'t need mending.', 'I\'ve never been to either bank for longer than a day.'],
+  },
+  caravanserai: {
+    any: [
+      'Three days from one city, three from the other. So everybody stops.',
+      'The gate shuts at dark. Be on the right side of it.',
+      'I\'m only here till the camels are rested. I said that a year ago.',
+      'You hear every language in the yard. Mostly complaints.',
+      'The stew is the same every night. That\'s why it\'s good.',
+      'Don\'t play dice with the stable hands.',
+    ],
+    night: ['The lamp over the gate burns all night. People walk a long way toward it.', 'Listen. Forty camels, all asleep.'],
+    child: ['I know all the camels. I don\'t know the people.', 'Somebody left a monkey here once. It\'s gone now.'],
+    askHost: 'The innkeeper, in white, hears everything. Buy something first.',
+    host: ['Bed or stable? You look like stable.', 'I don\'t travel. Everybody who does comes through my gate and tells me about it.', 'So I know the desert better than any of them.'],
+    hostPoint: 'A driver was talking about something to the {way}, {far}. He wasn\'t lying. He was too tired. It\'s on your map.',
+    hostNone: 'You\'ve been everywhere my guests have. You should be telling me.',
+    hostAfter: ['Rumours are free. The stew isn\'t.', 'Nobody lives here. A lot of people have stayed for years.', 'Leave by the same gate. There\'s only the one.'],
+  },
+  'dyers-town': {
+    any: [
+      'Don\'t brush against anything. It\'s all wet.',
+      'Red is a root. Blue is a leaf. Yellow is a flower. Purple is a secret.',
+      'My hands have been this colour for twenty years.',
+      'The whole hill smells of blue today. Tomorrow it\'s red.',
+      'The cities send white cloth up and get the desert back.',
+      'We wear undyed. You don\'t eat at your own stall.',
+    ],
+    night: ['The colours are all still there at night. You just have to trust them.', 'The cloth dries faster in the dark wind.'],
+    child: ['I fell in the yellow. It took a month to come off.', 'Guess which vat I\'m not allowed near.'],
+    askHost: 'Find the master dyer, in purple. The only one of us who wears a colour.',
+    host: ['Stand still. That brown you\'re wearing. Is that on purpose?', 'I\'ve mixed every colour in the desert. I go and look at the place first. The colour is always already there.', 'So I\'ve been about.'],
+    hostPoint: 'I got my best red to the {way}, {far}. There\'s something there you should see. I\'ve marked it.',
+    hostNone: 'You\'ve seen every colour I have. Bring me a new one.',
+    hostAfter: ['Undyed is a colour too. It\'s the hardest to get right.', 'Sun fades everything except indigo. Indigo fades you.', 'Come back when the purple is ready. You\'ll smell it.'],
+  },
+  'wind-towers': {
+    any: [
+      'Stand under the tower. Feel that? That\'s the whole trick.',
+      'The water walks here from the mountain, underground. It takes a week.',
+      'There\'s ice in the cone. In summer. Go and look.',
+      'Every one of those mounds is a well into the same stream.',
+      'No river, no spring, and we\'ve never been thirsty.',
+      'My grandfather dug the last mile. He never saw the first.',
+    ],
+    night: ['The towers hum when the wind is right. It keeps the children asleep.', 'We make the ice on nights like this. Clear and still.'],
+    child: ['I\'ve been down a shaft. On a rope. Don\'t tell.', 'Ice is my favourite food.'],
+    askHost: 'A water warden, in dark teal, walks the line every day. They know what\'s out there.',
+    host: ['Don\'t step on the mounds. They\'re older than the town.', 'I walk the line. Out along the shafts in the morning, back by dark. If one falls in, the town is dry in a week.', 'You see a lot from the far end.'],
+    hostPoint: 'Out past the last shaft, to the {way}, {far}, there\'s something. I\'ve never had time to go. I\'ve marked it for you.',
+    hostNone: 'You\'ve walked further than my line goes. Nothing left to tell you.',
+    hostAfter: ['Listen at the next shaft. If you hear water, all is well.', 'The stream is the width of my shoulders. A whole town on that.', 'Dig straight and trust the slope. That\'s all of it.'],
+  },
+  'stepped-city': {
+    any: [
+      'The higher you live, the further you carry your water.',
+      'Five tiers. I was born on the second and I\'ll die on the second.',
+      'You can see the dome from a day away. Then it\'s another day.',
+      'The steps are the street. Mind the goats.',
+      'They gild the dome again every spring. Somebody\'s job.',
+      'Everything rolls downhill here. Rumours go the other way.',
+    ],
+    night: ['From up here the camps look like a second sky.', 'The gate\'s shut. You\'re one of us till morning.'],
+    child: ['I\'ve been to the top. I\'m not supposed to say.', 'If you drop a melon on the fifth tier it gets to the gate before you.'],
+    askHost: 'The scribe at the gate, in white, writes down everyone who comes in. Go and be written down.',
+    host: ['Name? No. Where from? No. Then where have you been?', 'I write down everywhere anyone has come from. It\'s the only map this city has ever needed.', 'There\'s a gap in it.'],
+    hostPoint: 'Here. To the {way}, {far}. Nobody has ever come in from there. Go and tell me why. I\'ve marked it.',
+    hostNone: 'You\'ve been everywhere in my book. I\'ll have to start a new one.',
+    hostAfter: ['Written down. Go on up.', 'People think the dome is the top of the city. The book is.', 'Come back and tell me what was there.'],
   },
 };

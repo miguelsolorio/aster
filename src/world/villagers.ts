@@ -3,8 +3,11 @@
 // they are: by the fire, at the well, at the foot of the tower. Nothing here is random, so a
 // village's people are where they were the last time.
 
-/** What someone in a village is, for what they say: one of the many, the watcher at the tower, or the climber by the fire. */
-export type FolkRole = 'villager' | 'watcher' | 'climber';
+/**
+ * What someone in a village is, for what they say: one of the many, the watcher at the tower, the
+ * climber by the fire, or (in a settlement out on the sand) the one person worth stopping for.
+ */
+export type FolkRole = 'villager' | 'watcher' | 'climber' | 'host';
 
 /** One person's place, in the site's own frame (metres from its middle, along the world's axes). */
 export interface FolkMark {
@@ -17,6 +20,10 @@ export interface FolkMark {
   role: FolkRole;
   /** A child. */
   small: boolean;
+  /** Their cloth, where the place has colours of its own (r, g, b). */
+  coat?: [number, number, number];
+  /** Height they stand at, relative to the site's base, where it is not the ground: a deck, a terrace. */
+  y?: number;
 }
 
 /** A village's frame: the unit vector along its street (T) and the one across it (N). */

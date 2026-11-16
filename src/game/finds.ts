@@ -1,6 +1,6 @@
 // The kinds of thing the desert hides, as Discoveries names them when one is first come near
 // (onReach). The world goes on for ever, so what can be counted is the kinds found, not the
-// sites: the tracker reads "Discoveries 3 / 15". The lamp is left out: it is picked up, never
+// sites: the tracker reads "Discoveries 3 / 29". The lamp is left out: it is picked up, never
 // come near, so it is never reached.
 
 export const FIND_KINDS = [
@@ -23,6 +23,16 @@ export const FIND_KINDS = [
   'cave',
   'spring',
   'summit',
+  'well-camp',
+  'star-house',
+  'salt-works',
+  'glass-kilns',
+  'ledge',
+  'bridge',
+  'caravanserai',
+  'dyers-town',
+  'wind-towers',
+  'stepped-city',
 ] as const;
 
 export type FindKind = (typeof FIND_KINDS)[number];
@@ -47,6 +57,16 @@ const NAMES: Record<FindKind, string> = {
   cave: 'Mountain cave',
   spring: 'Spring',
   summit: 'Summit',
+  'well-camp': 'Well camp',
+  'star-house': 'Star house',
+  'salt-works': 'Salt works',
+  'glass-kilns': 'Glass kilns',
+  ledge: 'Cliff village',
+  bridge: 'Bridge village',
+  caravanserai: 'Caravanserai',
+  'dyers-town': "Dyers' town",
+  'wind-towers': 'Wind-tower town',
+  'stepped-city': 'Stepped city',
 };
 
 export function isFindKind(k: unknown): k is FindKind {

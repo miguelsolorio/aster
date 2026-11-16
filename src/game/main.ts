@@ -10,13 +10,14 @@ import { TrailField } from '../world/trailField';
 import { Dust } from '../world/dust';
 import { Splash } from '../world/splash';
 import { Discoveries } from '../world/discoveries';
+import { isSettlement } from '../world/settlementKinds';
 import { Wildlife } from '../world/wildlife';
 import { Fauna } from '../world/fauna';
 import { Props } from '../world/props';
 import { blockedAt } from '../world/avoid';
 import { Cities } from '../city/cities';
 import { FootpathNet } from '../city/footpaths';
-import { Caravans, ROLE_CLIMBER, ROLE_HERDER, ROLE_KEEPER, ROLE_PILGRIM, ROLE_VILLAGER, ROLE_WATCHER } from '../city/caravans';
+import { Caravans, ROLE_CLIMBER, ROLE_HERDER, ROLE_HOST, ROLE_KEEPER, ROLE_PILGRIM, ROLE_VILLAGER, ROLE_WATCHER } from '../city/caravans';
 import { Waymarks } from '../city/waymarks';
 import { People } from '../city/people';
 import { Figure } from './figure';
@@ -36,7 +37,7 @@ import { Massifs } from '../world/massifs';
 import { Save, loadSpawn, saveSpawn, clearSpawn, clearProgress } from './save';
 import { findName, isFindKind } from './finds';
 import { Talk, type Speaker } from './talk';
-import { CLIMBER, FOUND, HERDER, KEEPER, MINER, PILGRIM, SAND, SNOWFOLK, TOWNSFOLK, TRAVELLER, VILLAGER, WATCHER, WEAVER, type Line } from './lines';
+import { CLIMBER, FOUND, HERDER, KEEPER, MINER, PILGRIM, SAND, SETTLED, SNOWFOLK, TOWNSFOLK, TRAVELLER, VILLAGER, WATCHER, WEAVER, type Line } from './lines';
 import { CavernHints } from './hints';
 import { offeringAt } from './offerings';
 import { Marks } from './marks';
@@ -222,6 +223,19 @@ function start() {
     if (near) {
       player.place(near.x, near.z);
       cities.setFocus(near.x, near.z);
+    }
+  }
+  // (testing) ?settle=<kind> starts you 45 m from the nearest settlement of that kind, so it is in view.
+  if (import.meta.env.DEV && isSettlement(qs.get('settle'))) {
+    const want = qs.get('settle');
+    const p = player.state.pos;
+    const near = discoveries
+      .sitesNear(p.x, p.z, 30000, [])
+      .filter((s) => s.kind === want)
+      .sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z))[0];
+    if (near) {
+      player.place(near.x + 45, near.z);
+      cities.setFocus(near.x + 45, near.z);
     }
   }
   discoveries.onGround = () => bake.invalidate();
@@ -539,6 +553,8 @@ function start() {
   let herderAsked = false;
   /** What the village people have sent the wanderer after this visit: said in full once, and shortly after that. */
   const sent = new Set<'rope' | 'boots' | 'feather'>();
+  /** The settlements whose host has spoken this visit. */
+  const hosted = new Set<string>();
   /** Sent after something: where it was said to lie goes on the map, and stays there until it is in hand. */
   const send = (what: 'rope' | 'boots' | 'feather', at: { x: number; z: number }) => {
     sent.add(what);
@@ -560,7 +576,7 @@ function start() {
   /** How far off a mountain's cave or summit may be and still be worth sending someone to (m). */
   const STRAY_R = 6000;
   let lastLine: string | null = null;
-  const trav = { ref: null as unknown, x: 0, y: 0, z: 0, h: 1, sit: 0, seed: 0, role: 0, camp: false, snow: false };
+  const trav = { ref: null as unknown, x: 0, y: 0, z: 0, h: 1, sit: 0, seed: 0, role: 0, camp: false, snow: false, place: undefined as string | undefined };
   const folk = { id: -1, x: 0, z: 0, h: 1, sit: 0, stall: false };
   const setTraveller = (out: Speaker) => {
     out.kind =
@@ -570,6 +586,7 @@ function start() {
       : trav.role === ROLE_VILLAGER ? 'villager'
       : trav.role === ROLE_WATCHER ? 'watcher'
       : trav.role === ROLE_CLIMBER ? 'climber'
+      : trav.role === ROLE_HOST ? 'host'
       : 'traveller';
     out.ref = trav.ref;
     out.x = trav.x;
@@ -763,6 +780,29 @@ function start() {
           return { lines: CLIMBER[want].map((l) => directions(text(l), s.x, s.z, at.x, at.z)), done: () => send(want, at) };
         }
         return { lines: [(lastLine = pick(CLIMBER.after, lastLine))] };
+      }
+      // The people of the settlements out in the desert.
+      if ((s.kind === 'host' || s.kind === 'villager') && caravans.personAt(s.ref, trav) && isSettlement(trav.place)) {
+        const place = trav.place;
+        const lines = SETTLED[place];
+        if (s.kind === 'host') {
+          if (hosted.has(place)) return { lines: [(lastLine = pick(lines.hostAfter, lastLine))] };
+          hosted.add(place);
+          const site = discoveries.nearestUnfound(s.x, s.z, new Set<string>(save.data.found), 6000);
+          if (!site) return { lines: [...lines.host, lines.hostNone] };
+          return {
+            lines: [...lines.host, directions(lines.hostPoint, s.x, s.z, site.x, site.z)],
+            done: () => {
+              save.sight(site.key, site.x, site.z);
+              syncMarks();
+              marked();
+            },
+          };
+        }
+        if (trav.h < 0.8) return { lines: [(lastLine = pick(lines.child, lastLine))] };
+        const pool = [...lines.any, ...(dark() ? [...lines.night, ...lines.night] : [])];
+        if (!hosted.has(place)) pool.push(lines.askHost, lines.askHost);
+        return { lines: [(lastLine = pick(pool, lastLine))] };
       }
       // Everyone else in a village has a line about the place, the hour, and who to ask.
       if (s.kind === 'villager') {
