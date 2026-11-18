@@ -29,12 +29,11 @@ There are 20 of these in [docs/screenshots](docs/screenshots).
 
 | Key | What it does |
 |---|---|
-| `W` `A` `S` `D` | Walk |
+| `W` `A` `S` `D` | Run |
 | Mouse | Look |
-| `Shift` | Go faster on anything: run, boost a board, an animal or a flight, climb the rope quicker. Past top speed it keeps more of what a slope or a launch gave |
 | `Space` | Leap. Hold to rise, let go to glide, double-tap to drop |
 | `Q` | Step on or off the board, once you have one (or get off an animal) |
-| `E` | Talk, or climb onto a wild ass, an oryx (walk up to one, don't run) or a caravan's camel, and get off again. The key shows over whichever is nearest |
+| `E` | Talk, or climb onto a wild ass, an oryx (come up to one on foot) or a caravan's camel, and get off again. The key shows over whichever is nearest |
 | `F` | Hold up the spyglass, once you have one |
 | `R` | Play the flute, once you have one |
 | `B` | Lay the bedroll and sleep in it, once you have one |

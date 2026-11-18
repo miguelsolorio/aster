@@ -20,8 +20,8 @@ export const TRAVELLER = {
     'Nobody walks the sand. It takes all day and gives nothing back.',
     'Here. I carry a spare. It\'s old, but it still knows the dunes.',
     {
-      keys: 'Lean where you want to go. Hold Shift to run with it.',
-      touch: 'Lean where you want to go. Push the stick further to run with it.',
+      keys: 'Lean where you want to go, and it runs.',
+      touch: 'Lean where you want to go, and it runs.',
     },
     {
       keys: 'Press Q to step off and carry it. Press Q again to get back on.',

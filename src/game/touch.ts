@@ -25,8 +25,6 @@ export type TouchMode = 'off' | 'play' | 'photo';
 
 const STICK_RADIUS = 56;
 const DEAD_ZONE = 0.12;
-// Full tilt is a walk, as on a keyboard. Boost (the Shift run) is a deliberate push past the ring.
-const BOOST_EDGE = 1.3;
 // The stick only follows the finger once it is dragged this far out, so there is room to overshoot.
 const FOLLOW_EDGE = 1.5;
 const STICK_SIDE = 0.45;
@@ -79,7 +77,6 @@ export class TouchControls {
   used = false;
   moveX = 0;
   moveZ = 0;
-  boost = false;
   flyHeld = false;
   /** Drop button held: fall out of the glide. Only shown while airborne. */
   dropHeld = false;
@@ -361,7 +358,6 @@ export class TouchControls {
           this.capture(id);
           this.placeStick(x, y, x, y);
           this.layer.classList.add('aster-touch--stick');
-          this.layer.classList.remove('aster-touch--edge');
         }
         return;
       }
@@ -458,7 +454,6 @@ export class TouchControls {
       dy = y - this.stickCy;
     }
     const l2raw = Math.sqrt(dx * dx + dy * dy);
-    const edge = l2raw >= STICK_RADIUS * BOOST_EDGE;
     if (l2raw > STICK_RADIUS) {
       dx *= STICK_RADIUS / l2raw;
       dy *= STICK_RADIUS / l2raw;
@@ -473,8 +468,6 @@ export class TouchControls {
       this.moveX = (dx / l2) * m;
       this.moveZ = (-dy / l2) * m;
     }
-    this.boost = edge;
-    this.layer.classList.toggle('aster-touch--edge', edge);
     this.placeStick(this.stickCx, this.stickCy, this.stickCx + dx, this.stickCy + dy);
   }
 
@@ -487,8 +480,7 @@ export class TouchControls {
     this.stickId = -1;
     this.moveX = 0;
     this.moveZ = 0;
-    this.boost = false;
-    this.layer.classList.remove('aster-touch--stick', 'aster-touch--edge');
+    this.layer.classList.remove('aster-touch--stick');
   }
 
   private endFly(): void {

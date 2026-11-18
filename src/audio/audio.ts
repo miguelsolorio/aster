@@ -22,7 +22,7 @@ export interface AudioFrame {
   dt: number;
   day: number; // 0..1 fraction of day: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset
   night: number; // 0 day .. 1 full night
-  speed: number; // player horizontal speed m/s (walk ~7, run ~13, a board ~16 to 30 on the flat and more downhill)
+  speed: number; // player horizontal speed m/s (on foot ~13, a board ~30 on the flat and more downhill)
   sliding: boolean;
   rock?: boolean; // sliding over rock, not sand: a lower, duller scrape
   grounded: boolean;
@@ -1462,7 +1462,7 @@ export class AudioEngine {
     const c = this.clock;
     const breathe = 0.5 + 0.5 * Math.sin(c * 0.11) * Math.sin(c * 0.067 + 1.3);
     // Air rushing past when moving fast (sliding, launched).
-    const rush = clamp01((f.speed - 8) / 20);
+    const rush = clamp01((f.speed - 14) / 24);
 
     // Buildings shelter you: duck the wind a little as a city closes around you (1 when no city).
     // Rock shuts it out altogether: underground only the air you move through yourself is left.

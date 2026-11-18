@@ -45,8 +45,7 @@ describe('temple offerings', () => {
 });
 
 describe('the carpet', () => {
-  it('flies faster than flying without one, gliding and boosted', () => {
-    expect(flightSpeed(true, false)).toBeGreaterThan(flightSpeed(false, false) * 1.5);
-    expect(flightSpeed(true, true)).toBeGreaterThan(flightSpeed(false, true) * 1.5);
+  it('flies faster than flying without one', () => {
+    expect(flightSpeed(true)).toBeGreaterThan(flightSpeed(false) * 1.5);
   });
 });

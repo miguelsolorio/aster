@@ -5,7 +5,7 @@
 // Everything is instanced; all animation (walk, sit, sway, head turn and bow) is in the vertex shaders.
 import * as THREE from 'three';
 import type { FrameState, SaddleSway, SurfaceSample, Uniforms, World } from '../game/contract';
-import { CAMEL_GALLOP, RIDE } from '../game/speeds';
+import { CAMEL_GALLOP } from '../game/speeds';
 import type { CitySite } from './types';
 import type { Landmark, Village } from '../world/discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
@@ -40,7 +40,7 @@ const CAMEL_REACH = 3.6;
 const CAMEL_BACK = 2.88;
 const CAMEL_KNEEL = 1.5;
 const MOUNT_TILT = 0.35; // how far a ridden or loose camel tips to the slope it stands on
-const CAMEL_WALK = 1.7; // m/s, on its own: under a rider it goes at RIDE, and at CAMEL_GALLOP with Shift
+const CAMEL_WALK = 1.7; // m/s, on its own: under a rider it goes at CAMEL_GALLOP
 const CAMEL_RUN_STRIDE = 4.4; // metres per gait cycle at a run (a walk is the agent's own stride)
 const CAMEL_RUN_PACE = 1.25; // gait cycles a second at a run: faster than that and the stride lengthens instead
 const CAMEL_TURN = 1.1; // rad/s
@@ -1809,11 +1809,11 @@ export class Caravans {
   }
 
   /**
-   * Steer the ridden camel. (wx, wz) is the way to go in the world (length 0..1, 0 to stand); run
-   * gallops it. A kneeling one gets up first. It turns slowly and wide, takes its time to speed
+   * Steer the ridden camel. (wx, wz) is the way to go in the world (length 0..1, 0 to stand), and
+   * it gallops. A kneeling one gets up first. It turns slowly and wide, takes its time to speed
    * up, and goes round what is in its way.
    */
-  ride(dt: number, wx: number, wz: number, run: boolean): void {
+  ride(dt: number, wx: number, wz: number): void {
     const m = this.ridden;
     if (!m || dt <= 0) return;
     const a = m.a;
@@ -1835,7 +1835,7 @@ export class Caravans {
       a.yaw += step;
       this.turnRate += (step / dt - this.turnRate) * k(6);
       // (easing off into a turn, and only ambling round one it is far from making)
-      targetSpd = (run ? CAMEL_GALLOP : RIDE) * Math.min(1, want) * (Math.abs(err) < 1.2 ? 1 - 0.3 * (Math.abs(err) / 1.2) : 0.3);
+      targetSpd = CAMEL_GALLOP * Math.min(1, want) * (Math.abs(err) < 1.2 ? 1 - 0.3 * (Math.abs(err) / 1.2) : 0.3);
     } else this.turnRate += (0 - this.turnRate) * k(6);
     a.spd += (targetSpd - a.spd) * k(targetSpd > a.spd ? 1.2 : 2.5);
     if (a.spd < 0.02) a.spd = 0;

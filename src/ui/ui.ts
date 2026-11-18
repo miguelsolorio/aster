@@ -91,7 +91,6 @@ function keyControls(k: Known): ControlSection[] {
   const fly: ControlRow[] = [
     { action: 'Leap', keys: ['Space'], note: 'hold to rise, release to glide' },
     { action: 'Steer', keys: wasd },
-    { action: 'Boost', keys: ['Shift'] },
     { action: 'Drop', keys: ['Space', 'Space'], note: 'double-tap in the air' },
   ];
   if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, and flies faster' });
@@ -99,8 +98,7 @@ function keyControls(k: Known): ControlSection[] {
     {
       title: 'Move',
       rows: [
-        { action: 'Walk', keys: wasd, note: 'or arrow keys' },
-        { action: 'Run', keys: ['Shift'] },
+        { action: 'Run', keys: wasd, note: 'or arrow keys' },
         { action: 'Look', note: 'Mouse drag or move' },
         { action: 'Zoom', note: 'Mouse wheel' },
       ],
@@ -110,7 +108,7 @@ function keyControls(k: Known): ControlSection[] {
   const act: ControlRow[] = [];
   if (k.talk) act.push({ action: 'Talk', keys: ['E'] });
   if (k.dig) act.push({ action: 'Swing pick', keys: ['E'], note: 'when nobody is near' });
-  if (k.board) act.push({ action: 'Board', keys: ['Q'], note: 'step on or off. On it, WASD glide and Shift boosts' });
+  if (k.board) act.push({ action: 'Board', keys: ['Q'], note: 'step on or off. On it, WASD glide' });
   if (k.spyglass) act.push({ action: 'Spyglass', keys: ['F'], note: 'hold it up to look far' });
   if (k.flute) act.push({ action: 'Flute', keys: ['R'], note: 'play a tune' });
   if (k.bedroll) act.push({ action: 'Bedroll', keys: ['B'], note: 'lay it down, and sleep in it' });
@@ -124,7 +122,6 @@ function touchControls(k: Known): ControlSection[] {
   const fly: ControlRow[] = [
     { action: 'Leap', note: 'Leap button. Hold to rise, release to glide' },
     { action: 'Steer', note: 'Left thumb stick' },
-    { action: 'Boost', note: 'Push the stick past the ring' },
     { action: 'Drop', note: 'Small button in the air' },
   ];
   if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, and flies faster' });
@@ -162,8 +159,7 @@ function introControls(touch: boolean): ControlSection[] {
         { action: 'Pause', note: 'Pause button, top right' },
       ]
     : [
-        { action: 'Walk', keys: ['W', 'A', 'S', 'D'], note: 'or arrow keys' },
-        { action: 'Run', keys: ['Shift'] },
+        { action: 'Run', keys: ['W', 'A', 'S', 'D'], note: 'or arrow keys' },
         { action: 'Look', note: 'Move the mouse' },
         { action: 'Fly', keys: ['Space'], note: 'hold to rise, release to glide' },
         { action: 'Pause', keys: ['Esc'] },
