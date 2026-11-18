@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import type { SurfaceSample, World } from '../contract';
 import { Player, type PlayerInput } from '../player';
+import { BOARD } from '../speeds';
 
 /** Bare rock rising along +z at a fixed pitch (rise over run). */
 const rock = (slope: number): World => ({
@@ -98,7 +99,7 @@ describe('a board', () => {
     const p = rider(0);
     walk(p, 4);
     expect(p.state.sliding).toBe(true);
-    expect(p.state.speed).toBeGreaterThan(5.2 * 1.3);
+    expect(p.state.speed).toBeGreaterThan(BOARD * 0.9);
   });
 
   it('rides up a mountainside', () => {
