@@ -18,6 +18,8 @@
 //   preMaster → high-shelf cut → pause low-pass → pause duck → limiter
 //             → start fade → volume → visibility gain → speakers
 
+import type { Song } from '../game/songs';
+
 export interface AudioFrame {
   dt: number;
   day: number; // 0..1 fraction of day: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset
@@ -172,6 +174,22 @@ const FLUTE_PHRASES: readonly (readonly (readonly [number, number])[])[] = [
   // two leaps up, an answer below
   [[1, 0.26], [2, 0.26], [4, 0.62], [2, 0.28], [4, 0.94]],
 ];
+
+/**
+ * The learned songs: one fixed melody each, so they are known by ear. Same format as above;
+ * negative indices go below the tonic. 2.4 to 3.6 s, last note held. A place answers with the
+ * same notes an octave lower and a quarter slower (see `answer`).
+ */
+const SONG_PHRASES: Record<Exclude<Song, 'call'>, readonly (readonly [number, number])[]> = {
+  // slow and low: three long notes climbing by step, a fourth held: something being roused
+  waking: [[0, 0.8], [1, 0.8], [2, 0.8], [3, 1.0]],
+  // quick and light, running up past the octave and hanging there
+  wind: [[0, 0.18], [1, 0.18], [2, 0.18], [3, 0.18], [4, 0.18], [5, 0.2], [6, 0.22], [7, 1.4]],
+  // falling drop by drop, one note dripping twice, ending low
+  rain: [[5, 0.4], [4, 0.3], [4, 0.3], [3, 0.4], [3, 0.3], [1, 0.4], [0, 1.0]],
+  // a question (a leap up), a breath (a very short low note), the leap again a step higher
+  opening: [[0, 0.3], [3, 0.9], [-3, 0.14], [1, 0.3], [4, 1.4]],
+};
 
 // ------------------------------------------------------------- the graph
 
@@ -1024,11 +1042,22 @@ export class AudioEngine {
   }
 
   /** A soft rising figure of three or four bell notes in the current mode. */
-  chime(): void {
+  chime(kind?: 'learned' | 'woke' | 'opened'): void {
     const ctx = this.ctx;
     const g = this.g;
     if (!ctx || !g || ctx.state !== 'running') return;
     const mood = MOODS[this.dominantMood()];
+    if (kind) {
+      // a short quiet confirmation, on the same soft bell, under a second
+      const lift = 12 * Math.round((FLUTE_D - mood.base) / 12);
+      const figure = { learned: [2, 4, 5], woke: [-3, 0], opened: [1, 3, 4] }[kind];
+      let t = ctx.currentTime + 0.05;
+      for (const idx of figure) {
+        this.bell(t, midiHz(scaleNote(mood, idx) + lift), mood.pluckLevel * 0.7, 0.75, mood, g.chimeBus, rand(-0.2, 0.2));
+        t += 0.16;
+      }
+      return;
+    }
     const count = Math.random() < 0.5 ? 3 : 4;
     let idx = Math.max(mood.lo, Math.min(mood.hi - 3, this.melodyIdx - 1));
     let t = ctx.currentTime + 0.05;
@@ -1038,6 +1067,159 @@ export class AudioEngine {
       idx += Math.random() < 0.65 ? 1 : 2;
       t += rand(0.26, 0.38);
     }
+  }
+
+  /**
+   * A place playing a song's melody back, once, starting about half a second from now (call it as
+   * the wanderer's own phrase ends): the same notes an octave lower and a quarter slower, in the
+   * voice of the place: standing stones hum, an arch breathes, a shell drips, a cave echoes.
+   * Returns the seconds until it is over. Before audio has started it plays nothing and still
+   * returns the time.
+   */
+  answer(song: Exclude<Song, 'call'>): number {
+    const phrase = SONG_PHRASES[song];
+    const slow = 1.25;
+    let len = 0;
+    for (const [, d] of phrase) len += d * slow;
+    const tail = { waking: 2.2, wind: 1.2, rain: 1.6, opening: 1.4 }[song];
+    const total = 0.5 + len + tail;
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g || ctx.state !== 'running') return total;
+    const mood = MOODS[this.dominantMood()];
+    const lift = 12 * Math.round((FLUTE_D - mood.base) / 12) - 12;
+    const t0 = ctx.currentTime + 0.5;
+    const stop = t0 + total;
+    const nodes: AudioNode[] = [];
+    const srcs: (OscillatorNode | AudioBufferSourceNode)[] = [];
+    const osc = (type: OscillatorType, f: number): OscillatorNode => {
+      const o = ctx.createOscillator();
+      o.type = type;
+      o.frequency.value = f;
+      srcs.push(o);
+      nodes.push(o);
+      return o;
+    };
+    const gn = (v: number): GainNode => {
+      const n = ctx.createGain();
+      n.gain.value = v;
+      nodes.push(n);
+      return n;
+    };
+    const filt = (type: BiquadFilterType, f: number, q: number): BiquadFilterNode => {
+      const n = ctx.createBiquadFilter();
+      n.type = type;
+      n.frequency.value = f;
+      n.Q.value = q;
+      nodes.push(n);
+      return n;
+    };
+    const noise = (): AudioBufferSourceNode => {
+      const n = ctx.createBufferSource();
+      n.buffer = g.noise;
+      n.loop = true;
+      srcs.push(n);
+      nodes.push(n);
+      return n;
+    };
+    const delay = (sec: number): DelayNode => {
+      const n = ctx.createDelay(2);
+      n.delayTime.value = sec;
+      nodes.push(n);
+      return n;
+    };
+    const room = gn(0.3);
+    room.connect(g.chimeBus);
+    const out = gn(1);
+    out.connect(g.sfxBus);
+    out.connect(room);
+    // each note's pitch, start time and length (slowed)
+    const notes: { f: number; t: number; d: number }[] = [];
+    let at = t0;
+    for (const [idx, d] of phrase) {
+      notes.push({ f: midiHz(scaleNote(mood, idx) + lift), t: at, d: d * slow });
+      at += d * slow;
+    }
+
+    if (song === 'waking') {
+      // a low hum: a slightly detuned pair that beats, a little triangle, slow to rise, long to ring
+      for (const { f, t, d } of notes) {
+        const env = gn(0);
+        env.gain.setValueAtTime(0, t);
+        env.gain.linearRampToValueAtTime(0.045, t + 0.45);
+        env.gain.setTargetAtTime(0, t + Math.max(0.5, d * 0.7), 0.7);
+        osc('sine', f).connect(env);
+        osc('sine', f * 1.005).connect(env);
+        osc('triangle', f * 0.998).connect(gn(0.3)).connect(env);
+        env.connect(out);
+      }
+    } else if (song === 'wind') {
+      // breath, not tone: noise swept to each pitch, a soft whistle under it
+      const bp = filt('bandpass', notes[0].f, 14);
+      const na = gn(0);
+      const wh = osc('sine', notes[0].f);
+      const wa = gn(0);
+      noise().connect(bp).connect(na).connect(out);
+      wh.connect(wa).connect(out);
+      let prev = notes[0].f;
+      notes.forEach(({ f, t, d }, i) => {
+        const glide = i === 0 ? 0.05 : 0.12;
+        bp.frequency.setValueAtTime(prev, t);
+        bp.frequency.exponentialRampToValueAtTime(f, t + glide);
+        wh.frequency.setValueAtTime(prev, t);
+        wh.frequency.exponentialRampToValueAtTime(f, t + glide);
+        na.gain.setTargetAtTime(0.5, t, 0.08);
+        wa.gain.setTargetAtTime(0.012, t, 0.1);
+        if (i === notes.length - 1) {
+          na.gain.setTargetAtTime(0, t + d * 0.5, 0.35);
+          wa.gain.setTargetAtTime(0, t + d * 0.5, 0.35);
+        }
+        prev = f;
+      });
+    } else if (song === 'rain') {
+      // hollow and watery: a pitch that droops, a wash of noise, a couple of delayed copies
+      const dry = gn(1);
+      dry.connect(out);
+      for (const [dt, lv] of [[0.19, 0.4], [0.37, 0.22]]) dry.connect(delay(dt)).connect(gn(lv)).connect(filt('lowpass', 1400, 0.5)).connect(out);
+      for (const { f, t, d } of notes) {
+        const o = osc('sine', f * 1.14);
+        o.frequency.setValueAtTime(f * 1.14, t);
+        o.frequency.exponentialRampToValueAtTime(f, t + 0.14);
+        const env = gn(0);
+        env.gain.setValueAtTime(0, t);
+        env.gain.linearRampToValueAtTime(0.05, t + 0.012);
+        env.gain.setTargetAtTime(0, t + 0.03, Math.max(0.12, d * 0.3));
+        o.connect(env).connect(dry);
+        const ne = gn(0);
+        ne.gain.setValueAtTime(0, t);
+        ne.gain.linearRampToValueAtTime(0.1, t + 0.015);
+        ne.gain.setTargetAtTime(0, t + 0.02, 0.05);
+        noise().connect(filt('bandpass', f * 3, 1.8)).connect(ne).connect(dry);
+      }
+    } else {
+      // the flute's own voice, far off: rounded off, with a few quieter echoes behind it
+      const wave = ctx.createPeriodicWave(new Float32Array([0, 0, 0, 0, 0]), new Float32Array([0, 1, 0.2, 0.07, 0.025]));
+      const dry = gn(1);
+      const lp = filt('lowpass', 900, 0.5);
+      dry.connect(lp).connect(out);
+      for (const [dt, lv] of [[0.3, 0.45], [0.6, 0.25], [0.9, 0.12]]) lp.connect(delay(dt)).connect(gn(lv)).connect(out);
+      for (const { f, t, d } of notes) {
+        const o = osc('sine', f);
+        o.setPeriodicWave(wave);
+        const env = gn(0);
+        env.gain.setValueAtTime(0, t);
+        env.gain.linearRampToValueAtTime(0.04, t + 0.12);
+        env.gain.setTargetAtTime(0, t + Math.max(0.15, d - 0.2), 0.12);
+        o.connect(env).connect(dry);
+      }
+    }
+
+    for (const s of srcs) {
+      s.start(t0);
+      s.stop(stop);
+    }
+    srcs[0].onended = () => disconnectAll(...nodes);
+    return total;
   }
 
   private rodHum: { amp: GainNode; trem: OscillatorNode; depth: GainNode; tone: OscillatorNode } | null = null;
@@ -1081,18 +1263,22 @@ export class AudioEngine {
   /**
    * A short phrase on a reed flute, played by the wanderer: four to six slurred notes, breathy,
    * in the current mode's pentatonic an octave over the plucks, never the same phrase twice
-   * running. Returns how long it lasts (s). Before audio has started it plays nothing and still
+   * running. A learned song plays its one fixed melody instead. Returns how long it lasts (s). Before audio has started it plays nothing and still
    * returns the length.
    */
-  flute(): number {
-    let k: number;
-    if (this.lastFlute < 0) k = Math.floor(Math.random() * FLUTE_PHRASES.length);
+  flute(song: Song = 'call'): number {
+    let phrase: readonly (readonly [number, number])[];
+    if (song !== 'call') phrase = SONG_PHRASES[song];
     else {
-      k = Math.floor(Math.random() * (FLUTE_PHRASES.length - 1));
-      if (k >= this.lastFlute) k++;
+      let k: number;
+      if (this.lastFlute < 0) k = Math.floor(Math.random() * FLUTE_PHRASES.length);
+      else {
+        k = Math.floor(Math.random() * (FLUTE_PHRASES.length - 1));
+        if (k >= this.lastFlute) k++;
+      }
+      this.lastFlute = k;
+      phrase = FLUTE_PHRASES[k];
     }
-    this.lastFlute = k;
-    const phrase = FLUTE_PHRASES[k];
     let len = 0;
     for (const [, d] of phrase) len += d;
     const ctx = this.ctx;

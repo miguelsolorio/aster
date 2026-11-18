@@ -15,8 +15,10 @@ export interface TouchHooks {
   onBoard(): void;
   /** Spyglass chosen from the Tools fan. */
   onSpyglass(): void;
-  /** Flute chosen from the Tools fan. */
+  /** Flute tapped in the Tools fan. */
   onFlute(): void;
+  /** Flute held in the Tools fan (FLUTE_HOLD s): open the ring of songs. */
+  onFluteHold?(): void;
   /** Bedroll chosen from the Tools fan. */
   onBedroll(): void;
 }
@@ -24,6 +26,8 @@ export interface TouchHooks {
 export type TouchMode = 'off' | 'play' | 'photo';
 
 const STICK_RADIUS = 56;
+/** Seconds the flute must be held in the fan to open the ring of songs. */
+const FLUTE_HOLD = 0.4;
 const DEAD_ZONE = 0.12;
 // The stick only follows the finger once it is dragged this far out, so there is room to overshoot.
 const FOLLOW_EDGE = 1.5;
@@ -102,6 +106,9 @@ export class TouchControls {
 
   private flyId = -1;
   private dropId = -1;
+  /** The pointer holding the flute in the fan, and the timer that turns the hold into the ring. */
+  private fluteId = -1;
+  private fluteTimer = 0;
   private airborne = false;
 
   private readonly slots: Slot[] = [
@@ -318,6 +325,21 @@ export class TouchControls {
       }
       if (item) {
         if (this.layer.classList.contains('aster-touch--fan') && item.btn.classList.contains('is-owned')) {
+          // the flute waits to see whether it is tapped (the song that suits) or held (the ring)
+          if (item === this.toolItems[1] && this.hooks.onFluteHold) {
+            if (this.fluteId < 0) {
+              this.fluteId = id;
+              this.capture(id);
+              window.clearTimeout(this.fluteTimer);
+              this.fluteTimer = window.setTimeout(() => {
+                if (this.fluteId < 0) return;
+                this.fluteId = -1;
+                this.closeFan();
+                this.hooks.onFluteHold?.();
+              }, FLUTE_HOLD * 1000);
+            }
+            return;
+          }
           this.closeFan();
           item.fire();
         }
@@ -416,7 +438,14 @@ export class TouchControls {
 
   private onUp = (e: PointerEvent): void => {
     const id = e.pointerId;
-    if (id === this.stickId) {
+    if (id === this.fluteId) {
+      // let go before the hold turned into the ring: a tap
+      if (e.type !== 'lostpointercapture') e.preventDefault();
+      window.clearTimeout(this.fluteTimer);
+      this.fluteId = -1;
+      this.closeFan();
+      if (e.type === 'pointerup') this.hooks.onFlute();
+    } else if (id === this.stickId) {
       if (e.type !== 'lostpointercapture') e.preventDefault();
       this.endStick();
     } else if (id === this.flyId) {
@@ -496,6 +525,8 @@ export class TouchControls {
   }
 
   private releaseAll(): void {
+    window.clearTimeout(this.fluteTimer);
+    this.fluteId = -1;
     this.endStick();
     this.endFly();
     this.endDrop();

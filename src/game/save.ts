@@ -2,11 +2,12 @@
 // localStorage; the world itself is seeded, so only the changes are stored.
 //
 // Testing: ?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather grants tools for this visit without saving them,
-// and ?reset clears the save and the saved spawn before the game starts.
+// ?songs=waking,wind,rain,opening lends songs the same way, and ?reset clears the save and the saved spawn before the game starts.
 
 import { clearAtlas } from './atlas';
 import { isFindKind, type FindKind } from './finds';
 import type { Storm } from '../world/weather';
+import { isSong, type Song } from './songs';
 
 export type Tool = 'board' | 'carpet' | 'pick' | 'spyglass' | 'flute' | 'bedroll' | 'rod' | 'chart' | 'rope' | 'boots' | 'feather';
 export const TOOLS: Tool[] = ['board', 'carpet', 'pick', 'spyglass', 'flute', 'bedroll', 'rod', 'chart', 'rope', 'boots', 'feather'];
@@ -72,6 +73,10 @@ export interface SaveData {
   sentRain: Storm | null;
   /** Wrecks a storm uncovered and the wanderer reached: x, z and the way each lies, three numbers apiece. */
   wrecks: number[];
+  /** Songs learned from places (the call comes with the flute and is not stored). */
+  songs: Song[];
+  /** The clock when the rain song last brought a rain (null: never). */
+  rainSung: number | null;
 }
 
 const KEY = 'aster.save';
@@ -149,6 +154,8 @@ const fresh = (): SaveData => ({
   rainDay: null,
   sentRain: null,
   wrecks: [],
+  songs: [],
+  rainSung: null,
 });
 
 const keys = (v: unknown): number[] => (Array.isArray(v) ? v.filter((k): k is number => typeof k === 'number' && Number.isFinite(k)).slice(0, 4096) : []);
@@ -176,6 +183,8 @@ export class Save {
   readonly data: SaveData;
   /** Tools granted by the URL for this visit only. */
   private readonly lent = new Set<Tool>();
+  /** Songs lent by the URL for this visit only. */
+  private readonly lentSongs = new Set<Song>();
 
   constructor(qs: URLSearchParams) {
     if (qs.has('reset')) {
@@ -212,6 +221,8 @@ export class Save {
         this.data.sentRain = readStorm(raw.sentRain);
         const wr = keys(raw.wrecks);
         this.data.wrecks = wr.slice(0, Math.floor(Math.min(wr.length, WRECK_CAP * 3) / 3) * 3);
+        if (Array.isArray(raw.songs)) this.data.songs = [...new Set((raw.songs as unknown[]).filter(isSong))].filter((s) => s !== 'call');
+        this.data.rainSung = typeof raw.rainSung === 'number' && Number.isFinite(raw.rainSung) ? raw.rainSung : null;
       }
     } catch {
       /* unreadable save: start again */
@@ -219,6 +230,28 @@ export class Save {
     for (const t of (qs.get('tools') ?? '').split(',')) {
       if ((TOOLS as string[]).includes(t)) this.lent.add(t as Tool);
     }
+    for (const s of (qs.get('songs') ?? '').split(',')) {
+      if (isSong(s) && s !== 'call') this.lentSongs.add(s);
+    }
+  }
+
+  /** Whether a song is known: the call with the flute (lent or owned), the rest once learned (or lent). */
+  knows(s: Song): boolean {
+    if (s === 'call') return this.has('flute');
+    return this.data.songs.includes(s) || this.lentSongs.has(s);
+  }
+
+  /** A place has answered and its song is known for good. */
+  learn(s: Song): void {
+    if (s === 'call' || this.data.songs.includes(s)) return;
+    this.data.songs.push(s);
+    this.write();
+  }
+
+  /** The rain song has brought a rain at this clock. */
+  setRainSung(day: number | null): void {
+    this.data.rainSung = day;
+    this.write();
   }
 
   has(t: Tool): boolean {

@@ -278,3 +278,51 @@ describe('Save: tools and deeds', () => {
     expect(new Save(qs()).toolCount()).toBe(0);
   });
 });
+
+describe('Save: songs', () => {
+  it('starts with no songs and no rain sung', () => {
+    const s = new Save(qs());
+    expect(s.data.songs).toEqual([]);
+    expect(s.data.rainSung).toBeNull();
+    expect(s.knows('call')).toBe(false);
+    expect(s.knows('waking')).toBe(false);
+  });
+
+  it('knows the call whenever the flute is owned or lent', () => {
+    expect(new Save(qs('tools=flute')).knows('call')).toBe(true);
+    const a = new Save(qs());
+    a.give('flute');
+    expect(a.knows('call')).toBe(true);
+    expect(a.knows('wind')).toBe(false);
+  });
+
+  it('learns a song once, keeps it, and round-trips rainSung', () => {
+    const a = new Save(qs());
+    a.learn('wind');
+    a.learn('wind');
+    a.learn('call');
+    a.setRainSung(7.5);
+    const b = new Save(qs());
+    expect(b.data.songs).toEqual(['wind']);
+    expect(b.knows('wind')).toBe(true);
+    expect(b.data.rainSung).toBe(7.5);
+  });
+
+  it('sanitizes songs and rainSung on load', () => {
+    store.setItem('aster.save', JSON.stringify({ v: 1, songs: ['rain', 'bogus', 'rain', 'call', 3], rainSung: 'x' }));
+    const s = new Save(qs());
+    expect(s.data.songs).toEqual(['rain']);
+    expect(s.data.rainSung).toBeNull();
+    store.setItem('aster.save', JSON.stringify({ v: 1, songs: 'waking' }));
+    expect(new Save(qs()).data.songs).toEqual([]);
+  });
+
+  it('lends songs from the URL without saving them', () => {
+    const s = new Save(qs('songs=waking,opening,nope'));
+    expect(s.knows('waking')).toBe(true);
+    expect(s.knows('opening')).toBe(true);
+    expect(s.knows('rain')).toBe(false);
+    expect(s.data.songs).toEqual([]);
+    expect(store.getItem('aster.save')).toBeNull();
+  });
+});

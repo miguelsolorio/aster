@@ -1,0 +1,157 @@
+/* The ring of songs: ink on the view, no box. Open only while the flute is held. */
+.aster-songs {
+  --ink: #efe6d8;
+  --accent: #e9c98f;
+  --shade: rgba(20, 16, 13, 0.6);
+  --r: 84px;
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.18s ease,
+    visibility 0s linear 0.18s;
+  -webkit-tap-highlight-color: transparent;
+}
+.aster-songs.is-on {
+  opacity: 1;
+  visibility: visible;
+  transition:
+    opacity 0.18s ease,
+    visibility 0s;
+}
+/* on touch each mark is tapped, and a tap anywhere else puts the ring away */
+.aster-songs.is-on.is-touch {
+  pointer-events: auto;
+}
+
+/* The circle itself, with the view dimmed a little behind it so the ink reads on bright sand. */
+.aster-songs__ring {
+  position: relative;
+  width: calc(var(--r) * 2);
+  height: calc(var(--r) * 2);
+  border-radius: 50%;
+  border: 1px solid rgba(239, 230, 216, 0.42);
+  background: radial-gradient(closest-side, rgba(20, 16, 13, 0.5), rgba(20, 16, 13, 0.34) 78%, rgba(20, 16, 13, 0) 132%);
+  box-shadow: 0 0 46px 26px rgba(20, 16, 13, 0.3);
+  transform: scale(0.94);
+  transition: transform 0.22s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.aster-songs.is-on .aster-songs__ring {
+  transform: none;
+}
+
+/* A mark for each song, sitting on the line. One not yet learned is only a point on it. */
+.aster-songs__mark {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 44px;
+  height: 44px;
+  margin: -22px 0 0 -22px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  cursor: default;
+  transform: translate(calc(var(--x) * var(--r)), calc(var(--y) * var(--r)));
+  -webkit-appearance: none;
+  appearance: none;
+}
+.aster-songs__mark:focus {
+  outline: none;
+}
+.aster-songs__mark svg {
+  display: block;
+  width: 26px;
+  height: 26px;
+  margin: 9px;
+  opacity: 0;
+  filter: drop-shadow(0 0 3px var(--shade));
+  transition:
+    transform 0.16s ease,
+    opacity 0.16s ease,
+    color 0.16s ease;
+}
+.aster-songs__mark::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 3px;
+  height: 3px;
+  margin: -1.5px;
+  border-radius: 50%;
+  background: var(--ink);
+  opacity: 0.4;
+}
+.aster-songs__mark.is-known {
+  pointer-events: auto;
+}
+.aster-songs__mark.is-known::before {
+  /* behind the drawing: a disc of shade that breaks the line where the mark sits */
+  width: 40px;
+  height: 40px;
+  margin: -20px;
+  background: rgba(20, 16, 13, 0.72);
+  opacity: 1;
+}
+.aster-songs__mark.is-known svg {
+  position: relative;
+  opacity: 0.74;
+}
+.aster-songs__mark.is-chosen {
+  color: var(--accent);
+}
+.aster-songs__mark.is-chosen::before {
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.aster-songs__mark.is-chosen svg {
+  opacity: 1;
+  transform: scale(1.16);
+}
+
+/* What the chosen one is called, in the middle. */
+.aster-songs__name {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  padding: 0 30px;
+  text-align: center;
+  color: var(--ink);
+  font-family: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  font-style: italic;
+  font-size: 16px;
+  line-height: 1.25;
+  text-shadow: 0 0 6px var(--shade);
+}
+
+@media (pointer: coarse) {
+  .aster-songs {
+    --r: 96px;
+  }
+  .aster-songs__mark {
+    width: 52px;
+    height: 52px;
+    margin: -26px 0 0 -26px;
+  }
+  .aster-songs__mark svg {
+    margin: 13px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aster-songs,
+  .aster-songs__ring,
+  .aster-songs__mark svg {
+    transition: none;
+  }
+}

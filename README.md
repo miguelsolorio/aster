@@ -41,7 +41,7 @@ There are 20 of these in [docs/screenshots](docs/screenshots).
 | `Q` | Step on or off the board, once you have one (or get off an animal) |
 | `E` | Talk, or climb onto a wild ass, an oryx (come up to one on foot) or a caravan's camel, and get off again. The key shows over whichever is nearest |
 | `F` | Hold up the spyglass, once you have one |
-| `R` | Play the flute, once you have one |
+| `R` | Play the flute, once you have one. A tap plays the song that suits where you stand; hold it to choose one |
 | `B` | Lay the bedroll and sleep in it, once you have one |
 | `M` | Open the map. `W` `A` `S` `D` move it, the wheel zooms |
 | `Esc` | Menu and photo mode |
@@ -70,7 +70,7 @@ The dev server has a few extra pages that aren't part of the build:
 - `/characters.html` and `/equipment.html` show the figures, boards, carpets and picks
 - `/social.html` runs the game in a 1200 × 630 frame for capturing screenshots like the ones above
 
-A few URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather` lends you the tools for one visit, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), `?storm` starts with a sandstorm a minute away (`?storm=in` starts inside one), `?rain` does the same for rain (`?rain=in` starts under it, `?rain=after` starts on the wet ground it left), `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start), and on the dev server `?village` starts you in the nearest mountain village (`?village=snow` for the nearest snow village), and `?settle=<kind>` (`well-camp`, `star-house`, `salt-works`, `glass-kilns`, `ledge`, `bridge`, `caravanserai`, `dyers-town`, `wind-towers` or `stepped-city`) puts you 45 m from the nearest such settlement.
+A few URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather` lends you the tools for one visit, `?songs=waking,wind,rain,opening` lends you the songs the same way, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), `?storm` starts with a sandstorm a minute away (`?storm=in` starts inside one), `?rain` does the same for rain (`?rain=in` starts under it, `?rain=after` starts on the wet ground it left), `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start), and on the dev server `?village` starts you in the nearest mountain village (`?village=snow` for the nearest snow village), and `?settle=<kind>` (`well-camp`, `star-house`, `salt-works`, `glass-kilns`, `ledge`, `bridge`, `caravanserai`, `dyers-town`, `wind-towers` or `stepped-city`) puts you 45 m from the nearest such settlement.
 
 ## Built with
 
