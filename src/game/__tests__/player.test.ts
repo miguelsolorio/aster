@@ -82,6 +82,15 @@ describe('Shift', () => {
     expect(p.state.speed).toBeLessThanOrEqual(BOARD_BOOST);
   });
 
+  it('kicks a board well past its easy pace within a few seconds', () => {
+    const p = new Player(rock(0));
+    p.board = true;
+    p.place(0, 0);
+    walk(p, 8);
+    walk(p, 3, { run: true });
+    expect(p.state.speed).toBeGreaterThan(BOARD * 1.5);
+  });
+
   it('holds on to the speed of a launch in flight', () => {
     const launched = (shift: boolean) => {
       const p = new Player(rock(0));

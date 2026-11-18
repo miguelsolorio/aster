@@ -22,7 +22,7 @@ export interface AudioFrame {
   dt: number;
   day: number; // 0..1 fraction of day: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset
   night: number; // 0 day .. 1 full night
-  speed: number; // player horizontal speed m/s (walk ~7, run ~13, a board ~16 to 24 on the flat and more downhill)
+  speed: number; // player horizontal speed m/s (walk ~7, run ~13, a board ~16 to 30 on the flat and more downhill)
   sliding: boolean;
   rock?: boolean; // sliding over rock, not sand: a lower, duller scrape
   grounded: boolean;
@@ -1476,7 +1476,7 @@ export class AudioEngine {
     g.whistleGain.gain.setTargetAtTime(0.006 * gust * (0.3 + alt) * breathe * shelter, now, 2);
     g.whistleBP.frequency.setTargetAtTime(700 + 500 * gust + 400 * alt + 200 * breathe, now, 2.5);
 
-    const sand = f.sliding && f.grounded ? clamp01((f.speed - 2) / 22) : 0;
+    const sand = f.sliding && f.grounded ? clamp01((f.speed - 2) / 28) : 0;
     g.hissGain.gain.setTargetAtTime((f.rock ? 0.03 : 0.045) * sand, now, sand > 0 ? 0.25 : 0.6);
     g.hissBP.frequency.setTargetAtTime(f.rock ? 1700 + 900 * sand : 4500 + 2500 * sand, now, f.rock ? 0.15 : 0.5);
 

@@ -17,6 +17,7 @@ describe('the speed ladder', () => {
   it('makes a board a real step up from going on foot', () => {
     expect(BOARD).toBeGreaterThan(WALK * 2);
     expect(BOARD_BOOST).toBeGreaterThan(RUN * BOOTS * 1.4);
+    expect(BOARD_BOOST).toBeGreaterThan(BOARD * 1.8);
   });
 
   it('is quicker with Shift on every rung', () => {

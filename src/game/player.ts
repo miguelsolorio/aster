@@ -322,7 +322,7 @@ export class Player {
               const vz = (-vel.x * sa + vel.z * ca) * scrub;
               vel.x = vx;
               vel.z = vz;
-              // Push toward cruising speed; the push fades as you reach it.
+              // Push toward cruising speed; the push fades as you reach it. Shift kicks harder.
               const sp = Math.hypot(vx, vz);
               const rise = (vx * gx + vz * gz) / sp;
               const cruise = Math.min(input.run ? BOARD_BOOST : BOARD, (input.run ? CLIMB_BOOST : CLIMB) / Math.max(rise, 1e-3));
@@ -330,7 +330,7 @@ export class Player {
               // the pace it is named for. Past that, on a slope, Shift still sheds part of the drag: a
               // run downhill goes on gathering.
               const hold = 0.003 * sp * sp * (sp < cruise ? 1 : input.run ? TUCK : 0);
-              const push = (10 * Math.max(0, 1 - sp / cruise) + hold) * Math.max(0.25, Math.cos(d));
+              const push = ((input.run ? 14 : 10) * Math.max(0, 1 - sp / cruise) + hold) * Math.max(0.25, Math.cos(d));
               vel.x += (vx / sp) * push * dt;
               vel.z += (vz / sp) * push * dt;
             }

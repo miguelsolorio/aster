@@ -16,21 +16,21 @@ export const BOOTS = 1.25;
 
 /** A board driven over the flat. A slope gives more, or takes some. */
 export const BOARD = 16;
-export const BOARD_BOOST = 24;
+export const BOARD_BOOST = 30;
 
 /** Forward speed in flight without a carpet. */
 export const GLIDE = 18;
-export const GLIDE_BOOST = 28;
+export const GLIDE_BOOST = 33;
 
 /** Any ridden animal at its easy pace. */
 export const RIDE = 20;
 /** Flat out, each to its build: a camel is the heaviest, an oryx the quickest. */
-export const CAMEL_GALLOP = 34;
-export const ASS_GALLOP = 36;
-export const ORYX_GALLOP = 38;
+export const CAMEL_GALLOP = 36;
+export const ASS_GALLOP = 38;
+export const ORYX_GALLOP = 40;
 
 /** A carpet flies this many times faster than flying without one. */
-export const CARPET = 2;
+export const CARPET = 1.8;
 /** And climbs for this many times as long. */
 export const CARPET_LIFT = 2;
 
