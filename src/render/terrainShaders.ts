@@ -17,6 +17,7 @@ import { CITY_SHADOW_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 import { ROUTE_GLSL } from '../city/routes';
 import { FOOT_GLSL } from '../city/footpaths';
 import { STYLE_GLSL } from './styleGlsl';
+import { WET_MAX } from './storm';
 
 // The look's settings (see render/types.ts Params; the game's 35 mm look sets them
 // to what used to be baked in here).
@@ -240,6 +241,34 @@ vec3 facetNormal(vec2 xz) {
     n = vec3(h01 - h11, FACET, h00 - h01);
   }
   return normalize(n);
+}
+
+// What rain has left: the stretches of ground it passed over (see render/storm.ts). Each is the
+// strip its cloud swept: from where it was born, along its heading, as far as it has got.
+uniform vec4 uWetA[${WET_MAX}]; // born at x, z; heading x, z
+uniform vec4 uWetB[${WET_MAX}]; // metres travelled, half width, half depth, how wet still (0..1)
+uniform float uWetBloom[${WET_MAX}]; // how much of its flowering is left
+uniform float uRainK; // raining on the eye now
+
+// x: how wet the ground is here. y: how much of it is in flower.
+vec2 rainedOn(vec2 xz) {
+  vec2 r = vec2(0.0);
+  for (int i = 0; i < ${WET_MAX}; i++) {
+    vec4 B = uWetB[i];
+    if (B.w <= 0.001) continue;
+    vec4 A = uWetA[i];
+    vec2 d = xz - A.xy;
+    float a = dot(d, A.zw);
+    float c = abs(dot(d, vec2(-A.w, A.z)));
+    float k = smoothstep(-B.z, -B.z + 500.0, a) * (1.0 - smoothstep(B.x + B.z - 400.0, B.x + B.z, a)) * (1.0 - smoothstep(B.y - 700.0, B.y, c));
+    // the flowers are a few hours behind the rain: nothing where its front has only just been
+    // (a rain crosses the ground at about seven metres a second; an hour of the day is fifty)
+    float since = (B.x + B.z - a) / 7.0;
+    r = max(r, k * vec2(B.w, uWetBloom[i] * smoothstep(140.0, 380.0, since)));
+  }
+  if (r.x <= 0.0) return r;
+  // rain does not fall evenly, and its edge is no line on the ground
+  return clamp(r * 1.35 - 0.35 * vnoise(xz * 0.0031 + 4.7), 0.0, 1.0);
 }
 
 float figShadow(vec3 p) {
@@ -667,6 +696,63 @@ void main() {
         wcol = mix(wcol, fcol, fall);
       }
       col = mix(col, wcol, wa);
+    }
+  }
+
+  // ---- after rain. Sand drinks it and goes dark; on the salt it cannot soak in, so it stands a
+  // finger deep and the pan is a mirror; and some hours on, the dunes it fell on are in flower.
+  vec2 flc = p.xz * 3.0;
+  float fwFl = max(fwidth(flc.x), fwidth(flc.y));
+  vec2 rained = rainedOn(p.xz);
+  if (rained.x > 0.002) {
+    float wet = rained.x;
+    vec3 V = toCam / max(dist, 1e-4);
+    float fres = pow(1.0 - clamp(dot(n, V), 0.0, 1.0), 4.0);
+    float soak = wet * (1.0 - 0.6 * rock) * (1.0 - salt) * (1.0 - 0.5 * pave);
+    col = mix(col, col * vec3(0.66, 0.64, 0.66), soak);
+    // wet ground takes a little of the sky at a low angle
+    col += mix(uHorizon, uTop, 0.35) * (fres * 0.2 * wet * (1.0 - salt));
+    float pan = wet * smoothstep(0.25, 0.7, salt) * (1.0 - rock);
+    if (pan > 0.002) {
+      // still, unless it is raining on it now
+      vec2 wq = p.xz * 0.55;
+      float wt = uTime * 0.2;
+      float calm = 1.0 - smoothstep(60.0, 300.0, dist);
+      float w0 = vnoise(wq + wt) + vnoise(wq * 3.1 - wt * 2.0) * uRainK;
+      float wx = vnoise(wq + vec2(0.1, 0.0) + wt) + vnoise((wq + vec2(0.1, 0.0)) * 3.1 - wt * 2.0) * uRainK;
+      float wz = vnoise(wq + vec2(0.0, 0.1) + wt) + vnoise((wq + vec2(0.0, 0.1)) * 3.1 - wt * 2.0) * uRainK;
+      float rough = (0.22 + 1.6 * uRainK) * calm;
+      vec3 wn = normalize(vec3(-(wx - w0) * rough, 1.0, -(wz - w0) * rough));
+      float fr = 0.14 + 0.86 * pow(1.0 - clamp(dot(wn, V), 0.0, 1.0), 3.0);
+      vec3 rf = reflect(-V, wn);
+      vec3 sky = mix(uHorizon, uTop, pow(clamp(rf.y, 0.0, 1.0), 0.55));
+      sky += uSunCol * pow(max(dot(rf, uSunDir), 0.0), 220.0) * (1.0 - 0.6 * uNight) * 1.3 * shadow;
+      // looking straight down, the cracked crust shows through the water
+      col = mix(col, mix(col * 0.72, sky, fr), pan * 0.94);
+    }
+  }
+  if (rained.y > 0.002) {
+    float bloom = rained.y * sandW * (1.0 - track) * (1.0 - pave);
+    // they come up in drifts, thick in one hollow and thin on the next rise
+    float cover = bloom * smoothstep(0.36, 0.68, fbm(p.xz * 0.035 + vec2(9.2, -4.4)) + 0.22 * bloom - 0.06);
+    if (cover > 0.002) {
+      // one kind of flower holds each stretch of ground
+      float which = vnoise(p.xz * 0.011 + 13.7);
+      vec3 pet = which < 0.36 ? vec3(1.0, 0.86, 0.3) : which < 0.6 ? vec3(0.74, 0.52, 0.92) : which < 0.82 ? vec3(0.98, 0.96, 0.9) : vec3(0.96, 0.5, 0.62);
+      float lum = mix(dot(uShade, vec3(0.333)) * 1.4, dot(uLit, vec3(0.333)) * 1.25, l);
+      // leaf first: a low green over the sand
+      col = mix(col, mix(uShade, uLit, l) * vec3(0.5, 0.68, 0.34), 0.22 * cover);
+      float nearK = 1.0 - smoothstep(35.0, 95.0, dist);
+      float dots = 0.0;
+      if (nearK > 0.001) {
+        vec2 id = floor(flc);
+        vec2 ff = fract(flc) - 0.5;
+        vec2 off = (vec2(hash21(id + 11.9), hash21(id + 27.1)) - 0.5) * 0.6;
+        float rad = 0.1 + 0.08 * hash21(id + 41.0);
+        dots = (1.0 - smoothstep(rad - fwFl, rad + fwFl, length(ff - off))) * step(1.0 - 0.62 * cover, hash21(id + 3.3)) * (1.0 - smoothstep(0.5, 1.2, fwFl)) * nearK;
+      }
+      // far off they run together into a wash of the one colour
+      col = mix(col, pet * lum, max(dots, 0.32 * cover * (1.0 - 0.65 * nearK)));
     }
   }
 

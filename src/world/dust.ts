@@ -3,7 +3,7 @@ import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 
 // ---- Tunables ----
-const CAPACITY = 1500;
+const CAPACITY = 2200;
 const STRIDE = 16; // floats per particle
 const GRAVITY = 3.0; // m/s^2 at grav scale 1 ("light")
 const WIND_DRIFT = 0.5; // m/s extra drift along uWind
@@ -17,6 +17,8 @@ const SPINDRIFT_MAX_R = 90;
 const SPINDRIFT_DROP = 0.8; // m of height drop over SPINDRIFT_SPAN
 const SPINDRIFT_SPAN = 4;
 const SPINDRIFT_RATE = 3.2; // particles per probe hit at full gust
+const RAIN_RATE = 900; // drops a second round the eye in full rain
+const RAIN_R = 16; // metres either side of it
 const BLOWN_RATE = 560; // particles a second in the thick of a storm
 const BLOWN_R = 20; // metres either side of the eye
 const BLOWN_ALPHA = 0.8;
@@ -68,13 +70,21 @@ void main() {
   vec3 vd = normalize(wp - cameraPosition);
   float back = pow(max(dot(vd, uSunDir), 0.0), 3.0);
   // (an alpha above 2 marks dust hanging low and thick enough to read dark against the sand under it)
-  float low = step(2.0, aAlpha);
-  vAlpha = (aAlpha - 2.0 * low) * fadeIn * fadeOut * mix(fadeOut, 1.0, low) * (1.0 + 1.8 * back * (1.0 - low)) * (1.0 - 0.5 * uNight);
+  // (and above 4, a drop of rain: see below)
+  float drop = step(4.0, aAlpha);
+  float low = step(2.0, aAlpha) * (1.0 - drop);
+  vAlpha = (aAlpha - 2.0 * low - 4.0 * drop) * fadeIn * fadeOut * mix(fadeOut, 1.0, low) * (1.0 + 1.8 * back * (1.0 - low)) * (1.0 - 0.5 * uNight);
   vec3 col = mix(mix(uShade, uLit, 0.7 + 0.3 * back), uShade * 0.9, low);
   float fog = (1.0 - exp(-dist * uFog)) * 0.6;
   vCol = mix(col, uFogCol, fog);
   // in a storm the sand going past is paler than the murk it goes through, or it would not show
   vCol = mix(vCol, uLit * 1.7 + 0.2, 0.8 * uStormK * (1.0 - low));
+  // rain is the sky's colour, not the sand's: a pale fleck, held to full brightness all its fall
+  if (drop > 0.5) {
+    vCol = mix(uFogCol, vec3(1.0), 0.45);
+    vAlpha = (aAlpha - 4.0) * (1.0 - 0.4 * uNight);
+    gl_PointSize = clamp(aM.x * uScale / dist, 1.2, 5.0);
+  }
 }
 `;
 
@@ -324,6 +334,7 @@ export class Dust {
     if (!this.under) {
       this.spindrift(f);
       this.blown(f);
+      this.rainfall(f);
     }
 
     if (this.dirtyMax >= 0) {
@@ -369,6 +380,26 @@ export class Dust {
         0.05, 0.02,
         low ? 2 + 0.2 * (0.55 + 0.45 * k) : BLOWN_ALPHA * (0.55 + 0.45 * k),
       );
+    }
+  }
+
+  /** Rain coming down round the eye: flecks falling fast and a little aslant, gone as they land. */
+  private rainfall(f: FrameState): void {
+    const k = f.rain;
+    if (k < 0.02 || this.density <= 0) return;
+    const eye = f.camera.position;
+    const n = Math.floor(RAIN_RATE * k * this.density * f.dt + Math.random());
+    const wx = f.wind.x * 2.2;
+    const wz = f.wind.y * 2.2;
+    const ground = this.world.height(eye.x, eye.z);
+    for (let i = 0; i < n; i++) {
+      const x = eye.x + (Math.random() - 0.5) * 2 * RAIN_R;
+      const z = eye.z + (Math.random() - 0.5) * 2 * RAIN_R;
+      // from a little over the eye, falling as far as the ground under it (near enough)
+      const top = Math.max(eye.y, ground) + 3 + Math.random() * 6;
+      const speed = 12 + Math.random() * 4;
+      const life = Math.min(1.2, Math.max(0.15, (top - Math.min(ground, eye.y - 8)) / speed));
+      this.spawn(x - wx * life * 0.5, top, z - wz * life * 0.5, wx, -speed, wz, life, 0.035 + Math.random() * 0.03, 0.001, 0, 4 + 0.5 + 0.3 * k);
     }
   }
 

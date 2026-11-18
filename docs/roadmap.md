@@ -74,6 +74,16 @@ Rain is rare, about once in eight to ten days. The rivers already run all the ti
 
 All of it is done in the shader. The terrain shape is untouched, so the CPU and shader versions of the ground cannot fall out of step. Animals come out to drink afterwards. Rain needs its own particle pool and new synthesized voices for rain and thunder.
 
+As built:
+
+- Rain is a travelling cell like a storm, 5 km wide and 3 km deep, crossing at about 7 m/s under one dark cloud. It falls on mountains too.
+- The ground it has crossed stays wet for a day after it ends. The ground shader is told about the three nearest stretches. Flowers follow the rain's front by a few in-game hours and go as the ground dries.
+- The rainbow stands opposite the sun while rain is falling nearby or has just stopped, when the sun is up but low, and never while you are under the rain yourself.
+- The seeded schedule rains on a given spot only about once in fifty days. A rain is sent to a wanderer who has gone nine days without one, and never before day three of a new save.
+- Animals: about half again as many herds on wet ground once the rain has eased, grazing more of the time. Birds do not fly in hard rain. Nothing walks to the salt pans to drink.
+- Rain drops share the dust particle pool, which was raised to 2,200.
+- A Weather setting (menu, Game tab, on by default) turns off storms and rain together. It is kept with the other settings, so "Start over" does not reset it.
+
 ### Left for later
 
 Haze on salt pans, snow falling on the mountain and fog in the gorges.

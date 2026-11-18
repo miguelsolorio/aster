@@ -462,7 +462,7 @@ export class Wildlife {
   }
 
   private updateBirds(f: FrameState): void {
-    const visible = f.night < 0.55;
+    const visible = f.night < 0.55 && f.rain < 0.5;
     this.birdMesh.visible = visible;
     if (!visible) return;
     const dt = f.dt;

@@ -24,6 +24,11 @@ const TAU = Math.PI * 2;
 // Cell keys stay under 2^33 and the vultures' are negative, so these never meet them.
 const WATER_KEY = -1e12;
 const FLOCK_KEY = 1e12;
+/** After rain on wet ground: the share more cells that hold a herd, and the wetness and rain that count as "after rain". */
+const MORE_AFTER_RAIN = 0.5;
+const WET_OUT = 0.3;
+const RAIN_LULL = 0.2;
+
 /** Goats left to graze round a hamlet or a mountain village: this plus the size of the place's own key. */
 const GRAZE_KEY = 6e12;
 /** Snow lies this deep (0..1) before the animals on it are the cold's own: pale foxes, hares and goats. */
@@ -1259,6 +1264,12 @@ interface Herd {
   follow: Herder | null;
   /** Seconds left in which nothing about the player spooks it (a mount just let go of). */
   grace: number;
+  /** One of the extra herds that come out on wet ground after rain: out only while it is wet and the rain has stopped. */
+  bonus?: boolean;
+  /** Rain and wet ground where the herd is, looked at a few times a second. */
+  rain?: number;
+  wet?: number;
+  wT?: number;
 }
 
 /** Where a shepherd is, as the caravans keep it, for the flock to follow. */
@@ -1426,9 +1437,12 @@ export class Fauna {
     const z = (cz + 0.15 + 0.7 * hash(cx, cz, s, salt + 2)) * size;
     const riv = small ? Infinity : ((this.world as Partial<{ river(x: number, z: number): number }>).river?.(x, z) ?? Infinity);
     const wet = riv < 260;
-    const p = (small ? 0.4 : wet ? 0.26 : 0.15) * this.thin;
+    const p0 = (small ? 0.4 : wet ? 0.26 : 0.15) * this.thin;
+    // half again as many cells hold a herd, which are out only on wet ground after rain
+    const p = p0 * (1 + MORE_AFTER_RAIN);
     if (roll > p) return null;
-    const r = roll / p;
+    const bonus = roll > p0;
+    const r = bonus ? (roll - p0) / (p - p0) : roll / p0;
     const sm = w.sample(x, z, this.sample);
     if (this.blocked?.(x, z)) return null;
     if (!small && riv < 25) return null;
@@ -1458,6 +1472,7 @@ export class Fauna {
       count = sp === ORYX ? 4 + Math.floor(rng() * 6) : sp === GAZELLE ? 5 + Math.floor(rng() * 7) : 3 + Math.floor(rng() * 4);
     }
     const h: Herd = { key, sp, hx: x, hz: z, animals: [], pres: 0, alarm: 0, small, follow: null, grace: 0 };
+    if (bonus) h.bonus = true;
     this.fill(h, count, rng);
     if (cold) {
       for (const a of h.animals) {
@@ -1903,8 +1918,20 @@ export class Fauna {
     let nearestFox = Infinity;
     for (const h of this.herds.values()) {
       // who is out at this hour
+      // rain and wet ground at the herd, a few times a second
+      if (f.wet > 0 || f.rain > 0 || h.wet || h.rain) {
+        h.wT = (h.wT ?? 0) - dt;
+        if (h.wT <= 0) {
+          h.wT = 0.4 + Math.random() * 0.3;
+          h.rain = f.weather.rain(f.clock, h.hx, h.hz);
+          h.wet = f.weather.wetAt(f.clock, h.hx, h.hz);
+        }
+      }
+      const drying = (h.wet ?? 0) > WET_OUT && (h.rain ?? 0) < RAIN_LULL;
       const awake =
-        h.sp === FOX ? f.night > 0.45
+        h.bonus && !drying ? false
+        : h.sp === VULTURE && (h.rain ?? 0) > 0.5 ? false
+        : h.sp === FOX ? f.night > 0.45
         : h.sp === HARE ? f.night < 0.75
         : h.sp === LIZARD || h.sp === TORTOISE ? f.night < 0.3
         : h.sp === VULTURE ? f.night < 0.5
@@ -2073,7 +2100,7 @@ export class Fauna {
         // standing: a grazer grazes, a fox noses the sand, a sandgrouse pecks, unless the player is near enough to watch
         if (a.state === 0) {
           const grazing =
-            herd ? Math.sin(f.time * 0.21 + a.seed * 30) > -0.3
+            herd ? Math.sin(f.time * 0.21 + a.seed * 30) > ((h.wet ?? 0) > WET_OUT && (h.rain ?? 0) < RAIN_LULL ? -0.85 : -0.3)
             : sp === FOX ? Math.sin(f.time * 0.5 + a.seed * 30) > 0.4
             : sp === GROUSE ? Math.sin(f.time * 2.3 + a.seed * 40) > 0.1
             : false;

@@ -214,9 +214,14 @@ function start() {
   const weather = new Weather(WORLD_SEED, guard.shelter);
   // (a storm sent for the wanderer on an earlier visit is still on its way)
   if (save.data.sent && save.data.sent.t1 > save.data.days) weather.sent = save.data.sent;
+  // (and a rain that fell on an earlier visit has left the ground wet for a day after it ended)
+  if (save.data.sentRain && save.data.sentRain.t1 + 1 > save.data.days) weather.sentRain = save.data.sentRain;
   // ?storm starts with one a minute off, ?storm=in in the thick of one; neither is kept
   let stormAsk: 'near' | 'in' | null = qs.has('storm') ? (qs.get('storm') === 'in' ? 'in' : 'near') : null;
   let stormCheck = 0;
+  // ?rain: one a minute off; ?rain=in: in the thick of one; ?rain=after: it has just gone by
+  const rainParam = qs.get('rain');
+  let rainAsk: 'near' | 'in' | 'after' | null = qs.has('rain') ? (rainParam === 'in' ? 'in' : rainParam === 'after' ? 'after' : 'near') : null;
   const bake = new HeightBake(renderer, u);
   const trail = new TrailField(renderer, u);
   const clipmap = new Clipmap(u);
@@ -482,6 +487,9 @@ function start() {
     onQuality(q, manual) {
       auto.setTier(q, manual);
       applyTier();
+    },
+    onWeather(on) {
+      weather.enabled = on;
     },
     onPhoto(active) {
       photo = active;
@@ -1613,6 +1621,8 @@ function start() {
     clock: save.data.days,
     storm: 0,
     stormAhead: 0,
+    rain: 0,
+    wet: 0,
     stormDir: new THREE.Vector2(1, 0),
     weather,
     camera,
@@ -1782,6 +1792,17 @@ function start() {
         weather.sent = weather.aim(frame.clock, px, pz, stormAsk === 'in' ? -1 : 60);
         stormAsk = null;
       }
+      if (rainAsk) {
+        const r = weather.aim(frame.clock, px, pz, rainAsk === 'near' ? 45 : -1, 'rain');
+        if (rainAsk === 'after') {
+          // shifted back in time so it ended three minutes ago, and the ground is freshly wet
+          const shift = r.t1 - frame.clock + 3 / (24 * 60);
+          r.t0 -= shift;
+          r.t1 -= shift;
+        }
+        weather.sentRain = r;
+        rainAsk = null;
+      }
       // Nobody goes long without one. If none has come the wanderer's way for a couple of days
       // (or by the second day of a new save), one is sent: born upwind, an hour and a half off.
       if (playing && (stormCheck -= dt) <= 0) {
@@ -1792,7 +1813,7 @@ function start() {
           if (save.data.sent) save.setSent(null);
         }
         const due = save.data.stormDay === null ? 1 : save.data.stormDay + 2.5;
-        if (!weather.sent && frame.clock >= due && frame.stormAhead <= 0 && !deepIn) {
+        if (weather.enabled && !weather.sent && frame.clock >= due && frame.stormAhead <= 0 && !deepIn) {
           // (not to someone up a mountain, where it could not follow)
           const s = guard.shelter(px, pz) > 0 ? null : weather.aim(frame.clock, px, pz, 1.5 * HOUR_SECONDS);
           if (s) {
@@ -1801,12 +1822,39 @@ function start() {
             save.setStormDay(frame.clock);
           }
         }
+        // And the same, far more rarely, for rain: sent when none has fallen on the wanderer for nine
+        // days (or by the third day of a new save), if no sandstorm is near and none is sent.
+        const sr = weather.sentRain;
+        if (sr && sr.t1 + 1 <= frame.clock) {
+          weather.sentRain = null;
+          if (save.data.sentRain) save.setSentRain(null);
+        }
+        const rainDue = save.data.rainDay === null ? frame.clock >= 3 : frame.clock >= save.data.rainDay + 9;
+        if (
+          weather.enabled &&
+          rainDue &&
+          !weather.sentRain &&
+          !weather.sent &&
+          frame.stormAhead <= 0 &&
+          frame.rain <= 0 &&
+          weather.rain(frame.clock, px, pz) <= 0 &&
+          weather.storms(frame.clock, px, pz, 6000).every((s) => s.kind !== 'rain') &&
+          !deepIn
+        ) {
+          const r = weather.aim(frame.clock, px, pz, 2 * HOUR_SECONDS, 'rain');
+          weather.sentRain = r;
+          save.setSentRain(r);
+          save.setRainDay(frame.clock);
+        }
       }
       // Underground there is no storm, and between a town's walls only the noise of one.
       const open = (1 - underK) * (cities.inside ? 0.2 : 1);
       frame.storm = weather.density(frame.clock, px, pz) * open;
       frame.stormAhead = Math.max(weather.ahead(frame.clock, px, pz) * (1 - underK), frame.storm);
       weather.heading(frame.clock, px, pz, frame.stormDir);
+      frame.rain = weather.rain(frame.clock, px, pz) * (1 - underK);
+      frame.wet = weather.wetAt(frame.clock, px, pz);
+      if (frame.rain > 0.5 && (save.data.rainDay === null || frame.clock - save.data.rainDay > 0.05)) save.setRainDay(frame.clock);
       if (frame.storm > 0.5 && (save.data.stormDay === null || frame.clock - save.data.stormDay > 0.05)) save.setStormDay(frame.clock);
       push.copy(frame.stormDir).multiplyScalar(frame.storm);
       // The wind comes round to the way the storm is going, and rises with it.
@@ -2432,7 +2480,7 @@ function start() {
       const px = st.pos.x;
       const pz = st.pos.z;
       for (const s of weather.storms(frame.clock, px, pz, 16000)) {
-        if (uncovered.has(s.id)) continue;
+        if (s.kind !== 'sand' || uncovered.has(s.id)) continue;
         const w = weather.wreck(s);
         if (!w) {
           uncovered.set(s.id, null);
@@ -2536,6 +2584,7 @@ function start() {
       grounded: st.grounded,
       gust: frame.gust,
       storm: frame.storm,
+      rain: frame.rain,
       stormAhead: frame.stormAhead,
       altitude: Math.max(0, st.pos.y) + player.alt * 4,
     });

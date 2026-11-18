@@ -30,6 +30,7 @@ export interface AudioFrame {
   altitude: number; // metres above the local base level, roughly 0..400
   storm?: number; // 0..1 how thick the sandstorm is at the listener (0 underground or sheltered); absent = 0
   stormAhead?: number; // 0..1 rises over the minute before a storm arrives, 1 once inside; absent = 0
+  rain?: number; // 0..1 how hard it is raining on the listener (0 underground or sheltered); absent = 0
 }
 
 /** How close/loud each ambient source is for the listener right now, each 0..1. */
@@ -204,6 +205,8 @@ interface Graph {
   hissGain: GainNode;
   stormRumbleGain: GainNode;
   stormRoarGain: GainNode;
+  rainBed: GainNode; // soft rain on sand (high band), level node
+  rainBody: GainNode; // low-mid body under it
   noise: AudioBuffer; // short mono noise for one-shots
   cityBus: GainNode; // close city sounds: some dry, some space
   cityFarBus: GainNode; // distant city sounds: mostly reverb
@@ -311,6 +314,9 @@ export class AudioEngine {
   // Sandstorm: smoothed levels (storm = thickness here, ahead = approach) and the music duck.
   private storm = 0;
   private stormAhead = 0;
+  // Rain: smoothed level, and the next thunder time (0 while unarmed).
+  private rain = 0;
+  private nextThunder = 0;
   private musicDuck = 1;
   private ambNight = 0;
   private nextAmbTick = 0;
@@ -529,6 +535,10 @@ export class AudioEngine {
     this.stormAhead += (ahT - this.stormAhead) * ks;
     if (stT === 0 && this.storm < 1e-4) this.storm = 0;
     if (ahT === 0 && this.stormAhead < 1e-4) this.stormAhead = 0;
+    // Rain: ease in and out over a few seconds.
+    const rnT = Number.isFinite(f.rain) ? clamp01(f.rain as number) : 0;
+    this.rain += (rnT - this.rain) * (1 - Math.exp(-dt / 2.5));
+    if (rnT === 0 && this.rain < 1e-4) this.rain = 0;
     this.ambNight = clamp01(f.night);
 
     this.paramTimer += dt;
@@ -1472,6 +1482,44 @@ export class AudioEngine {
       ambRumble.connect(ambBus);
     }
 
+    // Rain: a soft high band (2 to 5 kHz, rolled off by 7 kHz) and a low-mid body, each breathing on
+    // slow detuned LFOs. Silent at gain 0; only rainBed and rainBody move. Drops and thunder are
+    // scheduled one-shots.
+    const rainBed = gain(0);
+    {
+      const hp = ctx.createBiquadFilter();
+      hp.type = 'highpass';
+      hp.frequency.value = 1500;
+      hp.Q.value = 0.5;
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'peaking';
+      bp.frequency.value = 3400;
+      bp.Q.value = 0.6;
+      bp.gain.value = 5;
+      const lp = ctx.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.value = 7000;
+      lp.Q.value = 0.4;
+      const breath = gain(0.85);
+      noiseSrc().connect(hp).connect(bp).connect(lp).connect(breath).connect(rainBed);
+      lfo(0.09, 0.1, breath.gain);
+      lfo(0.23, 0.05, breath.gain);
+      rainBed.connect(ambBus);
+    }
+    const rainBody = gain(0);
+    {
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 520;
+      bp.Q.value = 0.5;
+      const breath = gain(0.8);
+      noiseSrc().connect(bp).connect(breath).connect(rainBody);
+      lfo(0.07, 0.12, breath.gain);
+      lfo(0.17, 0.06, breath.gain);
+      lfo(0.05, 120, bp.frequency); // 400..640 Hz
+      rainBody.connect(ambBus);
+    }
+
     return {
       preMaster,
       pauseLP,
@@ -1500,6 +1548,8 @@ export class AudioEngine {
       hissGain,
       stormRumbleGain,
       stormRoarGain,
+      rainBed,
+      rainBody,
       noise: makeWhiteNoise(ctx, 2),
       cityBus,
       cityFarBus,
@@ -1555,8 +1605,8 @@ export class AudioEngine {
     const open2 = 1 - this.deep;
     g.stormRumbleGain.gain.setTargetAtTime(0.32 * Math.max(0.45 * ahead, storm) * open2, now, 1.5);
     g.stormRoarGain.gain.setTargetAtTime(0.16 * storm * storm * open2, now, 1.5);
-    // Score and mood layers duck by about half in the thick of it.
-    const duck = 1 - 0.5 * storm - 0.1 * ahead * (1 - storm);
+    // Score and mood layers duck by about half in the thick of it (and barely at all in rain).
+    const duck = (1 - 0.5 * storm - 0.1 * ahead * (1 - storm)) * (1 - 0.15 * this.rain);
     if (Math.abs(duck - this.musicDuck) > 0.002) {
       this.musicDuck = duck;
       this.applyBusLevel(g.musicBuses, this.musicVol * duck);
@@ -1572,10 +1622,15 @@ export class AudioEngine {
     // Ambience beds. Peak gains are conservative: at level 1 each sits well below the pads/plucks
     // (music bus 0.75 x ~0.04..0.07 per voice) and the city murmur (0.24).
     const am = this.amb;
+    // Rain: a gift, well under the storm. Rain on sand; nothing of it gets underground.
+    const rain = this.rain;
+    g.rainBed.gain.setTargetAtTime(0.06 * rain * open2, now, 0.6);
+    g.rainBody.gain.setTargetAtTime(0.035 * rain * open2, now, 0.6);
+    const wetCalm = 1 - 0.3 * rain; // leaves and the mill duck a little; water stays
     g.ambWater.gain.setTargetAtTime(0.05 * am.water * (0.4 + 0.6 * calm), now, 0.25);
     // Leaves and the mill are open-air sounds and go with the wind underground; water and fire stay.
-    g.ambLeaves.gain.setTargetAtTime(0.05 * am.leaves * (0.25 + 0.75 * this.ambGust) * open * calm, now, 0.3);
-    g.ambWhoosh.gain.setTargetAtTime(0.03 * am.mill * open * calm, now, 0.3);
+    g.ambLeaves.gain.setTargetAtTime(0.05 * am.leaves * (0.25 + 0.75 * this.ambGust) * open * calm * wetCalm, now, 0.3);
+    g.ambWhoosh.gain.setTargetAtTime(0.03 * am.mill * open * calm * wetCalm, now, 0.3);
     g.ambRumble.gain.setTargetAtTime(0.03 * am.fire, now, 0.3);
 
     this.applyDeep(now, 0.1);
@@ -2000,8 +2055,9 @@ export class AudioEngine {
     } else {
       this.nextCreak = 0;
     }
-    // No daylight and no birds below ground.
-    const day = (1 - this.ambNight) * (1 - this.deep) * (1 - this.stormAhead);
+    this.rainTick(t, jit, count);
+    // No daylight and no birds below ground (or in the rain).
+    const day = (1 - this.ambNight) * (1 - this.deep) * (1 - this.stormAhead) * (1 - clamp01(this.rain * 5));
     if (am.birds > 0.03 && day > 0.05) {
       if (this.nextBird < t - 1) this.nextBird = t + rand(1, 4);
       if (this.nextBird <= t + CITY_TICK) {
@@ -2015,6 +2071,114 @@ export class AudioEngine {
     } else {
       this.nextBird = 0;
     }
+  }
+
+  /** Rain one-shots: sparse single drops while it rains, and rare distant thunder. */
+  private rainTick(t: number, jit: () => number, count: (rate: number) => number): void {
+    const rain = this.rain;
+    const open = 1 - this.deep;
+    if (rain > 0.1 && open > 0.1) {
+      for (let i = count((0.8 + 3.2 * rain) * (0.6 + 0.4 * Math.random())); i > 0; i--) {
+        this.rainDrop(jit(), rain * open);
+      }
+    }
+    if (rain > 0.3 && open > 0.5) {
+      if (this.nextThunder < t - 1) this.nextThunder = t + rand(25, 70);
+      if (this.nextThunder <= t + CITY_TICK) {
+        this.thunder(Math.max(this.nextThunder, t), open);
+        this.nextThunder = Math.max(this.nextThunder, t) + rand(25, 70);
+      }
+    } else {
+      this.nextThunder = 0;
+    }
+  }
+
+  /** One rain drop: a very short filtered noise tick, sometimes with a tiny pitched blip. */
+  private rainDrop(t: number, level: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.9, 0.9);
+    pan.connect(g.ambBus);
+    const src = ctx.createBufferSource();
+    src.buffer = g.noise;
+    src.playbackRate.value = rand(0.8, 1.4);
+    const bp = ctx.createBiquadFilter();
+    bp.type = 'bandpass';
+    bp.frequency.value = rand(1800, 5200);
+    bp.Q.value = rand(1, 3);
+    const env = ctx.createGain();
+    const dec = rand(0.006, 0.02);
+    const peak = Math.max(0.02 * level * rand(0.3, 1), 2 * EPS);
+    env.gain.setValueAtTime(0, t);
+    env.gain.linearRampToValueAtTime(peak, t + 0.001);
+    env.gain.exponentialRampToValueAtTime(EPS, t + 0.001 + dec);
+    src.connect(bp).connect(env).connect(pan);
+    src.start(t, Math.random() * (g.noise.duration - 0.2));
+    src.stop(t + dec + 0.02);
+    const nodes: AudioNode[] = [src, bp, env];
+    let last: AudioScheduledSourceNode = src;
+    if (Math.random() < 0.3) {
+      const o = ctx.createOscillator();
+      o.type = 'sine';
+      const f = rand(1800, 3800);
+      o.frequency.setValueAtTime(f, t);
+      o.frequency.exponentialRampToValueAtTime(f * rand(0.6, 0.85), t + 0.04);
+      const oe = ctx.createGain();
+      oe.gain.setValueAtTime(0, t);
+      oe.gain.linearRampToValueAtTime(Math.max(0.004 * level * rand(0.3, 1), 2 * EPS), t + 0.002);
+      oe.gain.exponentialRampToValueAtTime(EPS, t + 0.05);
+      o.connect(oe).connect(pan);
+      o.start(t);
+      o.stop(t + 0.06);
+      nodes.push(o, oe);
+      last = o;
+    }
+    last.onended = () => disconnectAll(...nodes, pan);
+  }
+
+  /**
+   * Distant thunder: low-passed noise (under ~200 Hz) with a soft fast attack and two or three
+   * overlapping swells that fade unevenly over 4 to 8 seconds. Never a crack.
+   */
+  private thunder(t: number, open: number): void {
+    const ctx = this.ctx;
+    const g = this.g;
+    if (!ctx || !g) return;
+    const total = rand(4.5, 8);
+    const src = ctx.createBufferSource();
+    src.buffer = g.noise;
+    src.loop = true;
+    const lp = ctx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(rand(150, 200), t);
+    lp.frequency.exponentialRampToValueAtTime(70, t + total);
+    lp.Q.value = 0.6;
+    const env = ctx.createGain();
+    const peak = 0.32 * open * rand(0.7, 1);
+    env.gain.setValueAtTime(0, t);
+    // Swells: the first leads, later ones come in on the tail of the one before, smaller each time.
+    const swells = Math.random() < 0.5 ? 2 : 3;
+    let at = t;
+    let amp = 1;
+    for (let i = 0; i < swells; i++) {
+      const rise = rand(0.25, 0.6);
+      const hold = rand(0.3, 0.9);
+      env.gain.linearRampToValueAtTime(Math.max(peak * amp, 2 * EPS), at + rise);
+      const dip = at + rise + hold + rand(0.5, 1.2);
+      env.gain.linearRampToValueAtTime(Math.max(peak * amp * rand(0.25, 0.45), 2 * EPS), dip);
+      at = dip;
+      amp *= rand(0.55, 0.85);
+    }
+    env.gain.setTargetAtTime(0, at, Math.max(0.6, (t + total - at) / 3));
+    env.gain.setValueAtTime(0, t + total + 0.8);
+    const pan = ctx.createStereoPanner();
+    pan.pan.value = rand(-0.7, 0.7);
+    src.connect(lp).connect(env).connect(pan).connect(g.ambBus);
+    src.start(t, Math.random() * (g.noise.duration - 0.1));
+    src.stop(t + total + 1);
+    src.onended = () => disconnectAll(src, lp, env, pan);
   }
 
   /** A small water bubble: a short rising sine blip. */

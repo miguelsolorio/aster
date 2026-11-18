@@ -14,7 +14,10 @@
 
 import type * as THREE from 'three';
 
+export type StormKind = 'sand' | 'rain';
+
 export interface Storm {
+  kind: StormKind;
   id: number; // stable for a given seed + slot
   x0: number; // centre of the front at t0, world metres
   z0: number;
@@ -39,29 +42,69 @@ export const DAY_SECONDS = 1200;
 /** One in-game hour in real seconds. */
 export const HOUR_SECONDS = DAY_SECONDS / 24;
 
-// ---- the schedule. Thin on purpose: most hours the whole horizon is clear, and a wall somewhere
+// ---- the schedules. Thin on purpose: most hours the whole horizon is clear, and a wall somewhere
 // far off is an event (about one alive within a dozen kilometres at a time). A point on open sand
 // is inside a scheduled storm about once in eight days; the game sends one to a wanderer who has gone
 // two or three days without (see main.ts), which is what keeps them from being strangers.
-const CELL = 5000; // metres: one possible storm per cell per day
-const CHANCE = 0.07; // that a (cell, day) slot holds a storm
-const TRACK_MIN = 10000; // metres a storm would travel, if no mountain stops it
-const TRACK_MAX = 13000;
-const WIDTH = 4000;
-const DEPTH = 1500;
-const SPEED_MIN = 11.5;
-const SPEED_MAX = 12.5;
-const FIRST = 0.5; // no scheduled storm is born before this clock (a new save's first half day)
-// ---- the envelope and the profile
-const FADE_IN = 90; // real seconds a storm takes to build
-const FADE_OUT = 120; // and to thin away
+// Rain is a second, far rarer schedule made the same way (own hash salt), on the same day headings.
+interface Kind {
+  kind: StormKind;
+  salt: number; // xored into the seed, so the two schedules are independent
+  cell: number; // metres: one possible storm per cell per day
+  chance: number; // that a (cell, day) slot holds a storm
+  trackMin: number; // metres a storm would travel
+  trackMax: number;
+  width: number;
+  depth: number;
+  speedMin: number;
+  speedMax: number;
+  first: number; // no scheduled storm is born before this clock
+  fadeIn: number; // real seconds a storm takes to build
+  fadeOut: number; // and to thin away
+  back: number; // day slots to look back for storms that are alive or (rain) have only just ended
+}
+const SAND: Kind = {
+  kind: 'sand',
+  salt: 0,
+  cell: 5000,
+  chance: 0.07,
+  trackMin: 10000,
+  trackMax: 13000,
+  width: 4000,
+  depth: 1500,
+  speedMin: 11.5,
+  speedMax: 12.5,
+  first: 0.5, // (a new save's first half day)
+  fadeIn: 90,
+  fadeOut: 120,
+  back: 1,
+};
+const RAIN: Kind = {
+  kind: 'rain',
+  salt: 0x52a1e,
+  cell: 5000,
+  chance: 0.0095, // a point on open sand is swept by about one rain in fifty days
+  trackMin: 8000,
+  trackMax: 12000,
+  width: 5000,
+  depth: 3000,
+  speedMin: 6.5,
+  speedMax: 7.5,
+  first: 2,
+  fadeIn: 120,
+  fadeOut: 180,
+  back: 3, // a rain born up to 1.5 days of travel ago, and wet ground for another day after
+};
+const KINDS: Record<StormKind, Kind> = { sand: SAND, rain: RAIN };
+const WET_DAYS = 1; // in-game days the ground stays wet after a rain ends
+// ---- the profile
 const EDGE_LEAD = 200; // metres of soft edge inside the leading face
 const EDGE_TRAIL = 450; // the trailing one
 const EDGE_SIDE = 500; // and each side
 const SIDE_WARN = 600; // past the side of a storm the warning fades out over this many metres
 // ---- caches
 const REACH_PAD = 8000; // storms() answers from a cached list for any reach up to this
-const SPAN = TRACK_MAX + DEPTH / 2 + Math.hypot(WIDTH / 2, DEPTH / 2);
+const spanOf = (k: Kind): number => k.trackMax + k.depth / 2 + Math.hypot(k.width / 2, k.depth / 2);
 
 const smooth = (a: number, b: number, x: number): number => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -82,24 +125,19 @@ const unit = (h: number): number => h / 4294967296;
 
 const slotKey = (i: number, j: number, d: number): number => (d * 4096 + (i & 4095)) * 4096 + (j & 4095);
 
-export class Weather {
-  /** A storm placed by hand (the guaranteed first storm, and ?storm). Counted like any other. */
-  sent: Storm | null = null;
-
+/** The scheduled storms of one kind. */
+class Schedule {
   private readonly slots = new Map<number, Storm | null>();
   private readonly near = new Map<number, Storm[]>();
-  private readonly found: Storm[] = [];
   private readonly scan: Storm[] = [];
+  private readonly span: number;
 
   constructor(
-    readonly seed: number,
-    /** 0 open sand .. 1 fully sheltered by a mountain. */
-    private readonly shelter?: (x: number, z: number) => number,
-  ) {}
-
-  /** The prevailing heading on day slot d (radians): every storm born that day runs along it. */
-  private dayAngle(d: number): number {
-    return unit(hash(this.seed, d, 0x5a17, 3)) * Math.PI * 2;
+    readonly k: Kind,
+    private readonly seed: number,
+    private readonly dayAngle: (d: number) => number,
+  ) {
+    this.span = spanOf(k);
   }
 
   /** The storm of a (cell, day) slot, or null. Made once and kept. */
@@ -115,42 +153,44 @@ export class Weather {
   }
 
   private make(i: number, j: number, d: number): Storm | null {
-    const h0 = hash(this.seed, i, j, d);
-    if (unit(h0) >= CHANCE) return null;
+    const k = this.k;
+    const h0 = hash(this.seed ^ k.salt, i, j, d);
+    if (unit(h0) >= k.chance) return null;
     const h1 = hash(h0, 1, d, i);
     const h2 = hash(h0, 2, j, d);
     const h3 = hash(h0, 3, i, j);
     const h4 = hash(h0, 4, d, j);
     const t0 = d + unit(h1);
-    if (t0 < FIRST) return null;
+    if (t0 < k.first) return null;
     const a = this.dayAngle(d);
-    const speed = SPEED_MIN + (SPEED_MAX - SPEED_MIN) * unit(h4);
-    const track = TRACK_MIN + (TRACK_MAX - TRACK_MIN) * unit(h3);
-    const s: Storm = {
+    const speed = k.speedMin + (k.speedMax - k.speedMin) * unit(h4);
+    const track = k.trackMin + (k.trackMax - k.trackMin) * unit(h3);
+    return {
+      kind: k.kind,
       id: hash(h0, 5, 0x51, 0x7) >>> 1,
-      x0: (i + unit(h2)) * CELL,
-      z0: (j + unit(hash(h2, 6, 0, 0))) * CELL,
+      x0: (i + unit(h2)) * k.cell,
+      z0: (j + unit(hash(h2, 6, 0, 0))) * k.cell,
       hx: Math.cos(a),
       hz: Math.sin(a),
       t0,
       t1: t0 + track / speed / DAY_SECONDS,
-      width: WIDTH,
-      depth: DEPTH,
+      width: k.width,
+      depth: k.depth,
       speed,
     };
-    return s;
   }
 
-  /** Every scheduled storm whose sweep comes within `pad` of the square of side `size` round (cx, cz), from day slots d-1 and d. */
-  private gather(cx: number, cz: number, size: number, pad: number, d: number, out: Storm[]): Storm[] {
+  /** Every scheduled storm whose sweep comes within `pad` of the square of side `size` round (cx, cz), from the day slots up to `d`. */
+  gather(cx: number, cz: number, size: number, pad: number, d: number, out: Storm[]): Storm[] {
     out.length = 0;
-    const reach = SPAN + pad + size * 0.71;
-    const i0 = Math.floor((cx - reach) / CELL);
-    const i1 = Math.floor((cx + reach) / CELL);
-    const j0 = Math.floor((cz - reach) / CELL);
-    const j1 = Math.floor((cz + reach) / CELL);
+    const cell = this.k.cell;
+    const reach = this.span + pad + size * 0.71;
+    const i0 = Math.floor((cx - reach) / cell);
+    const i1 = Math.floor((cx + reach) / cell);
+    const j0 = Math.floor((cz - reach) / cell);
+    const j1 = Math.floor((cz + reach) / cell);
     const lim = pad + size * 0.71;
-    for (let dd = d - 1; dd <= d; dd++) {
+    for (let dd = d - this.k.back; dd <= d; dd++) {
       for (let j = j0; j <= j1; j++) {
         for (let i = i0; i <= i1; i++) {
           const s = this.slot(i, j, dd);
@@ -161,29 +201,86 @@ export class Weather {
     return out;
   }
 
-  /** Scheduled storms that might be alive on day slot d and near the cache cell holding (x, z). */
-  private candidates(clock: number, x: number, z: number): readonly Storm[] {
+  /** Scheduled storms that might be alive (or fresh-wet) on day slot d and near the cache cell holding (x, z). */
+  candidates(clock: number, x: number, z: number): readonly Storm[] {
+    const cell = this.k.cell;
     const d = Math.floor(clock);
-    const qi = Math.floor(x / CELL);
-    const qj = Math.floor(z / CELL);
+    const qi = Math.floor(x / cell);
+    const qj = Math.floor(z / cell);
     const key = slotKey(qi, qj, d);
     let list = this.near.get(key);
     if (!list) {
-      list = this.gather((qi + 0.5) * CELL, (qj + 0.5) * CELL, CELL, REACH_PAD, d, []).slice();
+      list = this.gather((qi + 0.5) * cell, (qj + 0.5) * cell, cell, REACH_PAD, d, []).slice();
       if (this.near.size > 512) this.near.clear();
       this.near.set(key, list);
     }
     return list;
   }
 
-  /** Storms alive at `clock` whose front is within `reach` metres of (x, z). Reuses its array. */
+  /** The same as `gather` for an arbitrary reach, into a reused array. */
+  wide(x: number, z: number, reach: number, clock: number): Storm[] {
+    return this.gather(x, z, 0, reach, Math.floor(clock), this.scan);
+  }
+}
+
+/** One rain's wet ground (see Weather.wet). */
+export interface WetTrack {
+  x0: number; // centre of the rain at birth
+  z0: number;
+  hx: number; // unit heading
+  hz: number;
+  len: number; // metres the centre has travelled so far (stops growing when the rain ends)
+  halfWidth: number;
+  halfDepth: number;
+  since: number; // in-game days since the rain was born
+  wet: number; // 1 while it rains and just after, falling smoothly to 0 one day after it ended
+}
+interface WetEntry extends WetTrack {
+  d: number; // distance to the swept ground, for ordering
+}
+
+export class Weather {
+  /** A storm placed by hand (the guaranteed first storm, and ?storm). Counted like any other. */
+  sent: Storm | null = null;
+  /** A rain placed by hand (the one sent to a wanderer who has gone long without, and ?rain). */
+  sentRain: Storm | null = null;
+  /** False: no storm, no rain, no wet ground anywhere (the player's Weather setting). */
+  enabled = true;
+
+  private readonly sand: Schedule;
+  private readonly rainy: Schedule;
+  private readonly found: Storm[] = [];
+  private readonly wets: WetEntry[] = [];
+  private readonly wetPool: WetEntry[] = [];
+  private wetUsed = 0;
+
+  constructor(
+    readonly seed: number,
+    /** 0 open sand .. 1 fully sheltered by a mountain. Sandstorms only: rain falls on mountains too. */
+    private readonly shelter?: (x: number, z: number) => number,
+  ) {
+    const angle = (d: number) => this.dayAngle(d);
+    this.sand = new Schedule(SAND, seed, angle);
+    this.rainy = new Schedule(RAIN, seed, angle);
+  }
+
+  /** The prevailing heading on day slot d (radians): every storm born that day runs along it. */
+  private dayAngle(d: number): number {
+    return unit(hash(this.seed, d, 0x5a17, 3)) * Math.PI * 2;
+  }
+
+  /** Storms (sand and rain) alive at `clock` whose front is within `reach` metres of (x, z). Reuses its array. */
   storms(clock: number, x: number, z: number, reach = 0): readonly Storm[] {
     const out = this.found;
     out.length = 0;
-    const list = reach <= REACH_PAD ? this.candidates(clock, x, z) : this.gather(x, z, 0, reach, Math.floor(clock), this.scan);
-    for (const s of list) if (alive(s, clock) && boxDist(s, clock, x, z) <= reach) out.push(s);
-    const sent = this.sent;
-    if (sent && alive(sent, clock) && boxDist(sent, clock, x, z) <= reach) out.push(sent);
+    if (!this.enabled) return out;
+    for (const sch of [this.sand, this.rainy]) {
+      const list = reach <= REACH_PAD ? sch.candidates(clock, x, z) : sch.wide(x, z, reach, clock);
+      for (const s of list) if (alive(s, clock) && boxDist(s, clock, x, z) <= reach) out.push(s);
+    }
+    for (const sent of [this.sent, this.sentRain]) {
+      if (sent && alive(sent, clock) && boxDist(sent, clock, x, z) <= reach) out.push(sent);
+    }
     return out;
   }
 
@@ -195,12 +292,13 @@ export class Weather {
 
   /** 0..1 life envelope: a storm builds over its first minutes and thins over its last. 0 at and after t1. */
   life(s: Storm, clock: number): number {
+    const k = KINDS[s.kind ?? 'sand'];
     const dur = (s.t1 - s.t0) * DAY_SECONDS;
     if (dur <= 0) return 0;
     const since = (clock - s.t0) * DAY_SECONDS;
     const left = (s.t1 - clock) * DAY_SECONDS;
     if (since <= 0 || left <= 0) return 0;
-    return smooth(0, Math.min(FADE_IN, dur / 3), since) * smooth(0, Math.min(FADE_OUT, dur / 3), left);
+    return smooth(0, Math.min(k.fadeIn, dur / 3), since) * smooth(0, Math.min(k.fadeOut, dur / 3), left);
   }
 
   /** How thick one storm is at a point, before shelter. */
@@ -240,10 +338,11 @@ export class Weather {
     return ramp * side * Math.min(1, lf * 3);
   }
 
-  /** 0..1 how thick the storm is at a point: soft-edged box profile x life x (1 - shelter). */
+  /** 0..1 how thick the sandstorm is at a point: soft-edged box profile x life x (1 - shelter). */
   density(clock: number, x: number, z: number): number {
+    if (!this.enabled) return 0;
     let best = 0;
-    for (const s of this.candidates(clock, x, z)) {
+    for (const s of this.sand.candidates(clock, x, z)) {
       if (alive(s, clock)) best = Math.max(best, this.thick(s, clock, x, z));
     }
     const sent = this.sent;
@@ -252,10 +351,82 @@ export class Weather {
     return best * (1 - Math.min(1, Math.max(0, this.shelter(x, z))));
   }
 
+  /** 0..1 how hard it is raining at a point: soft-edged box profile x life. Mountains do not shelter it. */
+  rain(clock: number, x: number, z: number): number {
+    if (!this.enabled) return 0;
+    let best = 0;
+    for (const s of this.rainy.candidates(clock, x, z)) {
+      if (alive(s, clock)) best = Math.max(best, this.thick(s, clock, x, z));
+    }
+    const sent = this.sentRain;
+    if (sent && alive(sent, clock)) best = Math.max(best, this.thick(sent, clock, x, z));
+    return best;
+  }
+
+  /** Rain tracks, falling now or ended within the last day, whose swept ground comes within `reach` of (x, z). Nearest first. Reuses its array and objects. */
+  wet(clock: number, x: number, z: number, reach: number): readonly WetTrack[] {
+    const out = this.wets;
+    this.wetUsed = 0;
+    out.length = 0;
+    if (!this.enabled) return out;
+    const list = reach <= REACH_PAD ? this.rainy.candidates(clock, x, z) : this.rainy.wide(x, z, reach, clock);
+    for (const s of list) this.addWet(s, clock, x, z, reach);
+    if (this.sentRain) this.addWet(this.sentRain, clock, x, z, reach);
+    out.sort((p, q) => p.d - q.d);
+    return out;
+  }
+
+  private addWet(s: Storm, clock: number, x: number, z: number, reach: number): void {
+    const wet = wetness(s, clock);
+    if (wet <= 0) return;
+    const len = Math.min(s.speed * (clock - s.t0) * DAY_SECONDS, s.speed * (s.t1 - s.t0) * DAY_SECONDS);
+    const rx = x - s.x0;
+    const rz = z - s.z0;
+    const a = rx * s.hx + rz * s.hz;
+    const da = a < -s.depth / 2 ? -s.depth / 2 - a : a > len + s.depth / 2 ? a - len - s.depth / 2 : 0;
+    const d = Math.hypot(da, Math.max(0, Math.abs(rz * s.hx - rx * s.hz) - s.width / 2));
+    if (d > reach) return;
+    let w = this.wetPool[this.wetUsed];
+    if (!w) {
+      w = { x0: 0, z0: 0, hx: 0, hz: 0, len: 0, halfWidth: 0, halfDepth: 0, since: 0, wet: 0, d: 0 };
+      this.wetPool.push(w);
+    }
+    this.wetUsed++;
+    this.wets.push(w);
+    w.x0 = s.x0;
+    w.z0 = s.z0;
+    w.hx = s.hx;
+    w.hz = s.hz;
+    w.len = len;
+    w.halfWidth = s.width / 2;
+    w.halfDepth = s.depth / 2;
+    w.since = clock - s.t0;
+    w.wet = wet;
+    w.d = d;
+  }
+
+  /** 0..1 how wet the ground is at a point: inside a rain's swept ground up to its leading edge, soft edges, times that track's `wet`. */
+  wetAt(clock: number, x: number, z: number): number {
+    let best = 0;
+    for (const w of this.wet(clock, x, z, 0)) {
+      const rx = x - w.x0;
+      const rz = z - w.z0;
+      const a = rx * w.hx + rz * w.hz;
+      const c = Math.abs(rz * w.hx - rx * w.hz);
+      if (c >= w.halfWidth || a <= -w.halfDepth || a >= w.len + w.halfDepth) continue;
+      const lead = 1 - smooth(w.halfDepth - EDGE_LEAD, w.halfDepth, a - w.len);
+      const trail = smooth(-w.halfDepth, -w.halfDepth + EDGE_TRAIL, a);
+      const side = 1 - smooth(w.halfWidth - EDGE_SIDE, w.halfWidth, c);
+      best = Math.max(best, lead * trail * side * w.wet);
+    }
+    return best;
+  }
+
   /** 0..1 warning at a point: rises from 0 to 1 over the in-game hour before a leading edge arrives, 1 while inside. 0 if nothing is coming. */
   ahead(clock: number, x: number, z: number): number {
+    if (!this.enabled) return 0;
     let best = 0;
-    for (const s of this.candidates(clock, x, z)) {
+    for (const s of this.sand.candidates(clock, x, z)) {
       if (alive(s, clock)) best = Math.max(best, this.warn(s, clock, x, z));
     }
     const sent = this.sent;
@@ -263,8 +434,9 @@ export class Weather {
     return best;
   }
 
-  /** Heading of the storm that `density`/`ahead` is about at this point, or null. */
+  /** Heading of the sandstorm that `density`/`ahead` is about at this point, or null. */
   heading(clock: number, x: number, z: number, out: THREE.Vector2): THREE.Vector2 | null {
+    if (!this.enabled) return null;
     let best = 0;
     let pick: Storm | null = null;
     const look = (s: Storm) => {
@@ -275,7 +447,7 @@ export class Weather {
         pick = s;
       }
     };
-    for (const s of this.candidates(clock, x, z)) look(s);
+    for (const s of this.sand.candidates(clock, x, z)) look(s);
     if (this.sent) look(this.sent);
     const p = pick as Storm | null;
     return p ? out.set(p.hx, p.hz) : null;
@@ -286,17 +458,19 @@ export class Weather {
    * seconds after `clock`. With `arrive` < 0 it is already over the point, its centre there, and
    * fully built.
    */
-  aim(clock: number, x: number, z: number, arrive: number): Storm {
+  aim(clock: number, x: number, z: number, arrive: number, kind: StormKind = 'sand'): Storm {
+    const k = KINDS[kind];
     const a = this.dayAngle(Math.floor(clock));
     const hx = Math.cos(a);
     const hz = Math.sin(a);
-    const speed = (SPEED_MIN + SPEED_MAX) / 2;
+    const speed = (k.speedMin + k.speedMax) / 2;
     const inside = arrive < 0;
-    const t0 = inside ? clock - FADE_IN / DAY_SECONDS : clock;
+    const t0 = inside ? clock - k.fadeIn / DAY_SECONDS : clock;
     // how far behind the point the centre is at t0
-    const back = inside ? speed * FADE_IN : DEPTH / 2 + speed * arrive;
-    const after = (DEPTH + 3000) / speed; // it runs on a while past the point
+    const back = inside ? speed * k.fadeIn : k.depth / 2 + speed * arrive;
+    const after = (k.depth + 3000) / speed; // it runs on a while past the point
     const s: Storm = {
+      kind,
       id: -1 - (hash(this.seed, Math.round(t0 * 1e5), Math.round(x), Math.round(z)) >>> 2),
       x0: x - hx * back,
       z0: z - hz * back,
@@ -304,8 +478,8 @@ export class Weather {
       hz,
       t0,
       t1: clock + ((inside ? 0 : arrive) + after) / DAY_SECONDS,
-      width: WIDTH,
-      depth: DEPTH,
+      width: k.width,
+      depth: k.depth,
       speed,
     };
     return s;
@@ -329,6 +503,13 @@ export class Weather {
       rot: unit(hash(h, 4, 5, 6)) * Math.PI * 2,
     };
   }
+}
+
+/** 1 while a rain falls, easing to 0 over a day after it ends; 0 before it is born. Sand storms leave nothing. */
+function wetness(s: Storm, clock: number): number {
+  if (s.kind !== 'rain' || clock < s.t0) return 0;
+  if (clock < s.t1) return 1;
+  return 1 - smooth(0, WET_DAYS, clock - s.t1);
 }
 
 const alive = (s: Storm, clock: number): boolean => clock >= s.t0 && clock < s.t1;

@@ -228,4 +228,133 @@ describe('weather schedule', () => {
     expect(wrecks / storms.length).toBeGreaterThan(0.45);
     expect(wrecks / storms.length).toBeLessThan(0.75);
   });
+
+  it('leaves the sand schedule as it was, with rain in the world', () => {
+    const w = real();
+    const sandOf = (x: number, z: number, c: number) => w.storms(c, x, z, 8000).filter((s) => s.kind === 'sand').map((s) => ({ ...s }));
+    // the same ids and boxes as a Weather would give if it never heard of rain: density and ahead depend on sand only
+    for (let k = 0; k < 40; k++) {
+      const c = 1 + k * 0.41;
+      const x = k * 800 - 15000;
+      const z = 4000 - k * 700;
+      for (const s of sandOf(x, z, c)) expect(s.kind).toBe('sand');
+      w.sentRain = w.aim(c, x, z, -1, 'rain');
+      const d = w.density(c, x, z);
+      w.sentRain = null;
+      expect(w.density(c, x, z)).toBe(d);
+    }
+  });
+});
+
+describe('rain', () => {
+  const rainsNear = (w: Weather, x: number, z: number, from: number, to: number): Storm[] => {
+    const seen = new Map<number, Storm>();
+    for (let c = from; c < to; c += 0.1) for (const s of w.storms(c, x, z, 12000)) if (s.kind === 'rain') seen.set(s.id, s);
+    return [...seen.values()];
+  };
+
+  it('is the same for the same seed and has no rain before clock 2', () => {
+    const a = real();
+    const b = real();
+    let n = 0;
+    for (let k = 0; k < 30; k++) {
+      const x = k * 1500 - 20000;
+      const z = 9000 - k * 1100;
+      const ra = rainsNear(a, x, z, 0, 80);
+      expect(rainsNear(b, x, z, 0, 80)).toEqual(ra);
+      for (const s of ra) {
+        expect(s.t0).toBeGreaterThanOrEqual(2);
+        expect(s.width).toBe(5000);
+        expect(s.depth).toBe(3000);
+        expect(s.speed).toBeGreaterThanOrEqual(6.5);
+        expect(s.speed).toBeLessThanOrEqual(7.5);
+      }
+      n += ra.length;
+    }
+    expect(n).toBeGreaterThan(0);
+    for (let c = 0; c < 2; c += 0.05) expect(a.rain(c, 0, 0)).toBe(0);
+  });
+
+  it('is 1 in the middle of a sent rain and 0 far away; mountains do not shelter it', () => {
+    const w = new Weather(SEED, () => 1);
+    const clock = 0.2;
+    w.sentRain = w.aim(clock, 500, -300, -1, 'rain');
+    expect(w.sentRain.kind).toBe('rain');
+    expect(w.rain(clock, 500, -300)).toBeGreaterThan(0.99);
+    expect(w.rain(clock, 500 + 40000, -300)).toBe(0);
+    expect(w.density(clock, 500, -300)).toBe(0);
+    expect(w.ahead(clock, 500, -300)).toBe(0);
+    expect(w.storms(clock, 500, -300, 0)).toContain(w.sentRain);
+  });
+
+  it('wets the ground behind a rain that has passed, not ahead of it, and dries in a day', () => {
+    const w = new Weather(SEED);
+    const clock = 0.2;
+    const rain = w.aim(clock, 0, 0, 60, 'rain');
+    w.sentRain = rain;
+    const { hx, hz } = rain;
+    const at = (d: number) => [hx * d, hz * d] as const;
+    const over = clock + 600 / DAY_SECONDS; // the rain is well past the origin
+    // the centre is where? ahead of the origin along the heading by speed * (over - t0)
+    const k = rain.speed * (over - rain.t0) * DAY_SECONDS - (rain.depth / 2 + rain.speed * 60);
+    expect(k).toBeGreaterThan(1000);
+    expect(w.wetAt(over, 0, 0)).toBeGreaterThan(0.9);
+    // ahead of the leading edge: nothing
+    const [fx, fz] = at(k + rain.depth / 2 + 600);
+    expect(w.wetAt(over, fx, fz)).toBe(0);
+    // before the rain is born, nothing anywhere
+    expect(w.wetAt(rain.t0 - 0.01, 0, 0)).toBe(0);
+    // it ends, and the ground stays wet, then dries over a day
+    expect(w.wetAt(rain.t1 + 0.01, 0, 0)).toBeGreaterThan(0.9);
+    const half = w.wetAt(rain.t1 + 0.5, 0, 0);
+    expect(half).toBeGreaterThan(0.2);
+    expect(half).toBeLessThan(0.8);
+    expect(w.wetAt(rain.t1 + 1, 0, 0)).toBe(0);
+    expect(w.wet(rain.t1 + 0.5, 0, 0, 0)).toHaveLength(1);
+    expect(w.wet(rain.t1 + 1.1, 0, 0, 0)).toHaveLength(0);
+    // the track measures
+    const t = w.wet(over, 0, 0, 0)[0];
+    expect(t.halfWidth).toBe(2500);
+    expect(t.since).toBeCloseTo(over - rain.t0);
+    // sand storms leave no wet ground
+    w.sentRain = null;
+    w.sent = w.aim(clock, 0, 0, 60);
+    expect(w.wetAt(over, 0, 0)).toBe(0);
+  });
+
+  it('is silenced when disabled', () => {
+    const w = real();
+    w.sent = w.aim(0.2, 0, 0, -1);
+    w.sentRain = w.aim(0.2, 0, 0, -1, 'rain');
+    expect(w.storms(0.2, 0, 0, 100).length).toBe(2);
+    w.enabled = false;
+    expect(w.storms(0.2, 0, 0, 100)).toHaveLength(0);
+    expect(w.density(0.2, 0, 0)).toBe(0);
+    expect(w.ahead(0.2, 0, 0)).toBe(0);
+    expect(w.rain(0.2, 0, 0)).toBe(0);
+    expect(w.wetAt(0.2, 0, 0)).toBe(0);
+    expect(w.wet(0.2, 0, 0, 5000)).toHaveLength(0);
+    expect(w.heading(0.2, 0, 0, new THREE.Vector2())).toBeNull();
+    w.enabled = true;
+    expect(w.rain(0.2, 0, 0)).toBeGreaterThan(0.9);
+  });
+
+  it('rains on a point on open sand about once in forty to sixty days (the rest are sent)', () => {
+    const w = real();
+    const pts = openPoints(24);
+    const days = 600;
+    const step = 15 / DAY_SECONDS;
+    let entries = 0;
+    for (const [x, z] of pts) {
+      let was = false;
+      for (let c = 0; c < days; c += step) {
+        const inside = w.rain(c, x, z) > 0.5;
+        if (inside && !was) entries++;
+        was = inside;
+      }
+    }
+    const gap = (days * pts.length) / entries;
+    expect(gap).toBeGreaterThan(35);
+    expect(gap).toBeLessThan(70);
+  }, 120000);
 });

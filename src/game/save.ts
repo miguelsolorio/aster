@@ -66,6 +66,10 @@ export interface SaveData {
   stormDay: number | null;
   /** A storm that was sent for the wanderer and is not yet over. */
   sent: Storm | null;
+  /** The clock when it last rained on the wanderer, or a rain was sent (null: never). */
+  rainDay: number | null;
+  /** A rain that was sent for the wanderer and is not yet over (or dry). */
+  sentRain: Storm | null;
   /** Wrecks a storm uncovered and the wanderer reached: x, z and the way each lies, three numbers apiece. */
   wrecks: number[];
 }
@@ -142,6 +146,8 @@ const fresh = (): SaveData => ({
   days: 0,
   stormDay: null,
   sent: null,
+  rainDay: null,
+  sentRain: null,
   wrecks: [],
 });
 
@@ -161,7 +167,7 @@ const readStorm = (v: unknown): Storm | null => {
   const o = v as Record<string, unknown>;
   for (const k of STORM_FIELDS) if (typeof o[k] !== 'number' || !Number.isFinite(o[k])) return null;
   const s = o as unknown as Storm;
-  return { id: s.id, x0: s.x0, z0: s.z0, hx: s.hx, hz: s.hz, t0: s.t0, t1: s.t1, width: s.width, depth: s.depth, speed: s.speed };
+  return { kind: o.kind === 'rain' ? 'rain' : 'sand', id: s.id, x0: s.x0, z0: s.z0, hx: s.hx, hz: s.hz, t0: s.t0, t1: s.t1, width: s.width, depth: s.depth, speed: s.speed };
 };
 const WRECK_CAP = 64;
 const CLOCK_EVERY = 10_000; // ms between writes of a clock that moves every frame
@@ -202,6 +208,8 @@ export class Save {
         this.data.days = typeof raw.days === 'number' && Number.isFinite(raw.days) && raw.days > 0 ? raw.days : 0;
         this.data.stormDay = typeof raw.stormDay === 'number' && Number.isFinite(raw.stormDay) ? raw.stormDay : null;
         this.data.sent = readStorm(raw.sent);
+        this.data.rainDay = typeof raw.rainDay === 'number' && Number.isFinite(raw.rainDay) ? raw.rainDay : null;
+        this.data.sentRain = readStorm(raw.sentRain);
         const wr = keys(raw.wrecks);
         this.data.wrecks = wr.slice(0, Math.floor(Math.min(wr.length, WRECK_CAP * 3) / 3) * 3);
       }
@@ -348,6 +356,18 @@ export class Save {
   /** A storm has been sent for the wanderer, or the one that was is over (null). */
   setSent(s: Storm | null): void {
     this.data.sent = s;
+    this.write();
+  }
+
+  /** It has rained on the wanderer at this clock, or a rain was sent. */
+  setRainDay(day: number): void {
+    this.data.rainDay = day;
+    this.write();
+  }
+
+  /** A rain has been sent for the wanderer, or the one that was is over (null). */
+  setSentRain(s: Storm | null): void {
+    this.data.sentRain = s;
     this.write();
   }
 
