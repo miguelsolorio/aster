@@ -14,7 +14,8 @@ import { Solids, type SolidKind } from './solids';
 import { createDeep } from './deep/index';
 import { frostLayout, frostRegion, frostCover, frostWayMarks, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
 import { footVillages, type FootVillage } from './foothills';
-import { footVillageFolk, snowVillageFolk, type FolkMark, type FolkRole } from './villagers';
+import { footVillageFolk, hamletFolk, snowVillageFolk, towerFolk, type FolkMark, type FolkRole, type HamletHouse } from './villagers';
+import { GIVE_R, SOURCES, TAKE_R, isRevivable, stageOf, type Carry, type Revivable, type Revived } from '../game/restore';
 import { CHOSEN, bedrollGeometry, bootGeometry, carpetGeometry, featherGeometry, chartGeometry, fluteGeometry, rodGeometry, ropeCoilGeometry, rugMaterial, solidMaterial } from '../game/equipment';
 import type { Offering } from '../game/offerings';
 import { isFindKind } from '../game/finds';
@@ -566,6 +567,10 @@ class Ctx {
   temple: { foot: [number, number, number]; end: [number, number, number]; yaw: number; keep: [number, number, number, number][]; offer: [number, number, number] } | null = null;
   /** A village's people: where each stands, in the site's frame. */
   folk: FolkMark[] | null = null;
+  /** How far a place that can be brought back has come back: 0 untouched, then 1.. (see restore.ts stageOf). */
+  stage = 0;
+  /** Off while building a place nobody keeps: no lamp burns behind a window there, no torch, no brazier. */
+  lit = true;
   /** What the wanderer walks into and stands on: one shape per stone, drum and length of bone. */
   readonly solids = new Solids();
   /** Off while building things you pass straight through (scrub, paving flush with the ground). */
@@ -721,7 +726,7 @@ class Ctx {
 
   glow(u: number, y: number, v: number, size: number): void {
     this.at(u, v);
-    this.glows.push(this.lx, y, this.lz, size);
+    if (this.lit) this.glows.push(this.lx, y, this.lz, size);
   }
 }
 
@@ -928,14 +933,14 @@ function buildOasis(c: Ctx): void {
 }
 
 /** One palm rooted at frame point (bu, bv), leaning toward the bearing la. */
-function addPalm(c: Ctx, bu: number, bv: number, la: number): void {
+function addPalm(c: Ctx, bu: number, bv: number, la: number, k = 1): void {
   const st = c.stone;
   const top = new THREE.Vector3();
   const pt = new THREE.Vector3();
   {
     const g = c.g(bu, bv);
-    const H = c.r(8, 16);
-    const lean = c.r(1.5, 5.5);
+    const H = c.r(8, 16) * k;
+    const lean = c.r(1.5, 5.5) * k;
     const lu = Math.cos(la);
     const lv = Math.sin(la);
     const pts: THREE.Vector3[] = [];
@@ -946,7 +951,7 @@ function addPalm(c: Ctx, bu: number, bv: number, la: number): void {
       const t = i / N;
       const off = lean * Math.pow(t, 1.8);
       pts.push(new THREE.Vector3(bu + lu * off, g - 0.6 + H * t + 0.6 * t, bv + lv * off));
-      radii.push((0.42 * (1 - 0.4 * t) + (i === 0 ? 0.2 : 0)) * (H / 12) ** 0.3);
+      radii.push((0.42 * (1 - 0.4 * t) + (i === 0 ? 0.2 : 0)) * (H / 12) ** 0.3 * Math.sqrt(k));
       tints.push(i % 2 === 0 ? 1 : 0.86);
     }
     c.toLocal(pts);
@@ -955,7 +960,7 @@ function addPalm(c: Ctx, bu: number, bv: number, la: number): void {
     c.tube(pts, radii, 7, true, 1, tints);
     top.copy(pts[N]);
     st.set(0.42, 0.36, 0.28, 2, 0.08);
-    _m.compose(top, _q.identity(), _s.set(0.75, 0.6, 0.75));
+    _m.compose(top, _q.identity(), _s.set(0.75 * Math.sqrt(k), 0.6 * Math.sqrt(k), 0.75 * Math.sqrt(k)));
     st.geo(UNIT_BLOB, _m);
     // fronds
     const nf = 9 + Math.floor(c.rng() * 4);
@@ -1025,6 +1030,68 @@ function buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: 
     c.prim(UNIT_BLOB, u, c.g(u, v) + s * 0.25, v, s * 1.3, s * 0.7, s * 1.2, c.rng() * 6);
     c.solid = true;
     i++;
+  }
+}
+
+/**
+ * What was planted below a spring, in the spring's own frame (+u into the cliff): seedlings the
+ * day they go in, young palms a day on, a grove after three. Every stage roots at the same
+ * spots, so the grove stands where the seedlings were. `river` is the distance to the water.
+ */
+function plantSpring(c: Ctx, river: (u: number, v: number) => number): void {
+  const st = c.stone;
+  const spots: { u: number; v: number; la: number; k: number }[] = [];
+  // all on one bank, close enough together to be a grove one day
+  const side = c.rng() < 0.5 ? -1 : 1;
+  for (let tries = 0; spots.length < 9 && tries < 120; tries++) {
+    const u = -c.r(10, 58);
+    const v = side * c.r(16, 70);
+    const la = c.rng() * 6.28;
+    const k = c.r(0.75, 1.05);
+    const rd = river(u, v);
+    // on the damp ground either side of the stream, never in it; later tries settle for anywhere dry
+    if (rd < TERRAIN.riverHalf + 3 || (tries < 80 && rd > TERRAIN.riverHalf + 16)) continue;
+    // level ground, not the mountain's flank
+    if (tries < 100 && Math.abs(c.g(u + 2.5, v) - c.g(u - 2.5, v)) + Math.abs(c.g(u, v + 2.5) - c.g(u, v - 2.5)) > 1.6) continue;
+    if (spots.some((s) => Math.hypot(s.u - u, s.v - v) < 5.5)) continue;
+    spots.push({ u, v, la, k });
+  }
+  for (const s of spots) {
+    const g = c.g(s.u, s.v);
+    c.solid = false;
+    // the turned earth each one stands in, dark with water
+    st.set(0.46, 0.36, 0.28, 2, 0.08);
+    c.prim(UNIT_PEBBLE, s.u, g + 0.04, s.v, 1.1, 0.22, 1.0, s.la);
+    c.solid = true;
+    if (c.stage === 1) {
+      c.solid = false;
+      for (let i = 0; i < 4; i++) {
+        const a = s.la + i * 1.57;
+        const gk = 0.9 + 0.1 * i;
+        st.set(0.36 * gk, 0.66 * gk, 0.32, 0, 0.04);
+        c.prim(UNIT_CONE, s.u + Math.cos(a) * 0.14, g + 0.42, s.v + Math.sin(a) * 0.14, 0.09, 0.8, 0.2, -a, 0, 0.42);
+      }
+      c.solid = true;
+    } else {
+      addPalm(c, s.u, s.v, s.la, c.stage === 2 ? 0.34 * s.k : s.k);
+    }
+  }
+  if (c.stage < 3) return;
+  // scrub come up under them
+  for (let i = 0; i < 14; i++) {
+    const s = spots[i % Math.max(1, spots.length)];
+    if (!s) break;
+    const a = c.rng() * 6.28;
+    const d = c.r(1.5, 6);
+    const u = s.u + Math.cos(a) * d;
+    const v = s.v + Math.sin(a) * d;
+    if (river(u, v) < TERRAIN.riverHalf + 2.5) continue;
+    const k = c.r(0.85, 1.1);
+    st.set(0.5 * k, 0.62 * k, 0.38 * k, 2, 0.15);
+    const sz = c.r(0.6, 1.5);
+    c.solid = false;
+    c.prim(UNIT_BLOB, u, c.g(u, v) + sz * 0.25, v, sz * 1.3, sz * 0.7, sz * 1.2, c.rng() * 6);
+    c.solid = true;
   }
 }
 
@@ -1692,7 +1759,7 @@ function terracePlot(c: Ctx, u: number, v: number, ang: number, len: number, dee
  * A mud-brick watchtower, battered as it rises, with a toothed platform, a brazier that burns at
  * night and a pennant. (u, v) is its middle, `ang` the bearing its door faces, H its height.
  */
-function mudTower(c: Ctx, u: number, v: number, ang: number, H: number, wt: number): void {
+function mudTower(c: Ctx, u: number, v: number, ang: number, H: number, wt: number): number {
   const st = c.stone;
   const Fx = Math.cos(ang);
   const Fz = Math.sin(ang);
@@ -1764,8 +1831,10 @@ function mudTower(c: Ctx, u: number, v: number, ang: number, H: number, wt: numb
   // the brazier, and a pennant on a pole at one corner
   st.set(0.2, 0.18, 0.17, 1, 0.02);
   c.prim(UNIT_CYL, u, py + 0.85, v, 0.8, 0.5, 0.8);
-  st.set(1, 1, 1, 3, 0);
-  c.prim(UNIT_CONE, u, py + 1.8, v, 0.5, 1.5, 0.5, 0.6);
+  if (c.lit) {
+    st.set(1, 1, 1, 3, 0);
+    c.prim(UNIT_CONE, u, py + 1.8, v, 0.5, 1.5, 0.5, 0.6);
+  }
   c.glow(u, py + 1.7, v, 8);
   c.glow(u, py + 1.6, v, 4);
   const cu = u + (Fx - Fz) * (topW / 2 - 0.3);
@@ -1777,6 +1846,7 @@ function mudTower(c: Ctx, u: number, v: number, ang: number, H: number, wt: numb
   c.prim(UNIT_BIT, cu - Fz * 0.75, py + 4.3, cv + Fx * 0.75, 0.05, 0.6, 1.4, ry);
   c.prim(UNIT_BIT, cu - Fz * 1.65, py + 4.36, cv + Fx * 1.65, 0.05, 0.34, 0.5, ry);
   c.solid = true;
+  return py;
 }
 
 /** A handful of mud-brick houses round a well, with pens, palms and a lamp post: a hamlet nobody is home in. */
@@ -1784,13 +1854,19 @@ function buildHamlet(c: Ctx): void {
   const n = 4 + Math.floor(c.rng() * 4);
   const R = c.r(15, 22);
   c.foot = R + 16;
+  // nobody is home until the well has had water in it a day: no lamp behind a window, no torch
+  c.lit = c.stage >= 2;
   const a0 = c.rng() * Math.PI * 2;
   const wall = c.r(0.98, 1.1);
+  const houses: HamletHouse[] = [];
   for (let i = 0; i < n; i++) {
     const a = a0 + (i / n) * Math.PI * 2 + c.r(-0.2, 0.2);
     const d = R * c.r(0.8, 1.12);
     // long side across the ring, door looking in toward the well
-    mudHouse(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, 1, c.r(5, 7.4), c.r(4.2, 5.8), c.r(2.8, 3.6), wall * c.r(0.95, 1.05));
+    const w = c.r(5, 7.4);
+    const depth = c.r(4.2, 5.8);
+    mudHouse(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, 1, w, depth, c.r(2.8, 3.6), wall * c.r(0.95, 1.05));
+    houses.push({ a, d, w, depth });
   }
   mudWell(c, 0, 0);
   frostTorch(c, 3.6, 0.6, 1.5);
@@ -1822,6 +1898,64 @@ function buildHamlet(c: Ctx): void {
     const a = pa + Math.PI / 2 + c.r(-0.4, 0.4);
     const d = R + c.r(10, 13);
     terracePlot(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, c.r(7, 11), c.r(3, 5));
+  }
+  // people in the houses again, once the well has had water in it a day
+  if (c.stage >= 2) c.folk = hamletFolk({ yaw: c.yaw, houses, torch: [3.6, 0.6] });
+  if (c.stage < 1) return;
+  // water in the well, up near the lip, and a second bucket left full on the stones
+  {
+    const st = c.stone;
+    const g = c.g(0, 0);
+    c.solid = false;
+    st.set(0.34, 0.6, 0.66, 1, 0);
+    c.prim(UNIT_CYL, 0, g + 0.8, 0, 1.28, 0.1, 1.28);
+    st.set(0.62, 0.86, 0.9, 1, 0);
+    c.prim(UNIT_CYL, 0.3, g + 0.83, -0.2, 0.5, 0.06, 0.34, 0.6);
+    st.set(WOOD[0] * 1.2, WOOD[1] * 1.2, WOOD[2] * 1.2, 2, 0.02);
+    c.prim(UNIT_CYL, -1.5, g + 1.2, 0.9, 0.26, 0.4, 0.26);
+    st.set(0.34, 0.6, 0.66, 1, 0);
+    c.prim(UNIT_CYL, -1.5, g + 1.39, 0.9, 0.21, 0.04, 0.21);
+    c.solid = true;
+  }
+  if (c.stage < 2) return;
+  // lived in: flags from roof to roof across the ring, a fire ring by the well, rows of green
+  const span = (i: number, j: number): void => {
+    const p = houses[i % n];
+    const q = houses[j % n];
+    bunting(c, Math.cos(p.a) * (p.d - p.depth / 2 - 1.4), Math.sin(p.a) * (p.d - p.depth / 2 - 1.4), Math.cos(q.a) * (q.d - q.depth / 2 - 1.4), Math.sin(q.a) * (q.d - q.depth / 2 - 1.4), 4.4);
+  };
+  span(0, 1);
+  {
+    const st = c.stone;
+    const fu = -4.4;
+    const fv = -3.2;
+    const g = c.g(fu, fv);
+    st.set(0.62, 0.58, 0.55, 0, 0.12);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * Math.PI * 2;
+      c.prim(UNIT_BOX, fu + Math.cos(a) * 1.0, g + 0.2, fv + Math.sin(a) * 1.0, 0.7, 0.5, 0.55, -a);
+    }
+    st.set(1, 1, 1, 3, 0);
+    c.prim(UNIT_CONE, fu, g + 0.75, fv, 0.4, 1.0, 0.4, 0.5);
+    c.glow(fu, g + 0.8, fv, 4);
+  }
+  {
+    const a = pa - Math.PI / 2 + c.r(-0.3, 0.3);
+    const d = R + c.r(11, 14);
+    terracePlot(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, c.r(9, 13), c.r(4, 6));
+  }
+  if (c.stage < 3) return;
+  // the caravans call: a second line of flags, another plot, young palms set out past the houses
+  span(Math.floor(n / 2), Math.floor(n / 2) + 1);
+  {
+    const a = pa + Math.PI + c.r(-0.3, 0.3);
+    const d = R + c.r(16, 19);
+    terracePlot(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, c.r(10, 15), c.r(4, 6));
+  }
+  for (let k = 0; k < 4; k++) {
+    const a = a0 + ((k + 0.5) / 4) * Math.PI * 2 + c.r(-0.3, 0.3);
+    const d = R + c.r(15, 21);
+    addPalm(c, Math.cos(a) * d, Math.sin(a) * d, c.rng() * 6.28, c.r(0.4, 0.6));
   }
 }
 
@@ -1946,10 +2080,16 @@ function buildWatchtower(c: Ctx): void {
   c.foot = 20;
   const wt = c.r(0.98, 1.1);
   const face = c.rng() * Math.PI * 2;
-  mudTower(c, 0, 0, face, c.r(13, 17.5), wt);
+  // cold until someone carries a flame to it; the hut stays dark a day longer, until a keeper comes
+  c.lit = c.stage >= 1;
+  const py = mudTower(c, 0, 0, face, c.r(13, 17.5), wt);
+  c.lit = c.stage >= 2;
   // the hut, off to one side of the door
   const ha = face + (c.rng() < 0.5 ? -1 : 1) * c.r(1.2, 1.7);
-  mudHouse(c, Math.cos(ha) * 7.6, Math.sin(ha) * 7.6, ha + Math.PI / 2, -1, c.r(4.6, 5.6), c.r(3.6, 4.2), c.r(2.4, 2.8), wt * c.r(0.95, 1.04));
+  const hutW = c.r(4.6, 5.6);
+  const hutD = c.r(3.6, 4.2);
+  mudHouse(c, Math.cos(ha) * 7.6, Math.sin(ha) * 7.6, ha + Math.PI / 2, -1, hutW, hutD, c.r(2.4, 2.8), wt * c.r(0.95, 1.04));
+  c.lit = c.stage >= 1;
   // the ring wall, with gaps where it has gone
   const R = c.r(12.5, 15);
   const segs = 18;
@@ -1981,6 +2121,29 @@ function buildWatchtower(c: Ctx): void {
   frostTorch(c, Math.cos(face + 0.24) * (R + 0.6), Math.sin(face + 0.24) * (R + 0.6), 1.3);
   frostTorch(c, Math.cos(face - 0.24) * (R + 0.6), Math.sin(face - 0.24) * (R + 0.6), 1.3);
   if (c.rng() < 0.5) addPalm(c, Math.cos(face + 2.4) * (R + 4), Math.sin(face + 2.4) * (R + 4), c.rng() * 6.28);
+  // a keeper in the hut, once the beacon has burned a day
+  if (c.stage >= 2) c.folk = towerFolk({ yaw: c.yaw, ha, hd: 7.6, w: hutW, depth: hutD });
+  if (c.stage < 1) return;
+  // the beacon: a taller fire than a village tower keeps, made to be seen from days off
+  c.solid = false;
+  st.set(1, 1, 1, 3, 0);
+  c.prim(UNIT_CONE, 0, py + 2.3, 0, 0.75, 2.6, 0.75, 0.2);
+  c.prim(UNIT_CONE, 0.25, py + 1.9, -0.2, 0.45, 1.7, 0.45, 1.3);
+  c.glow(0, py + 2.4, 0, 15);
+  c.glow(0, py + 2.2, 0, 6);
+  c.solid = true;
+  if (c.stage < 2) return;
+  // kept: wood split and stacked against the wall for it, and a line of flags from the hut to the tower
+  {
+    const a = face + Math.PI + 0.9;
+    for (let k = 0; k < 3; k++) {
+      const u = Math.cos(a) * (R - 2.2) + Math.cos(a + Math.PI / 2) * (k - 1) * 1.5;
+      const v = Math.sin(a) * (R - 2.2) + Math.sin(a + Math.PI / 2) * (k - 1) * 1.5;
+      st.set(0.5 + k * 0.03, 0.36, 0.25, 2, 0.05);
+      c.prim(UNIT_BOX, u, c.g(u, v) + 0.4 + (k === 1 ? 0.25 : 0), v, 1.3, 0.8 + (k === 1 ? 0.5 : 0), 0.9, -a);
+    }
+    bunting(c, Math.cos(ha) * 5.2, Math.sin(ha) * 5.2, Math.cos(ha + 1.5) * 10.5, Math.sin(ha + 1.5) * 10.5, 3.6);
+  }
 }
 
 // ------------------------------------------------------------------ the frostland
@@ -2006,6 +2169,7 @@ function frostTorch(c: Ctx, u: number, v: number, tall = 1): void {
   c.prim(UNIT_BOX, u, g + 0.2, v, 0.5, 0.4, 0.5, 0.6);
   st.set(0.2, 0.18, 0.17, 1, 0.02);
   c.prim(UNIT_CYL, u, g + 2.18 * tall, v, 0.3, 0.2, 0.3);
+  if (!c.lit) return;
   st.set(1, 1, 1, 3, 0);
   c.prim(UNIT_CONE, u, g + 2.55 * tall, v, 0.15, 0.5, 0.15, 0.6);
   c.glow(u, g + 2.5 * tall, v, 1.7);
@@ -3104,6 +3268,8 @@ interface Site {
   folk?: VillageFolk[];
   /** For a temple: what lies on the stone before its altar now, if anything. */
   offer?: { kind: Offering; obj: THREE.Group };
+  /** The stage it was built at, for a place that can be brought back (0 untouched). */
+  stage: number;
 }
 
 /** Where people go at a temple, in world coordinates. */
@@ -3157,7 +3323,15 @@ export interface Landmark {
   temple?: TempleMarks;
 }
 
+/** A place brought back moves on a stage only while the wanderer is further off than this (m). */
+const REVIVE_HIDE = 200;
+/** A relit watchtower's beacon shows this far off at night (m), long after the tower itself is out of sight. */
+const BEACON_R = 14000;
+/** How high over the ground at a tower's foot its beacon burns (m): near enough for any tower. */
+const BEACON_UP = 19;
+
 /** Sites that are not somewhere to walk to: underground, or up a mountain. */
+
 const NOT_LANDMARKS = new Set(['cavern', 'lamp', 'summit', 'cave', 'spring', 'snow-village', 'frostway']);
 
 /** The mud-brick pieces, as the settlements' builders are lent them. */
@@ -3199,6 +3373,9 @@ export class Discoveries {
   private readonly waterMat: THREE.ShaderMaterial;
   private readonly frondMat: THREE.ShaderMaterial;
   private readonly glowMat: THREE.ShaderMaterial;
+  private readonly beaconMat: THREE.ShaderMaterial;
+  private beaconMesh: THREE.Mesh | null = null;
+  private beaconKey = '';
   private readonly sites: Site[] = [];
   private readonly reached = new Set<number>();
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
@@ -3284,6 +3461,12 @@ export class Discoveries {
         blending: THREE.AdditiveBlending,
       });
     this.glowMat = glow(1, 0.72, 0.38, 0);
+    // the same light, kept past the distance a find is drawn to: it gives way to the tower's own fire near to
+    this.beaconMat = glow(1, 0.66, 0.3, 0);
+    this.beaconMat.fragmentShader = glowFrag.replace(
+      /k \*= 1\.0 - smoothstep\([^;]*;/,
+      `k *= smoothstep(${(DRAW_R - FADE).toFixed(1)}, ${DRAW_R.toFixed(1)}, vDist) * (1.0 - smoothstep(${(BEACON_R * 0.7).toFixed(1)}, ${BEACON_R.toFixed(1)}, vDist)); k *= smoothstep(0.35, 0.85, uNight);`,
+    );
     this.veinMat = glow(0.22, 0.7, 0.6, 1);
     this.relicGlowMat = glow(1, 0.72, 0.38, 1);
     this.shaftMat = new THREE.ShaderMaterial({
@@ -4773,12 +4956,19 @@ export class Discoveries {
           if (this.isBuilt(key) || Math.hypot(sp.x - px, sp.z - pz) >= BUILD_R) continue;
           const ctx = new Ctx(this.world, sp.x, sp.z, this.world.height(sp.x, sp.z), mulberry32(seed ^ (0x9a1 + k)), Math.atan2(-sp.dz, sp.dx));
           ctx.stone.salt = (id * 13 + k) & 1023;
+          ctx.stage = this.staged.get(key) ?? 0;
           buildRoof(
             ctx,
             this.faceOf(ctx),
             (u) => ctx.g(u, 0),
             { half: sp.half, from: 0, len: sp.len, height: TERRAIN.springHeight },
           );
+          if (ctx.stage > 0) {
+            plantSpring(ctx, (u, v) => {
+              ctx.at(u, v);
+              return this.riverAt(sp.x + ctx.lx, sp.z + ctx.lz);
+            });
+          }
           this.caps.set(key, sp);
           this.finishSite(key, 'spring', sp.x, sp.z, ctx.baseY, ctx);
           return true;
@@ -5097,6 +5287,129 @@ export class Discoveries {
       if (s.folk) out.push({ key: s.key, kind: s.kind, snow: s.kind === 'snow-village', x: s.x, z: s.z, folk: s.folk });
     }
     return out;
+  }
+
+  // ---------------------------------------------------------------- places brought back
+
+  /** The stage each place brought back is built at now, by site key (absent: untouched). */
+  private readonly staged = new Map<number, number>();
+  private readonly listed = new Set<number>();
+
+  /**
+   * What the save says has been brought back, and the world clock now. A place whose stage has
+   * moved on is let go of, so the scan builds it again at its new stage: at once for the first
+   * stage (the wanderer has just done it, standing there), and otherwise only while the wanderer
+   * is more than REVIVE_HIDE m off, so nothing changes in front of them. `force` applies every
+   * change at once (for testing).
+   */
+  setRevived(list: readonly Revived[], clock: number, px: number, pz: number, force = false): void {
+    this.setBeacons(list);
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i];
+      const want = stageOf(r.kind, r.day, clock);
+      const have = this.staged.get(r.key) ?? 0;
+      if (want === have) continue;
+      if (!force && have !== 0) {
+        const dx = r.x - px;
+        const dz = r.z - pz;
+        if (dx * dx + dz * dz <= REVIVE_HIDE * REVIVE_HIDE) continue;
+      }
+      this.staged.set(r.key, want);
+      this.rebuild(r.key, want);
+    }
+    // (a place no longer on the list, as after a fresh start, goes back to how it was)
+    if (this.staged.size > list.length || (this.listed.size !== list.length && this.staged.size > 0)) {
+      this.listed.clear();
+      for (let i = 0; i < list.length; i++) this.listed.add(list[i].key);
+      for (const k of [...this.staged.keys()]) {
+        if (this.listed.has(k)) continue;
+        this.staged.delete(k);
+        this.rebuild(k, 0);
+      }
+    }
+  }
+
+  /** The far lights of the watchtowers that burn again: one mesh for all of them, made anew when the list changes. */
+  private setBeacons(list: readonly Revived[]): void {
+    let key = '';
+    for (let i = 0; i < list.length; i++) if (list[i].kind === 'watchtower') key += `${list[i].key},`;
+    if (key === this.beaconKey) return;
+    this.beaconKey = key;
+    if (this.beaconMesh) {
+      this.group.remove(this.beaconMesh);
+      this.beaconMesh.geometry.dispose();
+      this.beaconMesh = null;
+    }
+    const at: number[] = [];
+    for (const r of list) {
+      if (r.kind !== 'watchtower') continue;
+      const y = this.world.height(r.x, r.z) + BEACON_UP;
+      at.push(r.x, y, r.z, 5, r.x, y, r.z, 1.6);
+    }
+    if (at.length === 0) return;
+    this.beaconMesh = this.glowMesh(at, this.beaconMat);
+    this.group.add(this.beaconMesh);
+  }
+
+  /** The stage a place is built at (or will be, when it is next built): 0 untouched. */
+  revivedStage(key: number): number {
+    return this.staged.get(key) ?? 0;
+  }
+
+  /** Let go of a built site that is not at `stage`, so the next scan builds it again as it is now. */
+  private rebuild(key: number, stage: number): void {
+    for (let i = this.sites.length - 1; i >= 0; i--) {
+      const s = this.sites[i];
+      if (s.key !== key || s.stage === stage) continue;
+      this.disposeSite(s);
+      this.sites.splice(i, 1);
+      this.scanT = 0;
+    }
+  }
+
+  /** The built hamlet, watchtower or spring whose well, tower or lip (x, z) is within giving reach of, nearest first. */
+  revivableNear(x: number, z: number): { key: number; kind: Revivable; x: number; z: number; stage: number } | null {
+    let best: Site | null = null;
+    let bd = Infinity;
+    for (let i = 0; i < this.sites.length; i++) {
+      const s = this.sites[i];
+      if (!isRevivable(s.kind)) continue;
+      const d = Math.hypot(s.x - x, s.z - z);
+      if (d < GIVE_R[s.kind] && d < bd) {
+        bd = d;
+        best = s;
+      }
+    }
+    if (!best) return null;
+    return { key: best.key, kind: best.kind as Revivable, x: best.x, z: best.z, stage: this.staged.get(best.key) ?? 0 };
+  }
+
+  /** The built hamlets, watchtowers and springs within r of (x, z), nearest first (for testing). */
+  revivables(x: number, z: number, r = Infinity): { key: number; kind: Revivable; x: number; z: number; stage: number; d: number }[] {
+    const out: { key: number; kind: Revivable; x: number; z: number; stage: number; d: number }[] = [];
+    for (const s of this.sites) {
+      if (!isRevivable(s.kind)) continue;
+      const d = Math.hypot(s.x - x, s.z - z);
+      if (d <= r) out.push({ key: s.key, kind: s.kind, x: s.x, z: s.z, stage: this.staged.get(s.key) ?? 0, d });
+    }
+    return out.sort((a, b) => a.d - b.d);
+  }
+
+  /** What could be taken up at (x, z) from a built place: a flame from a lantern, date stones from a grove or an oasis. Water is the game's to find. */
+  sourceNear(x: number, z: number): Carry | null {
+    let best: Carry | null = null;
+    let bd = TAKE_R;
+    for (let i = 0; i < this.sites.length; i++) {
+      const s = this.sites[i];
+      const what: Carry | null = SOURCES.flame.includes(s.kind as never) ? 'flame' : SOURCES.seed.includes(s.kind as never) ? 'seed' : null;
+      if (!what) continue;
+      const d = Math.hypot(s.x - x, s.z - z);
+      if (d < bd) {
+        bd = d;
+        best = what;
+      }
+    }
+    return best;
   }
 
   /** Whether (x, z) is within reach of any site's stones, give or take a margin. */
@@ -5485,6 +5798,7 @@ export class Discoveries {
     // (a settlement's frame faces the way its ground asks: +u along (dx, dz))
     const ctx = new Ctx(w, x, z, baseY, rng, dx === undefined || dz === undefined ? turn : Math.atan2(-dz, dx));
     ctx.stone.salt = (cx * 31 + cz * 17) & 1023;
+    ctx.stage = this.staged.get(cellKey(cx, cz)) ?? 0;
     switch (kind) {
       case 'ruins': buildRuins(ctx); break;
       case 'oasis': buildOasis(ctx); break;
@@ -5593,6 +5907,7 @@ export class Discoveries {
       relic,
       temple: ctx.temple ? templeMarks(ctx, baseY) : undefined,
       folk: ctx.folk?.map((f) => ({ x: ctx.x + f.u, z: ctx.z + f.v, yaw: Math.atan2(f.fu - f.u, f.fv - f.v), sit: f.sit, role: f.role, small: f.small, coat: f.coat, y: f.y === undefined ? undefined : baseY + f.y })),
+      stage: ctx.stage,
     });
   }
 
@@ -5652,6 +5967,8 @@ export class Discoveries {
     this.waterMat.dispose();
     this.frondMat.dispose();
     this.glowMat.dispose();
+    this.beaconMat.dispose();
+    this.beaconMesh?.geometry.dispose();
     this.veinMat.dispose();
     this.relicGlowMat.dispose();
     this.shaftMat.dispose();

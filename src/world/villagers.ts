@@ -108,3 +108,97 @@ export function snowVillageFolk(p: SnowVillagePlan): FolkMark[] {
   }
   return out;
 }
+
+/** How far round a hamlet's well nobody stands: its ring of stones and its posts (m). */
+export const WELL_CLEAR = 2.6;
+
+/** A ring house of a hamlet as buildHamlet lays it: bearing and distance from the well, length and depth (m). */
+export interface HamletHouse {
+  a: number;
+  d: number;
+  w: number;
+  depth: number;
+}
+
+export interface HamletPlan {
+  /** The site's frame turn (Ctx yaw): the builders' (u, v) is turned by it onto the world's axes. */
+  yaw: number;
+  houses: HamletHouse[];
+  /** The lamp post by the well, in the frame. */
+  torch: [number, number];
+}
+
+/** A frame point turned onto the world's axes, as Ctx.at does it. */
+const turn = (yaw: number, p: [number, number]): [number, number] => {
+  const c = Math.cos(yaw);
+  const s = Math.sin(yaw);
+  return [p[0] * c + p[1] * s, -p[0] * s + p[1] * c];
+};
+
+const wrap = (a: number): number => Math.abs(Math.atan2(Math.sin(a), Math.cos(a)));
+
+/**
+ * The people of a hamlet that has come back: the host at the well, looking toward one of the
+ * houses (the one furthest round from the lamp), one or two sat by their doors, and the rest
+ * standing out in front of theirs, looking in at the well. Three to five, by how many houses
+ * there are.
+ */
+export function hamletFolk(p: HamletPlan): FolkMark[] {
+  const hs = p.houses;
+  const n = hs.length;
+  if (n === 0) return [];
+  const count = Math.max(3, Math.min(5, n - 1));
+  const ta = Math.atan2(p.torch[1], p.torch[0]);
+  let h = 0;
+  for (let i = 1; i < n; i++) if (wrap(hs[i].a - ta) > wrap(hs[h].a - ta)) h = i;
+  // a house's frame: along its long side (T), and in toward the well (N), from its middle
+  const at = (k: number, along: number, inward: number): [number, number] => {
+    const { a, d } = hs[k];
+    const Tx = -Math.sin(a);
+    const Tz = Math.cos(a);
+    return [Math.cos(a) * d + Tx * along - Math.cos(a) * inward, Math.sin(a) * d + Tz * along - Math.sin(a) * inward];
+  };
+  const out: FolkMark[] = [];
+  const P = (q: [number, number]) => turn(p.yaw, q);
+  {
+    const a = hs[h].a;
+    const r = WELL_CLEAR + 0.9;
+    out.push(mark(P([Math.cos(a) * r, Math.sin(a) * r]), P(at(h, 0, hs[h].depth / 2)), 'host'));
+  }
+  const sitters = count >= 4 ? 2 : 1;
+  for (let k = 1; out.length < count && k < n; k++) {
+    const i = (h + k) % n;
+    const half = hs[i].depth / 2;
+    if (out.length <= sitters) {
+      // sat against the wall beside the door, clear of the jars and the awning's poles
+      const side = k % 2 === 0 ? -1 : 1;
+      out.push(mark(P(at(i, side * Math.min(2.1, hs[i].w / 2 - 0.4), half + 1.1)), P(at(i, side * 2.1, half + 6)), 'villager', true));
+    } else {
+      out.push(mark(P(at(i, -1, half + 2.6)), [0, 0]));
+    }
+  }
+  return out;
+}
+
+export interface TowerPlan {
+  /** The site's frame turn (Ctx yaw). */
+  yaw: number;
+  /** The bearing of the keeper's hut from the tower, its distance (m), and its length and depth. */
+  ha: number;
+  hd: number;
+  w: number;
+  depth: number;
+}
+
+/** The keeper of a watchtower that has been lit again: standing beside the hut's door, looking out over the sand. */
+export function towerFolk(p: TowerPlan): FolkMark[] {
+  const { ha, hd } = p;
+  // the hut's door looks out, away from the tower
+  const Tx = -Math.sin(ha);
+  const Tz = Math.cos(ha);
+  const out = hd + p.depth / 2 + 1.2;
+  const along = Math.min(1.7, p.w / 2 - 0.3);
+  const u = Math.cos(ha) * out + Tx * along;
+  const v = Math.sin(ha) * out + Tz * along;
+  return [mark(turn(p.yaw, [u, v]), turn(p.yaw, [u + Math.cos(ha) * 30, v + Math.sin(ha) * 30]), 'watcher')];
+}

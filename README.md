@@ -18,6 +18,8 @@ Rain is rarer. One dark cloud comes over with grey under it, and if the sun is l
 
 If you'd sooner have none of it, turn Weather off in the menu, under Game.
 
+Some places are waiting for someone. The hamlets out on the sand are empty and their wells are dry, the lone watchtowers are cold, and nothing grows below a mountain spring. Each wants one thing carried to it: water from any river or pool, a flame from a lantern tower, date stones from a grove or an oasis. `E` picks a thing up and `E` hands it over. Then leave it alone for a day or two. People move into a hamlet with water in its well, and a caravan camps beside it. A lit tower gets a keeper, and its beacon shows at night from further off than the tower does. The date stones are a grove in three days. A small dot on the map marks what you've brought back.
+
 You carry a map, and it starts empty. Ground is washed in as you see it, towns and finds are inked in once you reach them, and it's all kept between visits. When someone sends you after something, a dashed circle goes on the map over roughly where to look.
 
 A thin compass runs along the top of the view, so "north-east, a fair walk" means something. Under it sit the few places you already know to head for: a small ring for an errand, a thread of light for a place marked through the spyglass, a tent for your bedroll. One that waits dimmed at an end of the strip is off to that side or behind you.
@@ -39,7 +41,7 @@ There are 20 of these in [docs/screenshots](docs/screenshots).
 | Mouse | Look |
 | `Space` | Leap. Hold to rise, let go to glide, double-tap to drop |
 | `Q` | Step on or off the board, once you have one (or get off an animal) |
-| `E` | Talk, or climb onto a wild ass, an oryx (come up to one on foot) or a caravan's camel, and get off again. The key shows over whichever is nearest |
+| `E` | Talk, fill the waterskin, take a flame or date stones, give them to a place that wants them, or climb onto a wild ass, an oryx (come up to one on foot) or a caravan's camel, and get off again. The key shows over whichever is nearest |
 | `F` | Hold up the spyglass, once you have one |
 | `R` | Play the flute, once you have one. A tap plays the song that suits where you stand; hold it to choose one |
 | `B` | Lay the bedroll and sleep in it, once you have one |
@@ -70,7 +72,7 @@ The dev server has a few extra pages that aren't part of the build:
 - `/characters.html` and `/equipment.html` show the figures, boards, carpets and picks
 - `/social.html` runs the game in a 1200 × 630 frame for capturing screenshots like the ones above
 
-A few URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather` lends you the tools for one visit, `?songs=waking,wind,rain,opening` lends you the songs the same way, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), `?storm` starts with a sandstorm a minute away (`?storm=in` starts inside one), `?rain` does the same for rain (`?rain=in` starts under it, `?rain=after` starts on the wet ground it left), `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start), and on the dev server `?village` starts you in the nearest mountain village (`?village=snow` for the nearest snow village), and `?settle=<kind>` (`well-camp`, `star-house`, `salt-works`, `glass-kilns`, `ledge`, `bridge`, `caravanserai`, `dyers-town`, `wind-towers` or `stepped-city`) puts you 45 m from the nearest such settlement.
+A few URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather` lends you the tools for one visit, `?songs=waking,wind,rain,opening` lends you the songs the same way, `?carry=water,flame,seed` lends you things to carry, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), `?storm` starts with a sandstorm a minute away (`?storm=in` starts inside one), `?rain` does the same for rain (`?rain=in` starts under it, `?rain=after` starts on the wet ground it left), `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start), and on the dev server `?village` starts you in the nearest mountain village (`?village=snow` for the nearest snow village), and `?settle=<kind>` (`well-camp`, `star-house`, `salt-works`, `glass-kilns`, `ledge`, `bridge`, `caravanserai`, `dyers-town`, `wind-towers` or `stepped-city`) puts you 45 m from the nearest such settlement.
 
 ## Built with
 

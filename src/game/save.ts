@@ -2,12 +2,13 @@
 // localStorage; the world itself is seeded, so only the changes are stored.
 //
 // Testing: ?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather grants tools for this visit without saving them,
-// ?songs=waking,wind,rain,opening lends songs the same way, and ?reset clears the save and the saved spawn before the game starts.
+// ?songs=waking,wind,rain,opening lends songs the same way, ?carry=water,flame,seed lends things to carry, and ?reset clears the save and the saved spawn before the game starts.
 
 import { clearAtlas } from './atlas';
 import { isFindKind, type FindKind } from './finds';
 import type { Storm } from '../world/weather';
 import { isSong, type Song } from './songs';
+import { isCarry, isRevivable, type Carry, type Revived } from './restore';
 
 export type Tool = 'board' | 'carpet' | 'pick' | 'spyglass' | 'flute' | 'bedroll' | 'rod' | 'chart' | 'rope' | 'boots' | 'feather';
 export const TOOLS: Tool[] = ['board', 'carpet', 'pick', 'spyglass', 'flute', 'bedroll', 'rod', 'chart', 'rope', 'boots', 'feather'];
@@ -77,6 +78,10 @@ export interface SaveData {
   songs: Song[];
   /** The clock when the rain song last brought a rain (null: never). */
   rainSung: number | null;
+  /** What the wanderer is carrying toward a place to bring back: one of each at most. */
+  carry: Carry[];
+  /** The places brought back, each once (by site key), and the clock when it was done. */
+  revived: Revived[];
 }
 
 const KEY = 'aster.save';
@@ -156,6 +161,8 @@ const fresh = (): SaveData => ({
   wrecks: [],
   songs: [],
   rainSung: null,
+  carry: [],
+  revived: [],
 });
 
 const keys = (v: unknown): number[] => (Array.isArray(v) ? v.filter((k): k is number => typeof k === 'number' && Number.isFinite(k)).slice(0, 4096) : []);
@@ -177,6 +184,22 @@ const readStorm = (v: unknown): Storm | null => {
   return { kind: o.kind === 'rain' ? 'rain' : 'sand', id: s.id, x0: s.x0, z0: s.z0, hx: s.hx, hz: s.hz, t0: s.t0, t1: s.t1, width: s.width, depth: s.depth, speed: s.speed };
 };
 const WRECK_CAP = 64;
+const REVIVED_CAP = 1024;
+const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+/** The places brought back, as far as they can be trusted: well formed, and each key once. */
+const readRevived = (v: unknown): Revived[] => {
+  if (!Array.isArray(v)) return [];
+  const out: Revived[] = [];
+  for (const r of v as unknown[]) {
+    if (!r || typeof r !== 'object') continue;
+    const { key, kind, x, z, day } = r as Partial<Revived>;
+    if (!num(key) || !isRevivable(kind) || !num(x) || !num(z) || !num(day)) continue;
+    if (out.some((o) => o.key === key)) continue;
+    out.push({ key, kind, x, z, day });
+    if (out.length >= REVIVED_CAP) break;
+  }
+  return out;
+};
 const CLOCK_EVERY = 10_000; // ms between writes of a clock that moves every frame
 
 export class Save {
@@ -185,6 +208,8 @@ export class Save {
   private readonly lent = new Set<Tool>();
   /** Songs lent by the URL for this visit only. */
   private readonly lentSongs = new Set<Song>();
+  /** Things to carry lent by the URL for this visit only. */
+  private readonly lentCarry = new Set<Carry>();
 
   constructor(qs: URLSearchParams) {
     if (qs.has('reset')) {
@@ -223,6 +248,8 @@ export class Save {
         this.data.wrecks = wr.slice(0, Math.floor(Math.min(wr.length, WRECK_CAP * 3) / 3) * 3);
         if (Array.isArray(raw.songs)) this.data.songs = [...new Set((raw.songs as unknown[]).filter(isSong))].filter((s) => s !== 'call');
         this.data.rainSung = typeof raw.rainSung === 'number' && Number.isFinite(raw.rainSung) ? raw.rainSung : null;
+        if (Array.isArray(raw.carry)) this.data.carry = [...new Set((raw.carry as unknown[]).filter(isCarry))];
+        this.data.revived = readRevived(raw.revived);
       }
     } catch {
       /* unreadable save: start again */
@@ -233,6 +260,30 @@ export class Save {
     for (const s of (qs.get('songs') ?? '').split(',')) {
       if (isSong(s) && s !== 'call') this.lentSongs.add(s);
     }
+    for (const c of (qs.get('carry') ?? '').split(',')) {
+      if (isCarry(c)) this.lentCarry.add(c);
+    }
+  }
+
+  /** Whether a thing is being carried (one lent by the URL counts). */
+  carries(c: Carry): boolean {
+    return this.data.carry.includes(c) || this.lentCarry.has(c);
+  }
+
+  /** Pick a thing up, or hand it on (a lent one is handed on too, and not lent again this visit). */
+  setCarry(c: Carry, held: boolean): void {
+    if (!held) this.lentCarry.delete(c);
+    if (this.data.carry.includes(c) === held) return;
+    if (held) this.data.carry.push(c);
+    else this.data.carry = this.data.carry.filter((k) => k !== c);
+    this.write();
+  }
+
+  /** A place has been brought back: it stays so. Once for each place. */
+  revive(r: Revived): void {
+    if (this.data.revived.some((o) => o.key === r.key)) return;
+    this.data.revived.push({ key: r.key, kind: r.kind, x: r.x, z: r.z, day: r.day });
+    this.write();
   }
 
   /** Whether a song is known: the call with the flute (lent or owned), the rest once learned (or lent). */
