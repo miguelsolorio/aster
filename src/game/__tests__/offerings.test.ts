@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { OFFERINGS, offeringAt, type Offering } from '../offerings';
 import { TOOLS } from '../save';
-import { flightSpeed } from '../player';
+import { flightSpeed } from '../speeds';
 
 const key = (cx: number, cz: number) => (cx + 32768) * 65536 + (cz + 32768);
 

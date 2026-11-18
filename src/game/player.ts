@@ -1,24 +1,17 @@
 import * as THREE from 'three';
 import type { PlayerState, SurfaceSample, World } from './contract';
+import { BOARD, BOARD_BOOST, BOOTS, CARPET_LIFT, flightSpeed, RUN, RUN_SAND, WALK } from './speeds';
 
-const CRUISE = 16.5; // glide speed you can hold on the flat
-const BOOST = 48; // with Shift
-const WALK = 5.2; // on rock
-const RUN = 19; // on rock with Shift
-const RUN_SAND = 9.5; // on foot in sand with Shift: soft ground, hard going
 const GRAVITY = 20;
 const LIFT_TIME = 3.5; // seconds of climbing in the reserve; refilled on landing
 const LIFT_SPEED = 8; // climb rate while jump is held
 const ROPE_CLIMB = 2.6; // metres a second up a face on the rope, along the rock
 const LIFT_DELAY = 0.2; // a jump held this long turns into a climb; shorter is a plain jump
-const GLIDE_SINK = 2; // steady sink in a glide
-const GLIDE_SPEED = 16; // forward speed in flight
-const GLIDE_BOOST = 45; // in flight with Shift
+const GLIDE_SINK = 1.1; // steady sink in a glide: about a metre down for every eight forward
 const HOVER_SINK = 4.5; // sink with no direction held: he stops and settles down
 const MAX_SPEED = 60;
 export const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
 const REACH = 0.38; // how far ahead of the feet a wall is felt
-const BOOTS = 1.25; // nailed boots are this much quicker over rock
 const BOOTS_GRIP = 1.5; // and hold on rock this steep (rise over run) before it is a cliff; bare feet give up at CLIFF
 const BOOTS_STEEP = 4.2; // the most they make (m/s over the ground) on rock that bare feet could not stand on
 const CLIFF = 1.15;
@@ -27,12 +20,6 @@ const CLIMB_BOOST = 24; // with Shift
 const ROCK_DRAG = 5; // rock bites a board that is not being driven: let go and it soon stops
 const REST = 0.32; // sand steeper than this (rise over run) will not hold a board at rest
 const FEATHER = 0.6; // an eagle's feather in the hood: the glide sinks this much as fast
-const CARPET = 1.6; // a carpet flies this much faster, and climbs for twice as long
-
-/** Forward speed in flight, metres a second: a carpet is faster at the glide and at the boost alike. */
-export function flightSpeed(carpet: boolean, boost: boolean): number {
-  return (boost ? GLIDE_BOOST : GLIDE_SPEED) * (carpet ? CARPET : 1);
-}
 const TAP_GRACE = 0.12; // in flight a press waits this long before climbing, so a double tap can drop instead
 const DOUBLE_TAP = 0.3; // two presses this close together in flight drop you
 
@@ -253,7 +240,7 @@ export class Player {
       this.climb = 0;
       this.gliding = false;
       this.lifting = false;
-      this.reserve = LIFT_TIME * this.lift * (this.carpet ? 2 : 1);
+      this.reserve = LIFT_TIME * this.lift * (this.carpet ? CARPET_LIFT : 1);
       this.holdT = 0;
       this.armed = true;
       this.flew = false;
@@ -333,7 +320,7 @@ export class Player {
               // Push toward cruising speed; the push fades as you reach it.
               const sp = Math.hypot(vx, vz);
               const rise = (vx * gx + vz * gz) / sp;
-              const cruise = Math.min(input.run ? BOOST : CRUISE, (input.run ? CLIMB_BOOST : CLIMB) / Math.max(rise, 1e-3));
+              const cruise = Math.min(input.run ? BOARD_BOOST : BOARD, (input.run ? CLIMB_BOOST : CLIMB) / Math.max(rise, 1e-3));
               // Boosting also cancels most of the speed-squared drag, so Shift can hold its higher speed.
               const hold = input.run && sp < cruise ? 0.003 * sp * sp : 0;
               const push = (10 * Math.max(0, 1 - sp / cruise) + hold) * Math.max(0.25, Math.cos(d));
@@ -540,11 +527,11 @@ export class Player {
         // Speed: pushing a direction brings you up to glide speed, scaled by how far the
         // stick is pushed. Let go and he eases to a stop in the air and settles straight
         // down, so you can come to rest over a roof. Extra speed from a fast launch bleeds off.
-        // Shift raises the glide speed and gets there in about a second.
-        const fast = this.carpet ? CARPET : 1;
-        const want = wishing ? flightSpeed(this.carpet, input.run) * Math.min(1, wl) : 0;
+        // Shift raises the glide speed. Either is reached in about a second.
+        const full = flightSpeed(this.carpet, input.run);
+        const want = wishing ? full * Math.min(1, wl) : 0;
         if (hs > want) hs += (want - hs) * (1 - Math.exp(-dt * (wishing ? 0.8 : 2.2)));
-        else hs = Math.min(want, hs + (input.run ? 30 : 14) * fast * dt);
+        else hs = Math.min(want, hs + full * dt);
       } else {
         hs *= 1 - 0.03 * dt;
       }

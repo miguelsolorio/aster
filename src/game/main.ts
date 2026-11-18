@@ -1828,7 +1828,7 @@ function start() {
         trail.stamp(st.pos.x, st.pos.z, 0.15 + carve * 0.22, 0.6 + carve * 0.35, Math.atan2(st.vel.z, st.vel.x), 3);
         if (player.slope > 0.4 && Math.random() < 0.3) cascade(st.pos.x, st.pos.z, 1);
       }
-      const spray = Math.min(1, carve * 0.9 + Math.max(0, st.speed - 14) * 0.03);
+      const spray = Math.min(1, carve * 0.9 + Math.max(0, st.speed - 7) * 0.06);
       if (spray > 0.05) {
         // outside of the turn: to the right of travel when turning left
         const side = player.turn > 0 ? -1 : 1;

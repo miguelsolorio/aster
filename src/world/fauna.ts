@@ -4,6 +4,7 @@
 // move in the vertex shader, and only where they are and what they're doing is worked out here.
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
+import { ASS_GALLOP, ORYX_GALLOP, RIDE } from '../game/speeds';
 import { GB } from '../city/caravans';
 import type { Landmark } from './discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
@@ -47,6 +48,12 @@ export const GROUSE = 10;
 const SPECIES = 11;
 /** The ones a person can sit on: a wild ass and an oryx. */
 const RIDEABLE: boolean[] = [true, false, false, false, false, false, true, false, false, false, false];
+/** Flat out under a rider (m/s), by species: quicker than it ever runs on its own. */
+const GALLOP: number[] = [];
+GALLOP[ORYX] = ORYX_GALLOP;
+GALLOP[ASS] = ASS_GALLOP;
+/** Metres per gait cycle at speed `spd`. A ridden animal outruns its own run, and past that the stride lengthens so the legs go no faster. */
+const strideAt = (spec: Spec, spd: number): number => (spd > spec.walk * 1.5 ? spec.runStride * Math.max(1, spd / spec.run) : spec.stride);
 /** How near a calm person may come before a rideable animal moves off (m): inside the mounting reach. */
 const CALM_FLEE = 1.2;
 /** How far a rider may be from an animal and still climb on (m). */
@@ -1842,7 +1849,7 @@ export class Fauna {
       const step = Math.max(-tr, Math.min(tr, err));
       a.yaw += step;
       this.turnRate += (step / dt - this.turnRate) * k(8);
-      targetSpd = (run ? spec.run : spec.walk * 2) * Math.min(1, want) * (Math.abs(err) < 1.4 ? 1 : 0.4);
+      targetSpd = (run ? GALLOP[a.sp] : RIDE) * Math.min(1, want) * (Math.abs(err) < 1.4 ? 1 : 0.4);
     } else this.turnRate += (0 - this.turnRate) * k(8);
     a.spd += (targetSpd - a.spd) * k(targetSpd > a.spd ? 2.2 : 4);
     if (a.spd < 0.02) a.spd = 0;
@@ -1870,8 +1877,7 @@ export class Fauna {
     const a = this.ridden;
     if (!a) return;
     const spec = SPEC[a.sp];
-    const running = a.spd > spec.walk * 1.5;
-    a.ph = (a.ph + (a.spd * dt) / (running ? spec.runStride : spec.stride)) % 1;
+    a.ph = (a.ph + (a.spd * dt) / strideAt(spec, a.spd)) % 1;
     const gait = a.spd <= spec.walk ? a.spd / spec.walk : 1 + Math.min(1, (a.spd - spec.walk) / (spec.run - spec.walk));
     a.y = this.world.height(a.x, a.z);
     this.world.normal(a.x, a.z, this.nrm);
