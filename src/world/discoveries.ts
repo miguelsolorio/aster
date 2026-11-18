@@ -81,6 +81,18 @@ const LAMP_KEY = -7; // the site keys of the miner's lost lamps count down from 
 const WRECK_KEY = -6e12;
 /** Metres round a wreck's middle that it keeps clear of other things (her keel runs to about 44 m). */
 const WRECK_CLEAR = 32;
+/** Metres round a fallen star that it keeps clear of other things. */
+const FALLEN_CLEAR = 16;
+
+// The keys of the fallen stars count down from here, the same way, in a band of their own.
+const FALLEN_KEY = -7e12;
+
+/** A fallen star in the world, as setFallen was given it, with the key its site is built under. */
+interface FallenAt {
+  x: number;
+  z: number;
+  key: number;
+}
 
 /** A wreck in the world, as setWrecks was given it, with the key its site is built under. */
 interface WreckAt {
@@ -2869,6 +2881,64 @@ function buildWreck(c: Ctx): void {
   }
 }
 
+/** A meteorite in a small crater. */
+function buildFallen(c: Ctx): void {
+  const st = c.stone;
+  c.foot = 14;
+  const g0 = c.g(0, 0);
+  // the rim: sand thrown up in a ring, higher on the side it came in from
+  const from = c.rng() * Math.PI * 2;
+  for (let i = 0; i < 13; i++) {
+    const a = (i / 13) * Math.PI * 2 + c.r(-0.12, 0.12);
+    const r = c.r(4.8, 5.7);
+    const s = c.r(0.55, 0.85) * (1.15 - 0.35 * Math.cos(a - from));
+    const u = Math.cos(a) * r;
+    const v = Math.sin(a) * r;
+    const k = c.r(0.9, 1.05);
+    st.set(0.72 * k, 0.56 * k, 0.4 * k, 2, 0.14);
+    c.prim(UNIT_BLOB, u, c.g(u, v) + s * 0.1, v, s * 1.5, s * 0.6, s * 1.0, -a + Math.PI / 2);
+  }
+  // the bowl: burnt black at the middle, and rays of it thrown out over the rim
+  c.solid = false;
+  st.set(0.3, 0.24, 0.2, 2, 0.04);
+  c.prim(UNIT_CYL, 0, g0 + 0.03, 0, 4.3, 0.1, 4.3);
+  st.set(0.13, 0.11, 0.11, 2, 0.04);
+  c.prim(UNIT_CYL, 0, g0 + 0.06, 0, 2.5, 0.1, 2.5);
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2 + c.r(-0.25, 0.25);
+    const len = c.r(4, 8.5);
+    const u = Math.cos(a) * (3 + len / 2);
+    const v = Math.sin(a) * (3 + len / 2);
+    st.set(0.2, 0.17, 0.16, 2, 0.03);
+    c.prim(UNIT_BIT, u, c.g(u, v) + 0.03, v, len, 0.07, c.r(0.35, 0.8), -a);
+  }
+  // sand fused to green glass where it was hottest
+  for (let i = 0; i < 8; i++) {
+    const a = c.rng() * Math.PI * 2;
+    const r = c.r(1.5, 3.8);
+    const u = Math.cos(a) * r;
+    const v = Math.sin(a) * r;
+    st.set(0.5, 0.82, 0.7, 1, 0);
+    c.prim(UNIT_BIT, u, c.g(u, v) + 0.14, v, c.r(0.25, 0.6), c.r(0.2, 0.5), 0.08, c.rng() * 6, c.r(-0.5, 0.5), c.r(-0.6, 0.6));
+  }
+  c.solid = true;
+  // the star itself: an iron stone half sunk, still lit along its cracks
+  const rot = c.rng() * 6;
+  st.set(0.17, 0.16, 0.19, 1, 0.2);
+  c.prim(UNIT_BLOB, 0, g0 + 0.35, 0, 0.75, 0.6, 0.65, rot);
+  c.prim(UNIT_BLOB, 0.8, g0 + 0.15, -0.55, 0.32, 0.26, 0.3, rot + 1);
+  c.solid = false;
+  st.set(1, 1, 1, 3, 0);
+  for (let i = 0; i < 4; i++) {
+    const a = rot + i * 1.7;
+    c.prim(UNIT_BIT, Math.cos(a) * 0.3, g0 + 0.78 + 0.1 * Math.sin(i * 2.1), Math.sin(a) * 0.28, 0.7, 0.05, 0.05, -a + 0.6, 0.3 * Math.sin(i * 1.3), 0.5 * Math.cos(i * 1.9));
+  }
+  c.solid = true;
+  c.glow(0, g0 + 0.9, 0, 3.2);
+  c.glow(0, g0 + 0.8, 0, 1.2);
+  c.veins.push(0, g0 + 0.85, 0, 1.0);
+}
+
 /**
  * A tended temple: a stepped sandstone platform with a walled shrine on top, a columned porch,
  * a stair down to an avenue of obelisks, and braziers that burn after dark. Its keepers stand
@@ -4158,6 +4228,56 @@ export class Discoveries {
     return true;
   }
 
+  // ---------------------------------------------------------------- the fallen stars
+
+  /** The fallen stars there are now (from setFallen), each with its site key. */
+  private fallenAt: FallenAt[] = [];
+
+  /**
+   * The stars that lie fallen in the world now: ones a meteor shower brought down, and ones the
+   * wanderer has reached before. Like the wrecks they are not on the grid of cells; each is built
+   * and let go like any other find, and one taken out of the list goes. The same list again costs nothing.
+   */
+  setFallen(list: readonly { x: number; z: number }[]): void {
+    const was = this.fallenAt;
+    if (list.length === was.length && list.every((a, i) => a.x === was[i].x && a.z === was[i].z)) return;
+    const next: FallenAt[] = [];
+    for (const a of list) {
+      const key = fallenKey(a.x, a.z);
+      if (!next.some((b) => b.key === key)) next.push({ x: a.x, z: a.z, key });
+    }
+    this.fallenAt = next;
+    for (let i = this.sites.length - 1; i >= 0; i--) {
+      const s = this.sites[i];
+      if (s.kind !== 'fallen-star') continue;
+      const f = next.find((a) => a.key === s.key);
+      if (f && f.x === s.x && f.z === s.z) continue;
+      this.disposeSite(s);
+      this.sites.splice(i, 1);
+    }
+  }
+
+  /** Builds the nearest fallen star within BUILD_R of (px, pz) that is not built yet. Returns whether it built one. */
+  private scanFallen(px: number, pz: number): boolean {
+    let best: FallenAt | null = null;
+    let bd = BUILD_R;
+    for (const a of this.fallenAt) {
+      const d = Math.hypot(a.x - px, a.z - pz);
+      if (d < bd && !this.isBuilt(a.key)) {
+        bd = d;
+        best = a;
+      }
+    }
+    if (!best) return false;
+    const w = this.world;
+    const baseY = w.height(best.x, best.z);
+    const rng = mulberry32(Math.floor(hash4(Math.round(best.x), Math.round(best.z), w.seed | 0, 0x5a7f) * 4294967296));
+    const ctx = new Ctx(w, best.x, best.z, baseY, rng, 0);
+    buildFallen(ctx);
+    this.finishSite(best.key, 'fallen-star', best.x, best.z, baseY, ctx);
+    return true;
+  }
+
   // ---------------------------------------------------------------- the lost lamp
 
   private lampAt: { x: number; z: number; key: number }[] = [];
@@ -4860,6 +4980,7 @@ export class Discoveries {
       }
     }
     if (this.scanWrecks(bx, bz)) return true;
+    if (this.scanFallen(bx, bz)) return true;
     // (the caverns shape the ground under the wanderer's feet, so they go by where the wanderer is)
     if (this.scanCaverns(px, pz)) return true;
     if (this.scanMassifs(bx, bz)) return true;
@@ -5431,6 +5552,7 @@ export class Discoveries {
     if (this.cellClaimed(x, z, r)) return true;
     // (and the wrecks lying out now, which are not the seed's: see setWrecks)
     for (const a of this.wreckAt) if (Math.hypot(a.x - x, a.z - z) < r + WRECK_CLEAR) return true;
+    for (const a of this.fallenAt) if (Math.hypot(a.x - x, a.z - z) < r + FALLEN_CLEAR) return true;
     // a mountain village spreads some 70 m round its middle
     const w = this.world as Partial<DesertWorld>;
     if (!w.massif) return false;
@@ -5635,6 +5757,7 @@ export class Discoveries {
       if (Math.hypot(vx - x, vz - z) <= r) this.pushRef(out, key, 'snow-village', vx, vz, key);
     });
     for (const a of this.wreckAt) if (Math.hypot(a.x - x, a.z - z) <= r) this.pushRef(out, a.key, 'wreck', a.x, a.z, a.key);
+    for (const a of this.fallenAt) if (Math.hypot(a.x - x, a.z - z) <= r) this.pushRef(out, a.key, 'fallen-star', a.x, a.z, a.key);
     return out;
   }
 
@@ -5999,4 +6122,11 @@ function wreckKey(x: number, z: number): number {
   const qx = Math.round(x / 4) & 0xfffff;
   const qz = Math.round(z / 4) & 0xfffff;
   return WRECK_KEY - (qx * 0x100000 + qz);
+}
+
+/** The site key of a fallen star lying at (x, z): from where it lies to 4 m, so the same star has the same key every visit. */
+function fallenKey(x: number, z: number): number {
+  const qx = Math.round(x / 4) & 0xfffff;
+  const qz = Math.round(z / 4) & 0xfffff;
+  return FALLEN_KEY - (qx * 0x100000 + qz);
 }

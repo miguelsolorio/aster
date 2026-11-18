@@ -26,6 +26,17 @@ uniform float uMoonVis;
 uniform vec2 uWind;
 uniform float uChart;   // 0..1 the star chart is being read
 uniform vec2 uChartDir; // the way it points, over the ground (x, z)
+// the heavens (render/heavens.ts)
+uniform mat3 uSkyRot;     // a world direction into the frame the stars are fixed in
+uniform float uMoonPhase; // 0 new, 0.5 full
+uniform vec3 uMoonTint;
+uniform float uEclipse;   // the moon's disc from the sun's, in sun radii along its path (99: none)
+uniform float uEclK;      // 0..1 how much of the sun it hides
+uniform vec4 uComet;      // where it stands, and how bright
+uniform vec3 uCometTail;
+uniform vec4 uMetA[2];    // a meteor's head, and how bright
+uniform vec4 uMetB[2];    // its tail's end, and its width (radians)
+uniform vec4 uFlash;      // where a star came down, and how bright the flash still is
 // from the look
 uniform float uSkyCurve; // gradient exponent
 uniform float uSkyBands; // 0 = smooth gradient, N = stepped
@@ -94,7 +105,8 @@ void main() {
 
   // stars and a faint band of them
   if (uStars > 0.001) {
-    vec3 sp = d * 180.0;
+    vec3 ds = uSkyRot * d; // the stars turn about the pole through the night
+    vec3 sp = ds * 180.0;
     vec3 cell = floor(sp);
     float fwS = max(length(fwidth(sp)), 1e-4);
     float hs = hash31(cell);
@@ -110,8 +122,8 @@ void main() {
     float fade = smoothstep(0.02, 0.25, h);
     col += vec3(on * core * tw * mix(0.4, 1.0, jit.y) * fade * uStars);
 
-    float band = exp(-pow(dot(d, normalize(vec3(0.42, 0.3, 0.86))) * 4.5, 2.0));
-    float dustN = fbm(d.xz * 7.0 + d.y * 4.0);
+    float band = exp(-pow(dot(ds, normalize(vec3(0.42, 0.3, 0.86))) * 4.5, 2.0));
+    float dustN = fbm(ds.xz * 7.0 + ds.y * 4.0);
     col += vec3(0.55, 0.72, 0.9) * band * dustN * 0.16 * fade * uStars;
 
     // The star chart: one line of stars, brighter and warmer than the rest, climbing the sky
@@ -132,6 +144,40 @@ void main() {
         col += vec3(1.0, 0.88, 0.62) * (pt + halo) * twk * uChart * uStars;
       }
     }
+  }
+
+  // the comet: a bright head and a long pale tail, standing away from the sun
+  if (uComet.w > 0.001) {
+    vec3 c = uComet.xyz;
+    float fadeC = smoothstep(0.02, 0.2, h);
+    vec3 rel = d - c;
+    float along = dot(rel, uCometTail);
+    float s = clamp(along / 0.32, 0.0, 1.0);
+    float perp = length(rel - uCometTail * along);
+    float wid = 0.005 + 0.032 * s;
+    float tail = exp(-perp * perp / (wid * wid)) * pow(1.0 - s, 1.4) * step(0.0, along) * 0.7;
+    float head = exp(-dot(rel, rel) / (0.006 * 0.006)) * 1.7 + exp(-dot(rel, rel) / (0.016 * 0.016)) * 0.4;
+    col += vec3(0.78, 0.9, 1.0) * (head + tail) * uComet.w * fadeC;
+  }
+
+  // meteors: a short bright stroke, thin at the tail
+  for (int i = 0; i < 2; i++) {
+    if (uMetA[i].w > 0.001) {
+      vec3 a = uMetA[i].xyz;
+      vec3 b = uMetB[i].xyz;
+      vec3 ab = a - b;
+      float tt = clamp(dot(d - b, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
+      float dist = length(d - (b + ab * tt));
+      float wd = uMetB[i].w * (0.35 + 0.65 * tt);
+      float glowM = exp(-dist * dist / (wd * wd)) * tt * tt;
+      float headM = exp(-dot(d - a, d - a) / (uMetB[i].w * uMetB[i].w * 5.0)) * 0.6;
+      col += vec3(1.0, 0.94, 0.8) * (glowM + headM) * uMetA[i].w * smoothstep(-0.01, 0.06, h);
+    }
+  }
+  // where one came all the way down: a low flash on the horizon
+  if (uFlash.w > 0.001) {
+    vec3 fr = d - uFlash.xyz;
+    col += vec3(1.0, 0.86, 0.6) * exp(-(fr.x * fr.x + fr.z * fr.z) / 0.03 - fr.y * fr.y / 0.004) * uFlash.w * 0.9;
   }
 
   // thin high cloud, drifting with the wind
@@ -156,6 +202,21 @@ void main() {
     float gap = (1.0 - smoothstep(gapW * 0.5 - fws, gapW * 0.5 + fws, f)) * step(0.0, yy);
     sun *= 1.0 - gap * step(0.5, uSunBands);
   }
+  // the eclipse: the moon's dark disc crosses the sun, and at the middle only the corona is left
+  if (uEclipse < 50.0) {
+    vec3 rgtE = cross(uSunPos, vec3(0.0, 1.0, 0.0));
+    rgtE = length(rgtE) > 1e-4 ? normalize(rgtE) : vec3(1.0, 0.0, 0.0);
+    vec3 mc = normalize(uSunPos + rgtE * uEclipse * sunR);
+    float dark = discMask(d, mc, sunR * 1.035);
+    sun *= 1.0 - dark;
+    float angE = atan(length(cross(d, mc)), dot(d, mc)) / sunR;
+    float tot = pow(uEclK, 6.0);
+    // (streamers: brighter along a few rays)
+    vec3 upE = cross(rgtE, uSunPos);
+    float ray = 0.75 + 0.25 * sin(atan(dot(d - mc, upE), dot(d - mc, rgtE)) * 6.0 + 1.0);
+    float corona = exp(-max(angE - 1.0, 0.0) * 1.5 * (1.4 - 0.5 * ray)) * step(1.0, angE);
+    col += vec3(1.0, 0.96, 0.88) * corona * tot * 0.9;
+  }
   col = mix(col, uSunCol * 1.05, sun * (1.0 - uMoonVis));
 
   // moon, with soft mottling
@@ -164,7 +225,14 @@ void main() {
   vec3 mr = cross(uMoonPos, vec3(0.0, 1.0, 0.0));
   vec2 mp = vec2(dot(d, normalize(mr)), dot(d, cross(normalize(mr), uMoonPos))) / moonR;
   float mott = 0.82 + 0.18 * fbm(mp * 2.2 + 4.0);
-  col = mix(col, vec3(0.9, 0.96, 0.94) * mott, moon * uMoonVis);
+  // its phase: the lit limb leads toward where the sun went down, the rest only just there
+  float limb = sqrt(max(0.0, 1.0 - mp.y * mp.y));
+  float term = cos(uMoonPhase * 6.2831853) * limb;
+  float sideM = uMoonPhase < 0.5 ? mp.x - term : -mp.x - term;
+  float fwM = max(fwidth(mp.x), 1e-4) * 1.5;
+  float litM = smoothstep(-fwM, fwM, sideM);
+  vec3 moonCol = vec3(0.9, 0.96, 0.94) * mott * uMoonTint;
+  col = mix(col, mix(mix(col, moonCol, 0.09), moonCol, litM), moon * uMoonVis);
 
   // below the horizon
   col = mix(col, uFogCol, 1.0 - smoothstep(-0.04, 0.0, h));

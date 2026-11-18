@@ -10,11 +10,12 @@ describe('finds', () => {
     expect(new Set(FIND_KINDS).size).toBe(FIND_KINDS.length);
   });
 
-  it('counts thirty kinds, the wreck a storm uncovers the last of them', () => {
-    expect(FIND_KINDS.length).toBe(30);
-    expect(FIND_KINDS[FIND_KINDS.length - 1]).toBe('wreck');
-    expect(findsText(3).text).toBe('Discoveries 3 / 30');
+  it('counts thirty-one kinds, the fallen star a meteor shower brings the last of them', () => {
+    expect(FIND_KINDS.length).toBe(31);
+    expect(FIND_KINDS[FIND_KINDS.length - 1]).toBe('fallen-star');
+    expect(findsText(3).text).toBe('Discoveries 3 / 31');
     expect(findName('wreck')).toBe('Wrecked ship');
+    expect(findName('fallen-star')).toBe('Fallen star');
   });
 
   it('names every kind in plain words', () => {
