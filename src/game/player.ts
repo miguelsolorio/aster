@@ -6,8 +6,9 @@ const GRAVITY = 20;
 const LIFT_TIME = 3.5; // seconds of climbing in the reserve; refilled on landing
 const LIFT_SPEED = 8; // climb rate while jump is held
 const ROPE_CLIMB = 2.6; // metres a second up a face on the rope, along the rock
+const ROPE_HASTE = 1.5; // and this much quicker with Shift
 const LIFT_DELAY = 0.2; // a jump held this long turns into a climb; shorter is a plain jump
-const GLIDE_SINK = 1.6; // steady sink in a glide: about a metre down for every eight forward
+const GLIDE_SINK = 2.25; // steady sink in a glide: about a metre down for every eight forward
 const HOVER_SINK = 4.5; // sink with no direction held: he stops and settles down
 const MAX_SPEED = 60;
 export const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
@@ -17,6 +18,10 @@ const BOOTS_STEEP = 4.2; // the most they make (m/s over the ground) on rock tha
 const CLIFF = 1.15;
 const CLIMB = 16; // the most a board gains up a face, metres of height a second
 const CLIMB_BOOST = 24; // with Shift
+// Shift is worth something at any speed. Under a rung's Shift pace it drives up to it; over it
+// (down a slope, off a launch) it keeps more of the speed there already is.
+const TUCK = 0.5; // a board going faster than Shift drives it: this much of the air drag is shed
+const CARRY = 0.25; // in flight faster than Shift flies: the extra bleeds off this much as fast
 const ROCK_DRAG = 5; // rock bites a board that is not being driven: let go and it soon stops
 const REST = 0.32; // sand steeper than this (rise over run) will not hold a board at rest
 const FEATHER = 0.6; // an eagle's feather in the hood: the glide sinks this much as fast
@@ -28,8 +33,8 @@ export function wallAhead(top: (x: number, z: number) => number, x: number, z: n
   return top(x, z) > step || top(x + dx * 0.5, z + dz * 0.5) > step || top(x + dx, z + dz) > step;
 }
 
-/** Metres per step on rock. Running lengthens the stride with speed so the step rate stays put. */
-export const strideLength = (speed: number, running: boolean) => (running ? Math.max(1.15, speed / 8.3) : 0.8);
+/** Metres per step on rock. The stride lengthens with speed, walking and running, so the step rate stays put. */
+export const strideLength = (speed: number, running: boolean) => (running ? Math.max(1.15, speed / 8.3) : Math.max(0.8, speed / 6.5));
 
 export interface PlayerInput {
   x: number; // strafe, -1..1 (right positive)
@@ -265,7 +270,7 @@ export class Player {
         // Cliffs are barriers: cancel motion into them. With a rope and hook they are climbed
         // instead: slowly, hand over hand, and held wherever the climbing stops.
         if (slope > cliff && this.rope) {
-          const sp = wishing ? ROPE_CLIMB / Math.sqrt(1 + slope * slope) : 0;
+          const sp = wishing ? (ROPE_CLIMB * (input.run ? ROPE_HASTE : 1)) / Math.sqrt(1 + slope * slope) : 0;
           vel.x = this.wish.x * sp;
           vel.z = this.wish.y * sp;
           this.roping = wishing && climb > 0;
@@ -321,8 +326,10 @@ export class Player {
               const sp = Math.hypot(vx, vz);
               const rise = (vx * gx + vz * gz) / sp;
               const cruise = Math.min(input.run ? BOARD_BOOST : BOARD, (input.run ? CLIMB_BOOST : CLIMB) / Math.max(rise, 1e-3));
-              // Boosting also cancels most of the speed-squared drag, so Shift can hold its higher speed.
-              const hold = input.run && sp < cruise ? 0.003 * sp * sp : 0;
+              // The drive also cancels the speed-squared drag up to cruising speed, so the board holds
+              // the pace it is named for. Past that, on a slope, Shift still sheds part of the drag: a
+              // run downhill goes on gathering.
+              const hold = 0.003 * sp * sp * (sp < cruise ? 1 : input.run ? TUCK : 0);
               const push = (10 * Math.max(0, 1 - sp / cruise) + hold) * Math.max(0.25, Math.cos(d));
               vel.x += (vx / sp) * push * dt;
               vel.z += (vz / sp) * push * dt;
@@ -527,10 +534,11 @@ export class Player {
         // Speed: pushing a direction brings you up to glide speed, scaled by how far the
         // stick is pushed. Let go and he eases to a stop in the air and settles straight
         // down, so you can come to rest over a roof. Extra speed from a fast launch bleeds off.
-        // Shift raises the glide speed. Either is reached in about a second.
+        // Shift raises the glide speed. Either is reached in about a second. Shift also holds on
+        // to speed from a launch for longer.
         const full = flightSpeed(this.carpet, input.run);
         const want = wishing ? full * Math.min(1, wl) : 0;
-        if (hs > want) hs += (want - hs) * (1 - Math.exp(-dt * (wishing ? 0.8 : 2.2)));
+        if (hs > want) hs += (want - hs) * (1 - Math.exp(-dt * (wishing ? (input.run ? 0.8 * CARRY : 0.8) : 2.2)));
         else hs = Math.min(want, hs + full * dt);
       } else {
         hs *= 1 - 0.03 * dt;
