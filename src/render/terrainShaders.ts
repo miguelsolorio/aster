@@ -534,7 +534,7 @@ void main() {
 
   // ---- sand
   vec3 sandCol = mix(uShade * (0.82 + 0.18 * ambS), uLit, l);
-  if (uFlat < 0.999) sandCol *= mix(0.96 + 0.08 * fbm(p.xz * 0.3 + vec2(2.3, 7.1)), 1.0, uFlat);
+  if (uFlat < 0.999) sandCol *= mix(0.965 + 0.07 * fbm(p.xz * 0.3 + vec2(2.3, 7.1)), 1.0, uFlat);
 
   // ---- rock: strata bands on world height plus blotches
   vec3 rockCol = vec3(0.0);
