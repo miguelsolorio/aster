@@ -74,6 +74,20 @@ const DIG_R = 4.5; // and counts toward breaking through within this of the spot
 const DIG_HITS = 4; // strikes on the spot before the sand gives way
 const DRAIN = 4.5; // seconds the sand takes to run out
 const LAMP_KEY = -7; // the site keys of the miner's lost lamps count down from here (massif finds are far below)
+// The keys of the wrecks a storm uncovers count down from here, worked out from where each lies
+// (so a wreck keeps its key across visits): under every key the cells, caverns, frostland and
+// massifs use (those reach down to about -4.1e12), and above -Number.MAX_SAFE_INTEGER.
+const WRECK_KEY = -6e12;
+/** Metres round a wreck's middle that it keeps clear of other things (her keel runs to about 44 m). */
+const WRECK_CLEAR = 32;
+
+/** A wreck in the world, as setWrecks was given it, with the key its site is built under. */
+interface WreckAt {
+  x: number;
+  z: number;
+  rot: number;
+  key: number;
+}
 const DIMPLE = 0.4; // depth of the dip over a sealed cavern (m)
 
 // ------------------------------------------------------------------ hashing
@@ -2521,6 +2535,156 @@ function buildShell(c: Ctx): void {
 }
 
 /**
+ * A sand-ship, wrecked and long buried, with the sand just blown off it: a keel rising to a tall
+ * stem, the ribs of one side standing and the other mostly under, a few strakes still on at the
+ * bow, a mast snapped half way and a runner on its struts held up in the air. She lies rolled
+ * over and down by the stern. u runs along the keel toward the bow.
+ */
+function buildWreck(c: Ctx): void {
+  const st = c.stone;
+  const tk = c.r(0.9, 1.06);
+  const L = c.r(34, 44); // keel
+  const B = L * c.r(0.13, 0.155); // half breadth amidships
+  const D = B * c.r(1.25, 1.5); // depth of hull, keel to rail
+  const side = c.rng() < 0.5 ? 1 : -1; // the side she lies on
+  const roll = side * c.r(0.24, 0.36);
+  const pitch = c.r(0.05, 0.11); // bow up
+  const sink = c.r(0.7, 1.3);
+  c.foot = L / 2 + 8;
+  const g0 = c.g(0, 0);
+  const cr = Math.cos(roll);
+  const sr = Math.sin(roll);
+  // ship coordinates (s along the keel, w to her right hand, h up from the keel) into the site's frame
+  const P = (s: number, w: number, h: number): THREE.Vector3 => new THREE.Vector3(s, g0 - sink + s * pitch + h * cr - w * sr, w * cr + h * sr);
+  // weathered wood: grey-brown, here and there bleached nearly to bone
+  const wood = (k = 1, rough = 0.05): void => {
+    st.set(0.5 * tk * k, 0.42 * tk * k, 0.33 * tk * k, 2, rough);
+  };
+
+  // the keel, sweeping up into the stem at the bow and a shorter post at the stern
+  const keelH = (t: number): number => D * 1.9 * Math.pow(Math.max(0, (t - 0.8) / 0.2), 1.8) + D * 0.9 * Math.pow(Math.max(0, (0.1 - t) / 0.1), 1.6);
+  {
+    const pts: THREE.Vector3[] = [];
+    const radii: number[] = [];
+    const N = 26;
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      // (the stem leans forward as it climbs)
+      const over = Math.pow(Math.max(0, (t - 0.86) / 0.14), 2) * L * 0.05;
+      pts.push(P((t - 0.5) * L + over, 0, keelH(t)));
+      radii.push(THREE.MathUtils.lerp(0.55, 0.3, Math.abs(t - 0.45) * 1.8));
+    }
+    wood(0.92, 0.06);
+    c.tube(c.toLocal(pts), radii, 5, true, 1.5);
+  }
+
+  // the frames: one U of timber at each station, ribs up both sides. Half of what was on the
+  // low side is under the sand anyway; of the rest some have snapped.
+  const half = (t: number): number => B * Math.pow(Math.sin(Math.PI * Math.min(1, Math.max(0, t * 0.92 + 0.06))), 0.6);
+  const ribAt = (t: number, sd: number, k: number): THREE.Vector3 => {
+    const w = sd * half(t) * (1 - (1 - k) * (1 - k));
+    return P((t - 0.5) * L, w, keelH(t) + D * Math.pow(k, 1.55));
+  };
+  const nRib = 9 + Math.floor(c.rng() * 4);
+  const stations: number[] = [];
+  for (let i = 0; i < nRib; i++) stations.push(0.13 + (0.7 * i) / (nRib - 1));
+  for (const t of stations) {
+    for (const sd of [-1, 1]) {
+      const high = sd !== side;
+      if (!high && c.rng() < 0.2) continue;
+      const broken = c.rng() < (high ? 0.2 : 0.4);
+      const kmax = broken ? c.r(0.3, 0.7) : c.r(0.94, 1.06);
+      const pts: THREE.Vector3[] = [];
+      const radii: number[] = [];
+      const N = 7;
+      for (let j = 0; j <= N; j++) {
+        const k = (j / N) * kmax;
+        pts.push(ribAt(t, sd, k));
+        radii.push(THREE.MathUtils.lerp(0.46, 0.26, k));
+      }
+      wood(c.rng() < 0.2 ? c.r(1.25, 1.5) : c.r(0.9, 1.08));
+      c.tube(c.toLocal(pts), radii, 5, true, 1.3);
+    }
+  }
+
+  // strakes still fastened along the high side toward the bow, each a little shorter than the
+  // one under it
+  {
+    const rows = [0.62, 0.9];
+    for (let r = 0; r < rows.length; r++) {
+      const k = rows[r];
+      const from = 0.56 + r * 0.09 + c.r(-0.03, 0.03);
+      const pts: THREE.Vector3[] = [];
+      const radii: number[] = [];
+      for (let i = 0; i <= 8; i++) {
+        const t = THREE.MathUtils.lerp(from, 0.9, i / 8);
+        const p = ribAt(Math.min(t, 0.83), -side, k);
+        // past the last frame the planks run in to the stem
+        const close = Math.max(0, (t - 0.83) / 0.07);
+        p.lerp(P((t - 0.5) * L, 0, keelH(t) + D * Math.pow(k, 1.55)), close * 0.85);
+        pts.push(p);
+        radii.push(0.48);
+      }
+      wood(c.r(0.82, 1.0), 0.03);
+      c.solid = false;
+      c.tube(c.toLocal(pts), radii, 4, true, 0.22);
+      c.solid = true;
+    }
+  }
+
+  // the mast, snapped: the stump stands in her, the rest lies out on the sand with its yard
+  {
+    const mt = 0.56;
+    const stump = D * c.r(1.7, 2.3);
+    const a = P((mt - 0.5) * L, 0, keelH(mt) + 0.2);
+    const b = P((mt - 0.5) * L - 0.6, side * 0.4, keelH(mt) + stump);
+    wood(0.86, 0.04);
+    c.tube(c.toLocal([a, b]), [0.44, 0.36], 6, true);
+    // the fallen length, lying the way she rolled
+    const len = D * c.r(2.2, 3.0);
+    const u = (mt - 0.5) * L - c.r(1, 4);
+    const v = side * (B + len * 0.5 + c.r(0.5, 2));
+    const yaw = c.r(-0.35, 0.35);
+    wood(0.95, 0.04);
+    c.prim(UNIT_CYL, u, c.g(u, v) + 0.22, v, 0.34, len, 0.34, yaw, 0, Math.PI / 2 + c.r(-0.05, 0.05));
+    const yu = u + Math.sin(yaw) * len * 0.3;
+    const yv = v + side * len * 0.28;
+    c.prim(UNIT_CYL, yu, c.g(yu, yv) + 0.5, yv, 0.2, len * 0.75, 0.2, yaw + Math.PI / 2 + c.r(-0.3, 0.3), 0, Math.PI / 2 + c.r(0.08, 0.2));
+  }
+
+  // what she ran on: a long runner out on two struts, now carried up on the high side
+  {
+    const out = B * 1.75;
+    const drop = D * 0.12;
+    const pts: THREE.Vector3[] = [];
+    const radii: number[] = [];
+    for (let i = 0; i <= 10; i++) {
+      const t = i / 10;
+      const s = THREE.MathUtils.lerp(-0.26, 0.24, t) * L;
+      // turned up at the toe like a sledge's
+      pts.push(P(s, -side * out, drop + Math.pow(Math.max(0, (t - 0.7) / 0.3), 2) * D * 0.55));
+      radii.push(0.34);
+    }
+    wood(1.04, 0.03);
+    c.tube(c.toLocal(pts), radii, 4, true, 0.4);
+    for (const t of [0.32, 0.6]) {
+      const s = (t - 0.5) * L;
+      wood(0.9, 0.03);
+      c.tube(c.toLocal([ribAt(t, -side, 0.55), P(s, -side * out, drop + 0.2)]), [0.24, 0.2], 5, false);
+      c.tube(c.toLocal([ribAt(t, -side, 0.95), P(s + L * 0.03, -side * out, drop + 0.2)]), [0.18, 0.16], 5, false);
+    }
+  }
+
+  // sprung planks and broken ends, strewn down the side she fell on
+  for (let i = 0; i < 7; i++) {
+    const u = c.r(-0.45, 0.4) * L;
+    const v = side * (B * c.r(0.9, 2.6));
+    wood(c.r(0.8, 1.35), 0.02);
+    c.prim(UNIT_BIT, u, c.g(u, v) + 0.1, v, c.r(1.8, 4.2), 0.16, c.r(0.35, 0.6), c.rng() * 6, c.r(-0.12, 0.12), c.r(-0.1, 0.1));
+  }
+}
+
+/**
  * A tended temple: a stepped sandstone platform with a walled shrine on top, a columned porch,
  * a stair down to an avenue of obelisks, and braziers that burn after dark. Its keepers stand
  * by the door and pilgrims walk the avenue, so it records where they go.
@@ -3683,6 +3847,58 @@ export class Discoveries {
     return best;
   }
 
+  // ---------------------------------------------------------------- the wrecks
+
+  /** The wrecks there are now (from setWrecks), each with its site key. */
+  private wreckAt: WreckAt[] = [];
+
+  /**
+   * The wrecked sand-ships that lie in the world now: ones a storm has uncovered, and ones the
+   * wanderer has reached before. They are not on the grid of cells; each is built and let go
+   * like any other find (near and far from the wanderer), and one taken out of the list goes.
+   * The same list again costs nothing.
+   */
+  setWrecks(list: readonly { x: number; z: number; rot: number }[]): void {
+    const was = this.wreckAt;
+    if (list.length === was.length && list.every((a, i) => a.x === was[i].x && a.z === was[i].z && a.rot === was[i].rot)) return;
+    const next: WreckAt[] = [];
+    for (const a of list) {
+      const key = wreckKey(a.x, a.z);
+      if (!next.some((b) => b.key === key)) next.push({ x: a.x, z: a.z, rot: a.rot, key });
+    }
+    this.wreckAt = next;
+    for (let i = this.sites.length - 1; i >= 0; i--) {
+      const s = this.sites[i];
+      if (s.kind !== 'wreck') continue;
+      const w = next.find((a) => a.key === s.key);
+      // (one that has turned to lie another way is built again)
+      if (w && w.x === s.x && w.z === s.z && w.rot === was.find((b) => b.key === s.key)?.rot) continue;
+      this.disposeSite(s);
+      this.sites.splice(i, 1);
+    }
+  }
+
+  /** Builds the nearest wreck within BUILD_R of (px, pz) that is not built yet. Returns whether it built one. */
+  private scanWrecks(px: number, pz: number): boolean {
+    let best: WreckAt | null = null;
+    let bd = BUILD_R;
+    for (const a of this.wreckAt) {
+      const d = Math.hypot(a.x - px, a.z - pz);
+      if (d < bd && !this.isBuilt(a.key)) {
+        bd = d;
+        best = a;
+      }
+    }
+    if (!best) return false;
+    const w = this.world;
+    const baseY = w.height(best.x, best.z);
+    const rng = mulberry32(Math.floor(hash4(Math.round(best.x), Math.round(best.z), w.seed | 0, 0x3eec) * 4294967296));
+    const ctx = new Ctx(w, best.x, best.z, baseY, rng, best.rot);
+    buildWreck(ctx);
+    this.finishSite(best.key, 'wreck', best.x, best.z, baseY, ctx);
+    return true;
+  }
+
   // ---------------------------------------------------------------- the lost lamp
 
   private lampAt: { x: number; z: number; key: number }[] = [];
@@ -4383,6 +4599,7 @@ export class Discoveries {
         this.sites.splice(i, 1);
       }
     }
+    if (this.scanWrecks(bx, bz)) return true;
     // (the caverns shape the ground under the wanderer's feet, so they go by where the wanderer is)
     if (this.scanCaverns(px, pz)) return true;
     if (this.scanMassifs(bx, bz)) return true;
@@ -4817,10 +5034,13 @@ export class Discoveries {
   /**
    * Whether a disc of radius r at (x, z) comes near where a find stands on the surface, a
    * cavern runs under the sand or a mountain village stands, built yet or not. Decided from the seed alone, so it gives the
-   * same answer whenever it is asked (for things scattered about that must keep off them).
+   * same answer whenever it is asked (for things scattered about that must keep off them); the one
+   * exception is a wreck, which claims its ground from when setWrecks lays it there.
    */
   claimed(x: number, z: number, r: number): boolean {
     if (this.cellClaimed(x, z, r)) return true;
+    // (and the wrecks lying out now, which are not the seed's: see setWrecks)
+    for (const a of this.wreckAt) if (Math.hypot(a.x - x, a.z - z) < r + WRECK_CLEAR) return true;
     // a mountain village spreads some 70 m round its middle
     const w = this.world as Partial<DesertWorld>;
     if (!w.massif) return false;
@@ -4996,7 +5216,8 @@ export class Discoveries {
    * and the summits, caves and springs of the massifs, and the snow villages once the frostland
    * is within reach (as when they are built). `out` is cleared, filled and returned. Keys: a surface
    * find keeps its cell's key, a cavern is CAVERN_REF minus its cell's key (so as not to clash with
-   * a find on the same cell), a massif's and a village's are the ones they are built under.
+   * a find on the same cell), a massif's and a village's are the ones they are built under. The
+   * wrecks lying out now (setWrecks) are there too, under WRECK_KEY less where each lies.
    */
   sitesNear(x: number, z: number, r: number, out: SiteRef[]): SiteRef[] {
     out.length = 0;
@@ -5023,6 +5244,7 @@ export class Discoveries {
     this.eachFrostVillage(x, z, (key, vx, vz) => {
       if (Math.hypot(vx - x, vz - z) <= r) this.pushRef(out, key, 'snow-village', vx, vz, key);
     });
+    for (const a of this.wreckAt) if (Math.hypot(a.x - x, a.z - z) <= r) this.pushRef(out, a.key, 'wreck', a.x, a.z, a.key);
     return out;
   }
 
@@ -5376,4 +5598,11 @@ function templeMarks(ctx: Ctx, baseY: number): TempleMarks {
 
 function cellKey(cx: number, cz: number): number {
   return (cx + 32768) * 65536 + (cz + 32768);
+}
+
+/** The site key of a wreck lying at (x, z): from where it lies to 4 m, so the same wreck has the same key every visit. */
+function wreckKey(x: number, z: number): number {
+  const qx = Math.round(x / 4) & 0xfffff;
+  const qz = Math.round(z / 4) & 0xfffff;
+  return WRECK_KEY - (qx * 0x100000 + qz);
 }

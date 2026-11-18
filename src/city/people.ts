@@ -84,6 +84,17 @@ export function populationAt(day: number): number {
   return POP_V[POP_V.length - 1];
 }
 
+const SHELTER_ABOVE = 0.3; // a storm this near sends the town indoors
+const SHELTER_IN = 6; // seconds to empty the streets
+const SHELTER_OUT = 10; // seconds to fill them again
+
+/** Moves how sheltered a town is toward 1 while a storm is coming (ahead above the threshold), and back to 0 after. */
+export function stormShelter(shelter: number, ahead: number, dt: number): number {
+  const want = ahead > SHELTER_ABOVE ? 1 : 0;
+  const step = dt / (want > shelter ? SHELTER_IN : SHELTER_OUT);
+  return want > shelter ? Math.min(want, shelter + step) : Math.max(want, shelter - step);
+}
+
 // Cloth by kind of city. Most people wear one muted colour in the city's own tones; a few
 // wear an accent: a bright robe that blends from one colour at the hood to another at the hem.
 type RGB = [number, number, number];
@@ -1256,6 +1267,9 @@ export class People {
   private leaveAcc = 0;
   private cover = 0;
   private coverT = 0;
+  private stormT = 0; // seconds to the next look at the weather
+  private stormSeen = 0; // the storm coming at the town, as last sampled
+  private shelter = 0; // 0..1 how far the town has gone indoors for a storm
   private target = 0;
   private activeN = 0;
   private dirtyLo = MAXP;
@@ -2387,7 +2401,14 @@ export class People {
     }
     const sizeF = 0.7 + 0.3 * clamp((c.R - 320) / 280, 0, 1);
     const cap = Math.min(MAXP, Math.round(300 * this.density * sizeF));
-    this.target = cap * populationAt(f.day) * this.cover;
+    // a storm coming: the town goes indoors the way it does at night, and comes back after
+    this.stormT -= dt;
+    if (this.stormT <= 0) {
+      this.stormT = 0.4;
+      this.stormSeen = Math.max(f.weather.ahead(f.clock, site.cx, site.cz), f.weather.density(f.clock, site.cx, site.cz));
+    }
+    this.shelter = stormShelter(this.shelter, this.stormSeen, dt);
+    this.target = cap * populationAt(f.day) * this.cover * (1 - this.shelter);
 
     // neighbour hash
     const hs = this.hStart;

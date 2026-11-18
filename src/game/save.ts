@@ -6,6 +6,7 @@
 
 import { clearAtlas } from './atlas';
 import { isFindKind, type FindKind } from './finds';
+import type { Storm } from '../world/weather';
 
 export type Tool = 'board' | 'carpet' | 'pick' | 'spyglass' | 'flute' | 'bedroll' | 'rod' | 'chart' | 'rope' | 'boots' | 'feather';
 export const TOOLS: Tool[] = ['board', 'carpet', 'pick', 'spyglass', 'flute', 'bedroll', 'rod', 'chart', 'rope', 'boots', 'feather'];
@@ -59,6 +60,14 @@ export interface SaveData {
   sightedAt: number[];
   /** Where the bedroll is laid, if it is. */
   camp: Camp | null;
+  /** The world clock: in-game days gone by while the game was being played. */
+  days: number;
+  /** The clock when the wanderer was last in the thick of a sandstorm (null: never). */
+  stormDay: number | null;
+  /** A storm that was sent for the wanderer and is not yet over. */
+  sent: Storm | null;
+  /** Wrecks a storm uncovered and the wanderer reached: x, z and the way each lies, three numbers apiece. */
+  wrecks: number[];
 }
 
 const KEY = 'aster.save';
@@ -130,6 +139,10 @@ const fresh = (): SaveData => ({
   sighted: [],
   sightedAt: [],
   camp: null,
+  days: 0,
+  stormDay: null,
+  sent: null,
+  wrecks: [],
 });
 
 const keys = (v: unknown): number[] => (Array.isArray(v) ? v.filter((k): k is number => typeof k === 'number' && Number.isFinite(k)).slice(0, 4096) : []);
@@ -141,6 +154,17 @@ const readCamp = (v: unknown): Camp | null => {
   if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(facing)) return null;
   return { x, z, facing };
 };
+
+const STORM_FIELDS = ['id', 'x0', 'z0', 'hx', 'hz', 't0', 't1', 'width', 'depth', 'speed'] as const;
+const readStorm = (v: unknown): Storm | null => {
+  if (!v || typeof v !== 'object') return null;
+  const o = v as Record<string, unknown>;
+  for (const k of STORM_FIELDS) if (typeof o[k] !== 'number' || !Number.isFinite(o[k])) return null;
+  const s = o as unknown as Storm;
+  return { id: s.id, x0: s.x0, z0: s.z0, hx: s.hx, hz: s.hz, t0: s.t0, t1: s.t1, width: s.width, depth: s.depth, speed: s.speed };
+};
+const WRECK_CAP = 64;
+const CLOCK_EVERY = 10_000; // ms between writes of a clock that moves every frame
 
 export class Save {
   readonly data: SaveData;
@@ -175,6 +199,11 @@ export class Save {
         // a mark with no place to stand it is no mark
         if (this.data.sightedAt.length !== this.data.sighted.length * 2) this.data.sighted = this.data.sightedAt = [];
         this.data.camp = readCamp(raw.camp);
+        this.data.days = typeof raw.days === 'number' && Number.isFinite(raw.days) && raw.days > 0 ? raw.days : 0;
+        this.data.stormDay = typeof raw.stormDay === 'number' && Number.isFinite(raw.stormDay) ? raw.stormDay : null;
+        this.data.sent = readStorm(raw.sent);
+        const wr = keys(raw.wrecks);
+        this.data.wrecks = wr.slice(0, Math.floor(Math.min(wr.length, WRECK_CAP * 3) / 3) * 3);
       }
     } catch {
       /* unreadable save: start again */
@@ -292,6 +321,42 @@ export class Save {
   /** Lay the bedroll here, or pick it up (null). */
   setCamp(c: Camp | null): void {
     this.data.camp = c ? { x: c.x, z: c.z, facing: c.facing } : null;
+    this.write();
+  }
+
+  /** The world clock has moved on. It moves every frame, so it is written only now and then (and by flush). */
+  setDays(days: number): void {
+    this.data.days = days;
+    const now = Date.now();
+    if (now - this.clockWritten < CLOCK_EVERY) return;
+    this.clockWritten = now;
+    this.write();
+  }
+  private clockWritten = Date.now();
+
+  /** Write what is held now: the page is going away. */
+  flush(): void {
+    this.write();
+  }
+
+  /** The wanderer is in the thick of a storm at this clock. */
+  setStormDay(day: number): void {
+    this.data.stormDay = day;
+    this.write();
+  }
+
+  /** A storm has been sent for the wanderer, or the one that was is over (null). */
+  setSent(s: Storm | null): void {
+    this.data.sent = s;
+    this.write();
+  }
+
+  /** A wreck has been reached: it stays where it lies. */
+  keepWreck(x: number, z: number, rot: number): void {
+    const w = this.data.wrecks;
+    for (let i = 0; i < w.length; i += 3) if (Math.hypot(w[i] - x, w[i + 1] - z) < 1) return;
+    w.push(x, z, rot);
+    if (w.length > WRECK_CAP * 3) w.splice(0, w.length - WRECK_CAP * 3);
     this.write();
   }
 

@@ -1076,6 +1076,14 @@ const SNOW_WOOL: V3[] = [
 const WATCHER_COAT: V3 = [0.13, 0.24, 0.52];
 const CLIMBER_COAT: V3 = [0.1, 0.47, 0.45];
 /** Who someone is, for what they say: a traveller, a pilgrim, a temple keeper, or a goat herder. */
+/** A storm this near (0..1 ahead) halts the road, and it goes on again once the storm has passed (0). */
+export const STORM_HALT = 0.25;
+
+/** Whether a group sits a storm out, given what it was doing and how near the storm is: a little hysteresis, so it does not flap. */
+export function stormHold(on: boolean, ahead: number): boolean {
+  return on ? ahead > 0.01 : ahead > STORM_HALT;
+}
+
 export const ROLE_TRAVELLER = 0;
 export const ROLE_PILGRIM = 1;
 export const ROLE_KEEPER = 2;
@@ -1257,6 +1265,9 @@ interface Group {
   reach: number;
   pres: number;
   active: boolean;
+  /** Sitting a storm out: set by `stormHold`, sampled every so often. */
+  sOn?: boolean;
+  sT?: number;
   maxO: number;
   props: PropI[];
   fx: number;
@@ -2618,7 +2629,7 @@ export class Caravans {
     let held = false;
     for (let i = 0; i < g.agents.length; i++) if (g.agents[i] === this.held) held = true;
     // talking to one of them holds the whole party where it is
-    if (held) g.delay += dt;
+    if (held || g.sOn) g.delay += dt;
     const tau = (((f.time - g.delay + trip.phase) % trip.period) + trip.period) % trip.period;
     const legs = trip.legs;
     let L = legs[legs.length - 1];
@@ -2667,6 +2678,11 @@ export class Caravans {
       let ty = Math.atan2(tx * dir, tz * dir);
       let moving = L.camp === -1;
       let sitT = 0;
+      if (g.sOn && !rest) {
+        // a storm: halt where they are, the beasts kneel and the people crouch by them
+        moving = false;
+        sitT = 1;
+      }
       if (rest) {
         // off the path to a place by the fire, a long rest, and back onto the path
         let spot: { x: number; z: number; yaw: number };
@@ -2923,8 +2939,8 @@ export class Caravans {
         g.wait = 10 + Math.random() * 10; // kneel at the foot of the stair
       }
     }
-    const moving = g.wait <= 0 && !held;
-    const kneel = !moving && !held && g.s <= 0.01;
+    const moving = g.wait <= 0 && !held && !g.sOn;
+    const kneel = !moving && !held && (g.s <= 0.01 || !!g.sOn);
     const lamp = f.night > 0.35;
     for (let i = 0; i < g.agents.length; i++) {
       const a = g.agents[i];
@@ -3130,6 +3146,12 @@ export class Caravans {
         if (g.shep) g.shep.herder.on = false;
         continue;
       }
+      g.sT = (g.sT ?? 0) - dt;
+      if (g.sT <= 0) {
+        g.sT = 0.4 + Math.random() * 0.2;
+        const w = f.weather;
+        g.sOn = stormHold(!!g.sOn, Math.max(w.ahead(f.clock, g.ax, g.az), w.density(f.clock, g.ax, g.az)));
+      }
       if (g.kind === 5) {
         this.stepParty(g, f, dt, px, pz);
         continue;
@@ -3259,7 +3281,8 @@ export class Caravans {
     }
     // Spoken to: stop on the road and turn to the player.
     const held = a === this.held;
-    if (held) mv = 0;
+    const storm = !!g.sOn && !held;
+    if (held || storm) mv = 0;
     // (leaning into a step aside, when there is one)
     const lean = a.dirSign * Math.atan2(a.avV, Math.max(a.spd, 0.4));
     const ty = held ? Math.atan2(px - a.x, pz - a.z) : Math.atan2(tx, tz) + (a.dirSign < 0 ? Math.PI : 0) + lean;
@@ -3274,7 +3297,7 @@ export class Caravans {
     if (bounce) a.s = Math.min(r.len, Math.max(0, a.s));
     else a.s = Math.min(a.hi, Math.max(a.lo, a.s));
     a.ph += (a.spd * dt) / a.stride;
-    a.sitTarget = !bounce && !held && mv === 0 && a.spd < 0.15 ? 1 : a.rest > 0 && !held && a.spd < 0.3 ? 0.55 : 0;
+    a.sitTarget = storm ? 1 : !bounce && !held && mv === 0 && a.spd < 0.15 ? 1 : a.rest > 0 && !held && a.spd < 0.3 ? 0.55 : 0;
     const ds = a.sitTarget - a.sit;
     a.sit += Math.max(-dt * 0.7, Math.min(dt * 0.7, ds));
 
@@ -3315,7 +3338,7 @@ export class Caravans {
   private stepShepherd(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
     const sh = g.shep as Shepherd;
     const lead = g.agents[0];
-    const night = f.night > 0.6;
+    const night = f.night > 0.6 || !!g.sOn;
     let held = false;
     for (let i = 0; i < g.agents.length; i++) if (g.agents[i] === this.held) held = true;
     let ty = lead.yaw;
@@ -3589,7 +3612,7 @@ export class Caravans {
   private stepPen(g: Group, f: FrameState, dt: number, px: number, pz: number): void {
     const life = g.pen as PenLife;
     const P = life.spot;
-    const night = f.night > 0.6;
+    const night = f.night > 0.6 || !!g.sOn;
     const k = (rate: number) => 1 - Math.exp(-dt * rate);
     for (let i = 0; i < g.agents.length; i++) {
       const a = g.agents[i];

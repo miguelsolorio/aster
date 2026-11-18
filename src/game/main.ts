@@ -46,7 +46,13 @@ import { MapView, groundInk, type MapHint, type MapState } from './mapView';
 import { SpyglassView } from './spyglass';
 import { Compass, nearest, type Thing } from './compass';
 import { SleepView } from './sleep';
+import { DAY_SECONDS, HOUR_SECONDS, Weather, massifGuard } from '../world/weather';
+import { stormUniforms, updateStorm } from '../render/storm';
+import { CITY_CELL } from '../city/placement';
 import { bedGeometry, hearthGeometry, solidMaterial } from './equipment';
+
+/** Where a wreck lies, and the way her keel runs (a site's yaw). */
+type Wreck = { x: number; z: number; rot: number };
 
 const WORLD_SEED = 20261111; // the same desert for everyone, every time
 const SPAWN_RANGE = 20000; // metres from the origin
@@ -68,6 +74,7 @@ function start() {
     uWind: { value: new THREE.Vector2(1, 0) },
     uFigPos: { value: new THREE.Vector3() },
   };
+  stormUniforms(u);
   for (const n of ['uInk', 'uPaperCol', 'uA', 'uB', 'uLine']) u[n] = { value: new THREE.Vector3() };
   // One float uniform per style setting. Glow and fog are not here: the day cycle owns them.
   for (const k of Object.keys(DEFAULTS) as Array<keyof Params>) {
@@ -201,6 +208,15 @@ function start() {
   FootpathNet.uniforms(u); // and for the footpaths out to the finds
   const frost = frostRegion(world);
   u.uFrost = { value: frostUniform(frost) }; // and where the snow lies on the open ground
+  // The weather: sandstorms, each where the seed and the world clock put it. No storm climbs a
+  // mountain: it parts round the foot of each (guard.shelter here, the same circles in the wall drawn).
+  const guard = massifGuard((gi, gj) => world.massif(gi, gj), CITY_CELL, frost);
+  const weather = new Weather(WORLD_SEED, guard.shelter);
+  // (a storm sent for the wanderer on an earlier visit is still on its way)
+  if (save.data.sent && save.data.sent.t1 > save.data.days) weather.sent = save.data.sent;
+  // ?storm starts with one a minute off, ?storm=in in the thick of one; neither is kept
+  let stormAsk: 'near' | 'in' | null = qs.has('storm') ? (qs.get('storm') === 'in' ? 'in' : 'near') : null;
+  let stormCheck = 0;
   const bake = new HeightBake(renderer, u);
   const trail = new TrailField(renderer, u);
   const clipmap = new Clipmap(u);
@@ -331,7 +347,11 @@ function start() {
   placeCamp();
   const sleep = new SleepView(uiHost, (to) => {
     // the hours pass in the dark: it is first light, or the last of it
+    const was = day.day;
     day.day = to === 'dawn' ? 0.268 : 0.722;
+    // (and the world's clock with them, so a storm that was overhead has gone on its way)
+    frame.clock += (day.day - was + 1) % 1;
+    save.setDays(frame.clock);
     day.update(0);
     stillDrawn = false;
   });
@@ -683,6 +703,47 @@ function start() {
   /** Each temple near holds the first of its tools the wanderer lacks, until it has given one. */
   const layOffers = () => discoveries.setOffers((key) => offeringAt(key, (t) => save.has(t), save.data.gathered.includes(key)));
   let lampT = 0;
+  // The wrecked sand-ships lying out in the sand this visit: every one the wanderer has reached
+  // before (the save keeps those), and the ones this visit's storms have uncovered, by storm id
+  // (null where a storm left none, its ground not suiting a wreck). One uncovered is only saved
+  // once it is reached.
+  let wreckT = 0;
+  const uncovered = new Map<number, Wreck | null>();
+  const devWrecks: Wreck[] = [];
+  let wrecks: Wreck[] = [];
+  const wreckS = { h: 0, rock: 0, salt: 0, green: 0 };
+  const wreckN = new THREE.Vector3();
+  const wreckC = new THREE.Vector2();
+  /** Whether a wreck lying along rot at (x, z) would be on open sand, gently sloped, clear of towns and finds. */
+  const wreckSuits = (x: number, z: number, rot: number): boolean => {
+    const ux = Math.cos(rot);
+    const uz = -Math.sin(rot);
+    // her middle, both ends and both sides
+    for (const [a, b] of [[0, 0], [20, 0], [-20, 0], [0, 8], [0, -8]]) {
+      const sx = x + ux * a - uz * b;
+      const sz = z + uz * a + ux * b;
+      wreckS.green = 0;
+      world.sample(sx, sz, wreckS);
+      if (wreckS.rock >= 0.2 || wreckS.salt >= 0.3 || (wreckS.green ?? 0) > 0.05) return false;
+      if (world.normal(sx, sz, wreckN).y < 0.94) return false;
+    }
+    const town = world.cities.near(x, z)[0];
+    if (town && Math.hypot(town.cx - x, town.cz - z) < town.radius + 250) return false;
+    return !discoveries.claimed(x, z, 40);
+  };
+  /** Hands Discoveries the wrecks there are now (which costs nothing when they are the same as before). */
+  const layWrecks = () => {
+    const list: Wreck[] = [];
+    const put = (a: Wreck) => {
+      if (!list.some((b) => Math.hypot(b.x - a.x, b.z - a.z) < 1)) list.push(a);
+    };
+    const kept = save.data.wrecks;
+    for (let i = 0; i + 2 < kept.length; i += 3) put({ x: kept[i], z: kept[i + 1], rot: kept[i + 2] });
+    for (const a of uncovered.values()) if (a) put(a);
+    for (const a of devWrecks) put(a);
+    if (list.length !== wrecks.length || list.some((a, i) => a.x !== wrecks[i].x || a.z !== wrecks[i].z || a.rot !== wrecks[i].rot)) wrecks = list;
+    discoveries.setWrecks(wrecks);
+  };
   const digAt = { x: 0, y: 0, z: 0 };
   // Riding: a wild ass, an oryx or a caravan's camel. Both kinds are ridden the same way.
   type Steeds = Pick<Fauna, 'mounted' | 'nearestRideable' | 'rideMark' | 'mount' | 'dismount' | 'ride' | 'seat'>;
@@ -907,6 +968,11 @@ function start() {
       syncMarks();
     }
     // The first of each kind adds to the count in the corner.
+    // a wreck once reached stays where it lies, on every visit after
+    if (kind === 'wreck') {
+      const w = wrecks.find((a) => a.x === x && a.z === z);
+      if (w) save.keepWreck(w.x, w.z, w.rot);
+    }
     if (isFindKind(kind) && save.find(kind)) {
       ui.setFinds(save.data.found.length);
       if (ui.state === 'playing') ui.toast(`${findName(kind)} found`, 3000);
@@ -1544,10 +1610,17 @@ function start() {
     lightDir: day.lightDir,
     wind,
     gust: 0.5,
+    clock: save.data.days,
+    storm: 0,
+    stormAhead: 0,
+    stormDir: new THREE.Vector2(1, 0),
+    weather,
     camera,
     player: player.state,
   };
-  const input: PlayerInput = { x: 0, z: 0, jump: false, lift: false, drop: false, wind };
+  window.addEventListener('pagehide', () => save.flush());
+  const push = new THREE.Vector2();
+  const input: PlayerInput = { x: 0, z: 0, jump: false, lift: false, drop: false, wind, push };
   const camTarget = new THREE.Vector3().copy(player.state.pos);
   const tmp = new THREE.Vector3();
   const tmp2 = new THREE.Vector3();
@@ -1696,6 +1769,56 @@ function start() {
     wind.set(Math.cos(wa), Math.sin(wa));
     (u.uWind.value as THREE.Vector2).copy(wind);
     frame.gust = 0.5 + 0.3 * Math.sin(frame.time * 0.07) + 0.2 * Math.sin(frame.time * 0.19 + 1.3);
+
+    // The world's clock runs while the game is played, and the storms run on it.
+    if (playing) {
+      frame.clock += dt / DAY_SECONDS;
+      save.setDays(frame.clock);
+    }
+    {
+      const px = st.pos.x;
+      const pz = st.pos.z;
+      if (stormAsk) {
+        weather.sent = weather.aim(frame.clock, px, pz, stormAsk === 'in' ? -1 : 60);
+        stormAsk = null;
+      }
+      // Nobody goes long without one. If none has come the wanderer's way for a couple of days
+      // (or by the second day of a new save), one is sent: born upwind, an hour and a half off.
+      if (playing && (stormCheck -= dt) <= 0) {
+        stormCheck = 5;
+        const sent = weather.sent;
+        if (sent && sent.t1 <= frame.clock) {
+          weather.sent = null;
+          if (save.data.sent) save.setSent(null);
+        }
+        const due = save.data.stormDay === null ? 1 : save.data.stormDay + 2.5;
+        if (!weather.sent && frame.clock >= due && frame.stormAhead <= 0 && !deepIn) {
+          // (not to someone up a mountain, where it could not follow)
+          const s = guard.shelter(px, pz) > 0 ? null : weather.aim(frame.clock, px, pz, 1.5 * HOUR_SECONDS);
+          if (s) {
+            weather.sent = s;
+            save.setSent(s);
+            save.setStormDay(frame.clock);
+          }
+        }
+      }
+      // Underground there is no storm, and between a town's walls only the noise of one.
+      const open = (1 - underK) * (cities.inside ? 0.2 : 1);
+      frame.storm = weather.density(frame.clock, px, pz) * open;
+      frame.stormAhead = Math.max(weather.ahead(frame.clock, px, pz) * (1 - underK), frame.storm);
+      weather.heading(frame.clock, px, pz, frame.stormDir);
+      if (frame.storm > 0.5 && (save.data.stormDay === null || frame.clock - save.data.stormDay > 0.05)) save.setStormDay(frame.clock);
+      push.copy(frame.stormDir).multiplyScalar(frame.storm);
+      // The wind comes round to the way the storm is going, and rises with it.
+      if (frame.stormAhead > 0) {
+        const k = frame.stormAhead;
+        wind.lerp(frame.stormDir, k);
+        if (wind.lengthSq() < 1e-6) wind.copy(frame.stormDir);
+        wind.normalize();
+        (u.uWind.value as THREE.Vector2).copy(wind);
+        frame.gust += (1 - frame.gust) * k;
+      }
+    }
 
     const mode: TouchMode = playing ? 'play' : photo ? 'photo' : 'off';
     if (mode !== touchMode) touch.setMode((touchMode = mode));
@@ -2190,7 +2313,8 @@ function start() {
     const compassOn = playing && glassK < 0.5 && !mapOpen && !sleep.isOpen && !sleep.asleep;
     if (compassOn && (compassT -= dt) <= 0) {
       compassT = 1;
-      compass.setThings(compassThings());
+      // (in a storm there is no telling which way anything lies)
+      compass.setThings(frame.storm > 0.5 ? [] : compassThings());
     }
     compass.update(compassOn, camYaw, st.pos.x, st.pos.z);
     if (glassK > 0.5 !== glassHid) {
@@ -2300,6 +2424,27 @@ function start() {
       pickedUp(st.pos.x, st.pos.y + 1, st.pos.z);
       found('carpet');
     }
+    // A storm uncovers a wreck once its trailing edge has gone over where she lies (and only on
+    // ground that suits her, and not where the wanderer stands to watch her appear).
+    wreckT -= dt;
+    if (wreckT <= 0) {
+      wreckT = 2;
+      const px = st.pos.x;
+      const pz = st.pos.z;
+      for (const s of weather.storms(frame.clock, px, pz, 16000)) {
+        if (uncovered.has(s.id)) continue;
+        const w = weather.wreck(s);
+        if (!w) {
+          uncovered.set(s.id, null);
+          continue;
+        }
+        weather.centre(s, frame.clock, wreckC);
+        if ((w.x - wreckC.x) * s.hx + (w.z - wreckC.y) * s.hz > -s.depth / 2) continue; // still under the sand
+        if (Math.hypot(w.x - px, w.z - pz) < 150) continue; // (tried again once the wanderer has moved off)
+        uncovered.set(s.id, wreckSuits(w.x, w.z, w.rot) ? w : null);
+      }
+      layWrecks();
+    }
     // The miner's lamp lies out in the desert until it is carried back: by the nearest city's spring.
     lampT -= dt;
     if (lampT <= 0) {
@@ -2390,11 +2535,16 @@ function start() {
       rock: st.onRock > 0.5,
       grounded: st.grounded,
       gust: frame.gust,
+      storm: frame.storm,
+      stormAhead: frame.stormAhead,
       altitude: Math.max(0, st.pos.y) + player.alt * 4,
     });
   }
 
   function render() {
+    // the storms, where the eye is now
+    camera.updateMatrixWorld();
+    updateStorm(u, frame, (x, z) => world.height(x, z), guard.peaks);
     renderer.setRenderTarget(rt);
     renderer.render(scene, camera);
     renderer.setRenderTarget(null);
@@ -2429,6 +2579,17 @@ function start() {
         },
     };
     Object.assign(window, { __ds: Object.defineProperties(ds, Object.getOwnPropertyDescriptors({
+        // the weather: __ds.frame.storm, __ds.weather.sent
+        frame,
+        // lay a wreck 40 m ahead of the wanderer now, as a storm would leave one (for looking at her)
+        wreck: () => {
+          const p = player.state.pos;
+          const w = { x: p.x + Math.sin(player.facing) * 40, z: p.z + Math.cos(player.facing) * 40, rot: player.facing }; // (broadside on)
+          devWrecks.push(w);
+          layWrecks();
+          return w;
+        },
+        weather,
         // advance the simulation by a number of seconds at 60 Hz, then draw (for testing when the tab is throttled)
         sim: (sec: number) => {
           for (let i = 0; i < Math.round(sec * 60); i++) update(1 / 60);

@@ -10,6 +10,8 @@ const LIFT_DELAY = 0.2; // a jump held this long turns into a climb; shorter is 
 const GLIDE_SINK = 2.25; // steady sink in a glide: about a metre down for every fifteen forward
 const HOVER_SINK = 4.5; // sink with no direction held: he stops and settles down
 const MAX_SPEED = 60;
+const STORM_PUSH = 0.25; // how much a storm adds to or takes from flying speed
+const STORM_DRIFT = 8; // m/s^2 on someone hovering in one
 export const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
 const REACH = 0.38; // how far ahead of the feet a wall is felt
 const BOOTS_GRIP = 1.5; // and hold on rock this steep (rise over run) before it is a cliff; bare feet give up at CLIFF
@@ -40,6 +42,8 @@ export interface PlayerInput {
   lift: boolean; // jump held: climb while the reserve lasts
   drop: boolean; // descend held: fall at full gravity (a double tap of jump in flight drops too)
   wind: THREE.Vector2; // unit world wind direction
+  /** A sandstorm's push on anything in the air: the way it is going, scaled by how thick it is here (length 0..1). */
+  push?: THREE.Vector2;
 }
 
 export interface PlayerEvents {
@@ -531,7 +535,10 @@ export class Player {
         // stick is pushed. Let go and he eases to a stop in the air and settles straight
         // down, so you can come to rest over a roof. Extra speed from a fast launch bleeds off.
         // Glide speed is reached in about a second, and speed from a faster launch is kept a while.
-        const full = flightSpeed(this.carpet);
+        // In a sandstorm the air itself is moving: with it behind you fly up to a quarter faster
+        // than anything else can go, and into it as much slower.
+        const tail = input.push ? dx * input.push.x + dz * input.push.y : 0;
+        const full = flightSpeed(this.carpet) * (1 + STORM_PUSH * tail);
         const want = wishing ? full * Math.min(1, wl) : 0;
         if (hs > want) hs += (want - hs) * (1 - Math.exp(-dt * (wishing ? CARRY : 2.2)));
         else hs = Math.min(want, hs + full * dt);
@@ -564,6 +571,11 @@ export class Player {
       }
 
       vel.set(dx * hs, vy, dz * hs);
+      // and whoever hangs in it without steering is carried off slowly the way it goes
+      if (flying && !wishing && input.push) {
+        vel.x += input.push.x * STORM_DRIFT * dt;
+        vel.z += input.push.y * STORM_DRIFT * dt;
+      }
       this.climb = Math.atan2(vy, Math.max(hs, 0.01));
       // Flying into the side of a building: stop against the wall instead of popping onto its roof.
       {

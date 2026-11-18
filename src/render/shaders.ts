@@ -2,6 +2,8 @@
 // (three converts to GLSL ES 3.00 on WebGL2). Uniform names follow the
 // contract in ./types.ts. All colours are display-space vec3.
 
+import { STORM_GLSL } from './storm';
+
 // Shared fragment helpers: hashing, value noise, 4-octave fbm (normalised to
 // roughly 0..1) and an anti-aliased floor for stepped/banded quantities.
 const COMMON = /* glsl */ `
@@ -482,6 +484,8 @@ ${COMMON}
 
 const vec3 LUMA = vec3(0.299, 0.587, 0.114);
 
+${STORM_GLSL}
+
 vec3 grade(vec3 c) {
   float lum = dot(c, LUMA);
   c = mix(vec3(lum), c, uSat);
@@ -538,6 +542,9 @@ void main() {
   } else {
     col = texture2D(tColor, uv).rgb;
   }
+
+  // 3b. sandstorms, laid over the scene before anything is drawn on top of it
+  col = applyStorm(col, uv, bayer8(gl_FragCoord.xy));
 
   // 4. depth-edge outline
   bool mode3 = abs(uMode - 3.0) < 0.5;

@@ -1,6 +1,7 @@
 // Shared contract for the game. Every system codes against these types.
 // Units are metres and seconds. +y is up. The world is endless and seeded.
 import type * as THREE from 'three';
+import type { Weather } from '../world/weather';
 
 /** What the ground is at a point. */
 export interface SurfaceSample {
@@ -91,6 +92,11 @@ export interface FrameState {
   lightDir: THREE.Vector3; // same as uSunDir
   wind: THREE.Vector2; // unit direction (x, z)
   gust: number; // 0..1 slow-varying wind strength
+  clock: number; // the world clock: in-game days gone by
+  storm: number; // 0..1 how thick a sandstorm is round the wanderer (0 underground)
+  stormAhead: number; // 0..1 a storm is coming: rises over the in-game hour before it arrives, 1 inside
+  stormDir: THREE.Vector2; // the way that storm is going (unit x, z); left as it was when there is none
+  weather: Weather;
   camera: THREE.PerspectiveCamera;
   player: PlayerState;
 }
