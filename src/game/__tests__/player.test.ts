@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import type { SurfaceSample, World } from '../contract';
 import { Player, type PlayerInput } from '../player';
-import { BOARD, BOARD_BOOST, flightSpeed, WALK } from '../speeds';
+import { BOARD, flightSpeed, RUN } from '../speeds';
 
 /** Bare rock rising along +z at a fixed pitch (rise over run). */
 const rock = (slope: number): World => ({
@@ -17,7 +17,7 @@ const rock = (slope: number): World => ({
   normal: (_x, _z, out: THREE.Vector3) => out.set(0, 1, -slope).normalize(),
 });
 
-const input = (over: Partial<PlayerInput> = {}): PlayerInput => ({ x: 0, z: 0, run: false, jump: false, lift: false, drop: false, wind: new THREE.Vector2(1, 0), ...over });
+const input = (over: Partial<PlayerInput> = {}): PlayerInput => ({ x: 0, z: 0, jump: false, lift: false, drop: false, wind: new THREE.Vector2(1, 0), ...over });
 const ev = { step() {}, jump() {}, land() {} };
 // (camera yaw PI looks along +z, so "forward" is up the slope)
 const walk = (p: Player, seconds: number, over: Partial<PlayerInput> = {}) => {
@@ -37,13 +37,13 @@ describe('nailed boots', () => {
     expect(shod.state.pos.z).toBeGreaterThan(bare.state.pos.z * 1.2);
   });
 
-  it('hold on rock too steep for bare feet, at a walk even when running', () => {
+  it('hold on rock too steep for bare feet, at a walk', () => {
     const bare = new Player(rock(1.3));
     const shod = new Player(rock(1.3));
     shod.boots = true;
     for (const p of [bare, shod]) {
       p.place(0, 0);
-      walk(p, 3, { run: true });
+      walk(p, 3);
     }
     expect(bare.state.pos.z).toBeLessThan(0.5);
     expect(shod.state.pos.z).toBeGreaterThan(5);
@@ -59,67 +59,34 @@ describe('nailed boots', () => {
   });
 });
 
-describe('Shift', () => {
-  it('goes on gathering speed on a board already past its Shift pace downhill', () => {
-    const run = (shift: boolean) => {
-      const p = new Player(rock(-0.3));
-      p.board = true;
-      p.place(0, 0);
-      walk(p, 30, { run: shift });
-      return p.state.speed;
-    };
-    const plain = run(false);
-    expect(plain).toBeGreaterThan(BOARD_BOOST);
-    expect(run(true)).toBeGreaterThan(plain * 1.2);
+describe('speed over the pace', () => {
+  it('goes on gathering on a board run downhill', () => {
+    const p = new Player(rock(-0.3));
+    p.board = true;
+    p.place(0, 0);
+    walk(p, 30);
+    expect(p.state.speed).toBeGreaterThan(BOARD * 1.4);
   });
 
-  it('leaves a board on the flat at its Shift pace', () => {
+  it('is not had on the flat: a board holds its pace', () => {
     const p = new Player(rock(0));
     p.board = true;
     p.place(0, 0);
-    walk(p, 30, { run: true });
-    expect(p.state.speed).toBeGreaterThan(BOARD_BOOST * 0.9);
-    expect(p.state.speed).toBeLessThanOrEqual(BOARD_BOOST);
+    walk(p, 30);
+    expect(p.state.speed).toBeGreaterThan(BOARD * 0.9);
+    expect(p.state.speed).toBeLessThanOrEqual(BOARD);
   });
 
-  it('kicks a board well past its easy pace within a few seconds', () => {
+  it('is kept a while in flight after a fast launch', () => {
     const p = new Player(rock(0));
-    p.board = true;
     p.place(0, 0);
-    walk(p, 8);
-    walk(p, 3, { run: true });
-    expect(p.state.speed).toBeGreaterThan(BOARD * 1.5);
-  });
-
-  it('holds on to the speed of a launch in flight', () => {
-    const launched = (shift: boolean) => {
-      const p = new Player(rock(0));
-      p.place(0, 0);
-      p.update(1 / 60, input({ z: 1, jump: true, lift: true }), Math.PI, ev);
-      for (let i = 0; i < 60; i++) p.update(1 / 60, input({ z: 1, lift: true }), Math.PI, ev);
-      p.state.vel.set(0, 0, 50);
-      for (let i = 0; i < 60; i++) p.update(1 / 60, input({ z: 1, run: shift }), Math.PI, ev);
-      expect(p.state.grounded).toBe(false);
-      return p.state.speed;
-    };
-    const plain = launched(false);
-    const held = launched(true);
-    expect(plain).toBeGreaterThan(flightSpeed(false, false));
-    expect(held).toBeGreaterThan(plain * 1.3);
-    expect(held).toBeLessThan(50);
-  });
-
-  it('climbs the rope quicker', () => {
-    const climb = (shift: boolean) => {
-      const p = new Player(rock(2));
-      p.rope = true;
-      p.place(0, 0);
-      walk(p, 3, { run: shift });
-      return p.state.pos.z;
-    };
-    const plain = climb(false);
-    expect(plain).toBeGreaterThan(1);
-    expect(climb(true)).toBeGreaterThan(plain * 1.4);
+    p.update(1 / 60, input({ z: 1, jump: true, lift: true }), Math.PI, ev);
+    for (let i = 0; i < 60; i++) p.update(1 / 60, input({ z: 1, lift: true }), Math.PI, ev);
+    p.state.vel.set(0, 0, 55);
+    for (let i = 0; i < 60; i++) p.update(1 / 60, input({ z: 1 }), Math.PI, ev);
+    expect(p.state.grounded).toBe(false);
+    expect(p.state.speed).toBeGreaterThan(flightSpeed(false) + 15);
+    expect(p.state.speed).toBeLessThan(55);
   });
 });
 
@@ -176,19 +143,17 @@ describe('a board', () => {
   });
 
   it('rides up a cliff no feet could stand on, no faster than it can climb', () => {
-    for (const run of [false, true]) {
-      const p = rider(3);
-      walk(p, 3, { run });
-      expect(p.state.grounded).toBe(true);
-      expect(p.state.pos.y).toBeGreaterThan(20);
-      expect(p.state.pos.y).toBeLessThan(3 * (run ? 24 : 16) + 0.5);
-    }
+    const p = rider(3);
+    walk(p, 3);
+    expect(p.state.grounded).toBe(true);
+    expect(p.state.pos.y).toBeGreaterThan(20);
+    expect(p.state.pos.y).toBeLessThan(3 * 24 + 0.5);
   });
 
   it('spends speed carried into a cliff rather than rocketing up it', () => {
     const p = rider(3);
     p.state.vel.set(0, 0, 48);
-    walk(p, 1, { run: true });
+    walk(p, 1);
     expect(p.state.grounded).toBe(true);
     expect(p.state.pos.y).toBeLessThan(60);
   });
@@ -257,6 +222,6 @@ describe('a board', () => {
     walk(p, 4);
     expect(p.riding).toBe(false);
     expect(p.state.sliding).toBe(false);
-    expect(p.state.pos.z).toBeLessThan(4 * WALK * 1.02);
+    expect(p.state.pos.z).toBeLessThan(4 * RUN * 1.02);
   });
 });

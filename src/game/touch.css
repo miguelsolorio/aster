@@ -55,10 +55,6 @@
   transition: opacity 80ms ease-out;
 }
 
-.aster-touch--stick.aster-touch--edge .aster-touch__ring {
-  opacity: 0.4;
-}
-
 .aster-touch--stick .aster-touch__dot {
   opacity: 0.32;
   transition: opacity 80ms ease-out;

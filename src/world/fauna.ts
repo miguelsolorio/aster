@@ -4,7 +4,7 @@
 // move in the vertex shader, and only where they are and what they're doing is worked out here.
 import * as THREE from 'three';
 import type { FrameState, SaddleSway, SurfaceSample, Uniforms, World } from '../game/contract';
-import { ASS_GALLOP, ORYX_GALLOP, RIDE } from '../game/speeds';
+import { ASS_GALLOP, BOOTS, ORYX_GALLOP, RUN } from '../game/speeds';
 import { GB } from '../city/caravans';
 import type { Landmark } from './discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
@@ -1833,10 +1833,10 @@ export class Fauna {
   private turnRate = 0;
 
   /**
-   * Steer the ridden animal. (wx, wz) is the way to go in the world (length 0..1, 0 to stand);
-   * run gallops. It turns at its own pace, speeds up and slows down, and goes round what is in its way.
+   * Steer the ridden animal. (wx, wz) is the way to go in the world (length 0..1, 0 to stand),
+   * and it gallops. It turns at its own pace, speeds up and slows down, and goes round what is in its way.
    */
-  ride(dt: number, wx: number, wz: number, run: boolean): void {
+  ride(dt: number, wx: number, wz: number): void {
     const a = this.ridden;
     if (!a || dt <= 0) return;
     const spec = SPEC[a.sp];
@@ -1849,7 +1849,7 @@ export class Fauna {
       const step = Math.max(-tr, Math.min(tr, err));
       a.yaw += step;
       this.turnRate += (step / dt - this.turnRate) * k(8);
-      targetSpd = (run ? GALLOP[a.sp] : RIDE) * Math.min(1, want) * (Math.abs(err) < 1.4 ? 1 : 0.4);
+      targetSpd = GALLOP[a.sp] * Math.min(1, want) * (Math.abs(err) < 1.4 ? 1 : 0.4);
     } else this.turnRate += (0 - this.turnRate) * k(8);
     a.spd += (targetSpd - a.spd) * k(targetSpd > a.spd ? 2.2 : 4);
     if (a.spd < 0.02) a.spd = 0;
@@ -1946,10 +1946,11 @@ export class Fauna {
     if (h.animals.length === 0) return;
     // Something coming fast, or close: the whole herd runs (a flock of sandgrouse takes off). A lone
     // fox or hare runs on its own; a tortoise just pulls its head in and waits.
-    const fast = pl.speed > 4;
-    // A wild ass or an oryx lets someone walk up to it (not run, not slide in on a board): that is
-    // how you get close enough to climb on.
-    const calm = RIDEABLE[sp] && pl.grounded && !pl.running && !pl.sliding && pl.speed < 6.5;
+    // (fast is faster than feet go: a board, a flight, a ridden animal)
+    const fast = pl.sliding || pl.speed > RUN * BOOTS + 0.5;
+    // A wild ass or an oryx lets someone come up to it on foot (not slide in on a board, not fly
+    // in): that is how you get close enough to climb on.
+    const calm = RIDEABLE[sp] && pl.grounded && !pl.sliding && !fast;
     const flee = calm ? CALM_FLEE : spec.flee * (fast ? 1.6 : 1);
     h.grace = Math.max(0, h.grace - dt);
     let mx = 0;

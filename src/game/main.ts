@@ -1547,7 +1547,7 @@ function start() {
     camera,
     player: player.state,
   };
-  const input: PlayerInput = { x: 0, z: 0, run: false, jump: false, lift: false, drop: false, wind };
+  const input: PlayerInput = { x: 0, z: 0, jump: false, lift: false, drop: false, wind };
   const camTarget = new THREE.Vector3().copy(player.state.pos);
   const tmp = new THREE.Vector3();
   const tmp2 = new THREE.Vector3();
@@ -1730,7 +1730,6 @@ function start() {
     const still = glassK > 0.5 || fluteT > 0 || sleep.isOpen || sleep.asleep || mapOpen;
     input.x = playing && !still ? Math.max(-1, Math.min(1, kx + touch.moveX)) : 0;
     input.z = playing && !still ? Math.max(-1, Math.min(1, kz + touch.moveZ)) : 0;
-    input.run = playing && !mapOpen && (keys.has('ShiftLeft') || keys.has('ShiftRight') || touch.boost);
     input.jump = playing && !mapOpen && jumpQueued;
     input.lift = playing && !mapOpen && (keys.has('Space') || touch.flyHeld);
     input.drop = playing && !mapOpen && touch.dropHeld;
@@ -1747,7 +1746,7 @@ function start() {
       const fz = -Math.cos(camYaw);
       const wx = fx * input.z - fz * input.x;
       const wz = fz * input.z + fx * input.x;
-      sd.ride(dt, wx, wz, input.run);
+      sd.ride(dt, wx, wz);
       const m = sd.seat;
       if (m) {
         st.pos.set(m.x, world.height(m.x, m.z) + m.back - 0.58, m.z);
@@ -1756,7 +1755,7 @@ function start() {
         st.speed = m.spd;
         st.grounded = true;
         st.sliding = false;
-        st.running = input.run && m.spd > 1;
+        st.running = m.spd > 1;
         st.onRock = world.sample(m.x, m.z, probe).rock;
         player.facing = m.yaw;
         player.turn = m.turn;
@@ -1841,7 +1840,7 @@ function start() {
         trail.stamp(st.pos.x, st.pos.z, 0.15 + carve * 0.22, 0.6 + carve * 0.35, Math.atan2(st.vel.z, st.vel.x), 3);
         if (player.slope > 0.4 && Math.random() < 0.3) cascade(st.pos.x, st.pos.z, 1);
       }
-      const spray = Math.min(1, carve * 0.9 + Math.max(0, st.speed - 13) * 0.04);
+      const spray = Math.min(1, carve * 0.9 + Math.max(0, st.speed - 20) * 0.04);
       if (spray > 0.05) {
         // outside of the turn: to the right of travel when turning left
         const side = player.turn > 0 ? -1 : 1;

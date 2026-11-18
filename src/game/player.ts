@@ -1,14 +1,13 @@
 import * as THREE from 'three';
 import type { PlayerState, SurfaceSample, World } from './contract';
-import { BOARD, BOARD_BOOST, BOOTS, CARPET_LIFT, flightSpeed, RUN, RUN_SAND, WALK } from './speeds';
+import { BOARD, BOOTS, CARPET_LIFT, flightSpeed, RUN, RUN_SAND } from './speeds';
 
 const GRAVITY = 20;
 const LIFT_TIME = 3.5; // seconds of climbing in the reserve; refilled on landing
 const LIFT_SPEED = 8; // climb rate while jump is held
-const ROPE_CLIMB = 2.6; // metres a second up a face on the rope, along the rock
-const ROPE_HASTE = 1.5; // and this much quicker with Shift
+const ROPE_CLIMB = 3.9; // metres a second up a face on the rope, along the rock
 const LIFT_DELAY = 0.2; // a jump held this long turns into a climb; shorter is a plain jump
-const GLIDE_SINK = 2.25; // steady sink in a glide: about a metre down for every eight forward
+const GLIDE_SINK = 2.25; // steady sink in a glide: about a metre down for every fifteen forward
 const HOVER_SINK = 4.5; // sink with no direction held: he stops and settles down
 const MAX_SPEED = 60;
 export const STEP = 0.9; // waist high: the most the figure steps up onto without jumping
@@ -16,12 +15,10 @@ const REACH = 0.38; // how far ahead of the feet a wall is felt
 const BOOTS_GRIP = 1.5; // and hold on rock this steep (rise over run) before it is a cliff; bare feet give up at CLIFF
 const BOOTS_STEEP = 4.2; // the most they make (m/s over the ground) on rock that bare feet could not stand on
 const CLIFF = 1.15;
-const CLIMB = 16; // the most a board gains up a face, metres of height a second
-const CLIMB_BOOST = 24; // with Shift
-// Shift is worth something at any speed. Under a rung's Shift pace it drives up to it; over it
-// (down a slope, off a launch) it keeps more of the speed there already is.
-const TUCK = 0.5; // a board going faster than Shift drives it: this much of the air drag is shed
-const CARRY = 0.25; // in flight faster than Shift flies: the extra bleeds off this much as fast
+const CLIMB = 24; // the most a board gains up a face, metres of height a second
+// Speed over the pace of a board or a flight (down a slope, off a launch) is kept a good while.
+const TUCK = 0.5; // a board going faster than it is driven: this much of the air drag is shed
+const CARRY = 0.2; // in flight faster than the glide: how fast the extra bleeds off, a second
 const ROCK_DRAG = 5; // rock bites a board that is not being driven: let go and it soon stops
 const REST = 0.32; // sand steeper than this (rise over run) will not hold a board at rest
 const FEATHER = 0.6; // an eagle's feather in the hood: the glide sinks this much as fast
@@ -39,7 +36,6 @@ export const strideLength = (speed: number, running: boolean) => (running ? Math
 export interface PlayerInput {
   x: number; // strafe, -1..1 (right positive)
   z: number; // forward, -1..1
-  run: boolean;
   jump: boolean; // true on the frame the key went down
   lift: boolean; // jump held: climb while the reserve lasts
   drop: boolean; // descend held: fall at full gravity (a double tap of jump in flight drops too)
@@ -237,7 +233,7 @@ export class Player {
     const wl = this.wish.length();
     if (wl > 1) this.wish.multiplyScalar(1 / wl);
     const wishing = wl > 0.1;
-    st.running = input.run && wishing;
+    st.running = wishing;
     let turned = 0;
 
     if (st.grounded) {
@@ -260,7 +256,7 @@ export class Player {
         // Sand gives underfoot: a dune face is slower going up than rock of the same pitch.
         const shod = rock && this.boots;
         const factor = rock ? Math.min(1.2, Math.max(0.35, 1 - climb * 0.9)) : Math.min(1.12, Math.max(0.3, 1 - climb * 1.3));
-        let target = (input.run ? (rock ? RUN : RUN_SAND) : WALK) * factor * (shod ? BOOTS : 1);
+        let target = (rock ? RUN : RUN_SAND) * factor * (shod ? BOOTS : 1);
         // Nailed boots hold where bare feet slide off, but nobody runs up such a face.
         const cliff = shod ? BOOTS_GRIP : CLIFF;
         if (shod && slope > CLIFF) target = Math.min(target, BOOTS_STEEP);
@@ -270,7 +266,7 @@ export class Player {
         // Cliffs are barriers: cancel motion into them. With a rope and hook they are climbed
         // instead: slowly, hand over hand, and held wherever the climbing stops.
         if (slope > cliff && this.rope) {
-          const sp = wishing ? (ROPE_CLIMB * (input.run ? ROPE_HASTE : 1)) / Math.sqrt(1 + slope * slope) : 0;
+          const sp = wishing ? ROPE_CLIMB / Math.sqrt(1 + slope * slope) : 0;
           vel.x = this.wish.x * sp;
           vel.z = this.wish.y * sp;
           this.roping = wishing && climb > 0;
@@ -322,15 +318,15 @@ export class Player {
               const vz = (-vel.x * sa + vel.z * ca) * scrub;
               vel.x = vx;
               vel.z = vz;
-              // Push toward cruising speed; the push fades as you reach it. Shift kicks harder.
+              // Push toward cruising speed; the push fades as you reach it.
               const sp = Math.hypot(vx, vz);
               const rise = (vx * gx + vz * gz) / sp;
-              const cruise = Math.min(input.run ? BOARD_BOOST : BOARD, (input.run ? CLIMB_BOOST : CLIMB) / Math.max(rise, 1e-3));
+              const cruise = Math.min(BOARD, CLIMB / Math.max(rise, 1e-3));
               // The drive also cancels the speed-squared drag up to cruising speed, so the board holds
-              // the pace it is named for. Past that, on a slope, Shift still sheds part of the drag: a
-              // run downhill goes on gathering.
-              const hold = 0.003 * sp * sp * (sp < cruise ? 1 : input.run ? TUCK : 0);
-              const push = ((input.run ? 14 : 10) * Math.max(0, 1 - sp / cruise) + hold) * Math.max(0.25, Math.cos(d));
+              // the pace it is named for. Past that, on a slope, part of the drag is still shed: a run
+              // downhill goes on gathering.
+              const hold = 0.003 * sp * sp * (sp < cruise ? 1 : TUCK);
+              const push = (14 * Math.max(0, 1 - sp / cruise) + hold) * Math.max(0.25, Math.cos(d));
               vel.x += (vx / sp) * push * dt;
               vel.z += (vz / sp) * push * dt;
             }
@@ -346,7 +342,7 @@ export class Player {
         hs = Math.hypot(vel.x, vel.z);
         if (hs > 1e-3) {
           const rise = (vel.x * gx + vel.z * gz) / hs;
-          const climb = input.run && wishing ? CLIMB_BOOST : CLIMB;
+          const climb = CLIMB;
           const most = climb / Math.max(rise, 1e-3);
           // (the rise the ground gave last step is held to the same, so slowing on a face does not throw you off it)
           vel.y = Math.min(vel.y, climb);
@@ -534,11 +530,10 @@ export class Player {
         // Speed: pushing a direction brings you up to glide speed, scaled by how far the
         // stick is pushed. Let go and he eases to a stop in the air and settles straight
         // down, so you can come to rest over a roof. Extra speed from a fast launch bleeds off.
-        // Shift raises the glide speed. Either is reached in about a second. Shift also holds on
-        // to speed from a launch for longer.
-        const full = flightSpeed(this.carpet, input.run);
+        // Glide speed is reached in about a second, and speed from a faster launch is kept a while.
+        const full = flightSpeed(this.carpet);
         const want = wishing ? full * Math.min(1, wl) : 0;
-        if (hs > want) hs += (want - hs) * (1 - Math.exp(-dt * (wishing ? (input.run ? 0.8 * CARRY : 0.8) : 2.2)));
+        if (hs > want) hs += (want - hs) * (1 - Math.exp(-dt * (wishing ? CARRY : 2.2)));
         else hs = Math.min(want, hs + full * dt);
       } else {
         hs *= 1 - 0.03 * dt;
@@ -616,7 +611,7 @@ export class Player {
         const onRock = st.onRock > 0.5;
         if (below || !this.board) {
           const sp = Math.hypot(vel.x, vel.z);
-          const cap = input.run ? (onRock ? RUN : RUN_SAND) : WALK;
+          const cap = onRock ? RUN : RUN_SAND;
           if (sp > cap) {
             vel.x *= cap / sp;
             vel.z *= cap / sp;
