@@ -83,7 +83,7 @@ describe('Shift', () => {
   });
 
   it('holds on to the speed of a launch in flight', () => {
-    const after = (shift: boolean) => {
+    const launched = (shift: boolean) => {
       const p = new Player(rock(0));
       p.place(0, 0);
       p.update(1 / 60, input({ z: 1, jump: true, lift: true }), Math.PI, ev);
@@ -93,8 +93,8 @@ describe('Shift', () => {
       expect(p.state.grounded).toBe(false);
       return p.state.speed;
     };
-    const plain = after(false);
-    const held = after(true);
+    const plain = launched(false);
+    const held = launched(true);
     expect(plain).toBeGreaterThan(flightSpeed(false, false));
     expect(held).toBeGreaterThan(plain * 1.3);
     expect(held).toBeLessThan(50);
