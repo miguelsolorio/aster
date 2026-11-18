@@ -25,6 +25,8 @@ export interface UIHooks {
   onEffectsSample(): void;
   /** `manual` is true when the player picked this tier by hand (now or in an earlier session). */
   onQuality(q: Quality, manual: boolean): void;
+  /** Weather events (sandstorms and rain) on or off. Called once at start with the saved choice. */
+  onWeather(on: boolean): void;
   onPhoto(active: boolean): void;
   onHideFigure(hidden: boolean): void;
   onCapture(): void;
@@ -64,6 +66,8 @@ const KEY_QUALITY = 'aster.quality';
 // '1' once the player has picked a tier by hand; tiers the game lowered by itself are saved without it.
 const KEY_QUALITY_MANUAL = 'aster.qualityManual';
 const KEY_STYLE = 'aster.style';
+/** '0' when the player has turned weather events off; absent or '1' is on. Settings survive Start over. */
+const KEY_WEATHER = 'aster.weather';
 /** What the player has found out so far. The controls list only shows what has been earned. */
 export interface Known {
   talk: boolean;
@@ -280,6 +284,8 @@ export class UI {
 
   private previewTimer = 0;
   private quality: Quality;
+  private weatherOn = true;
+  private readonly weatherBtns: Record<'on' | 'off', HTMLButtonElement>;
   private figureHidden = false;
   private idleTimer = 0;
   private toastTimer = 0;
@@ -311,6 +317,8 @@ export class UI {
     const storedQ = readStore(KEY_QUALITY);
     this.quality =
       storedQ === 'mobile' || storedQ === 'low' || storedQ === 'high' ? storedQ : (initial?.quality ?? 'high');
+
+    this.weatherOn = readStore(KEY_WEATHER) !== '0';
 
     const host = el('div', 'aster-ui');
     host.dataset.state = 'title';
@@ -464,7 +472,29 @@ export class UI {
     const danger = el('div', 'aster-danger');
     const dangerNote = el('p', 'aster-hint', 'Clears your journey and saved spawn. Settings stay.');
     danger.append(dangerNote, this.resetBtn, resetAsk);
-    game.append(spawnRow, this.statusEl, danger);
+    const wx = el('div', 'aster-field');
+    const wxHead = el('div', 'aster-field__head');
+    const wxLabel = el('span', undefined, 'Weather');
+    wxLabel.id = 'aster-weather-label';
+    wxHead.appendChild(wxLabel);
+    const wxSeg = el('div', 'aster-seg');
+    wxSeg.setAttribute('role', 'radiogroup');
+    wxSeg.setAttribute('aria-labelledby', 'aster-weather-label');
+    wxSeg.setAttribute('aria-describedby', 'aster-weather-hint');
+    const mkWx = (on: boolean, label: string): HTMLButtonElement => {
+      const b = el('button', undefined, label);
+      b.type = 'button';
+      b.setAttribute('role', 'radio');
+      b.dataset.weather = on ? 'on' : 'off';
+      b.addEventListener('click', () => this.chooseWeather(on));
+      wxSeg.appendChild(b);
+      return b;
+    };
+    this.weatherBtns = { on: mkWx(true, 'On'), off: mkWx(false, 'Off') };
+    const wxHint = el('span', 'aster-hint', 'Sandstorms and rain. Turn off for a calm desert.');
+    wxHint.id = 'aster-weather-hint';
+    wx.append(wxHead, wxSeg, wxHint);
+    game.append(wx, spawnRow, this.statusEl, danger);
 
     this.spawnBtn.addEventListener('click', () => {
       if (!this.hooks.canSetSpawn()) {
@@ -556,6 +586,7 @@ export class UI {
 
     // Wiring
     this.syncQuality();
+    this.syncWeather();
     this.syncStyle();
     this.selectTab('audio');
     this.resumeBtn.addEventListener('click', () => this.closeMenu());
@@ -583,6 +614,7 @@ export class UI {
 
     // Restored / initial values
     this.hooks.onQuality(this.quality, readStore(KEY_QUALITY_MANUAL) === '1');
+    this.hooks.onWeather(this.weatherOn);
     if (this.styles.length) this.hooks.onStyle(this.styleI);
   }
 
@@ -881,6 +913,22 @@ export class UI {
     if (on) this.resetCancel.focus();
   }
 
+  private chooseWeather(on: boolean): void {
+    if (on === this.weatherOn) return;
+    this.weatherOn = on;
+    writeStore(KEY_WEATHER, on ? '1' : '0');
+    this.syncWeather();
+    this.hooks.onWeather(on);
+  }
+
+  private syncWeather(): void {
+    for (const on of [true, false]) {
+      const b = this.weatherBtns[on ? 'on' : 'off'];
+      b.setAttribute('aria-checked', String(on === this.weatherOn));
+      b.tabIndex = on === this.weatherOn ? 0 : -1;
+    }
+  }
+
   private chooseQuality(q: Quality): void {
     if (q === this.quality) return;
     this.quality = q;
@@ -1050,6 +1098,13 @@ export class UI {
   private arrowSegment(e: KeyboardEvent): boolean {
     const t = e.target;
     if (!(t instanceof HTMLButtonElement) || t.getAttribute('role') !== 'radio') return false;
+    if (t.dataset.weather) {
+      if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') this.chooseWeather(true);
+      else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') this.chooseWeather(false);
+      else return false;
+      this.weatherBtns[this.weatherOn ? 'on' : 'off'].focus();
+      return true;
+    }
     const i = QUALITIES.indexOf(this.quality);
     if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') this.chooseQuality(QUALITIES[Math.max(0, i - 1)]);
     else if (e.key === 'ArrowRight' || e.key === 'ArrowDown')

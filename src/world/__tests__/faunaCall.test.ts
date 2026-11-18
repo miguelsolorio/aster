@@ -35,6 +35,8 @@ function frame(): FrameState {
     clock: 0,
     storm: 0,
     stormAhead: 0,
+    rain: 0,
+    wet: 0,
     stormDir: new THREE.Vector2(1, 0),
     weather: new Weather(1),
     camera: new THREE.PerspectiveCamera(),

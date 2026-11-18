@@ -544,7 +544,8 @@ void main() {
   }
 
   // 3b. sandstorms, laid over the scene before anything is drawn on top of it
-  col = applyStorm(col, uv, bayer8(gl_FragCoord.xy));
+  // (stepped along each ray from a start that differs pixel to pixel, so the steps do not show as bands)
+  col = applyStorm(col, uv, fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))));
 
   // 4. depth-edge outline
   bool mode3 = abs(uMode - 3.0) < 0.5;

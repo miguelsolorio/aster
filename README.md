@@ -14,6 +14,10 @@ You start on foot in open sand with a city somewhere in sight. The rest is yours
 
 Some days a sandstorm crosses the desert. You'll see it first: a brown wall on one horizon, the wind coming round to meet it, caravans kneeling in the road. A board outruns it and feet don't. Inside you can see about forty metres, the sun is gone, and the compass forgets what it was pointing at. Fly with one behind you and it's the fastest you'll ever go. Storms part round mountains, so a village at the foot of one is a good place to wait, and so is a cavern or a bedroll. When it has passed, walk the ground it crossed. Now and then it has dug something up.
 
+Rain is rarer. One dark cloud comes over with grey under it, and if the sun is low behind you there's a bow against it. Where it falls the sand goes dark. A salt pan holds the water and turns into a mirror. A few hours later the dunes it crossed are in flower, a different colour on each rise, and the animals come out to graze. By the next day it's sand again.
+
+If you'd sooner have none of it, turn Weather off in the menu, under Game.
+
 You carry a map, and it starts empty. Ground is washed in as you see it, towns and finds are inked in once you reach them, and it's all kept between visits. When someone sends you after something, a dashed circle goes on the map over roughly where to look.
 
 A thin compass runs along the top of the view, so "north-east, a fair walk" means something. Under it sit the few places you already know to head for: a small ring for an errand, a thread of light for a place marked through the spyglass, a tent for your bedroll. One that waits dimmed at an end of the strip is off to that side or behind you.
@@ -66,7 +70,7 @@ The dev server has a few extra pages that aren't part of the build:
 - `/characters.html` and `/equipment.html` show the figures, boards, carpets and picks
 - `/social.html` runs the game in a 1200 × 630 frame for capturing screenshots like the ones above
 
-A few URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather` lends you the tools for one visit, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), `?storm` starts with a sandstorm a minute away (`?storm=in` starts inside one), `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start), and on the dev server `?village` starts you in the nearest mountain village (`?village=snow` for the nearest snow village), and `?settle=<kind>` (`well-camp`, `star-house`, `salt-works`, `glass-kilns`, `ledge`, `bridge`, `caravanserai`, `dyers-town`, `wind-towers` or `stepped-city`) puts you 45 m from the nearest such settlement.
+A few URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,bedroll,rod,chart,rope,boots,feather` lends you the tools for one visit, `?day=0.72` starts at a set time of day (0 is midnight, 0.5 is noon), `?storm` starts with a sandstorm a minute away (`?storm=in` starts inside one), `?rain` does the same for rain (`?rain=in` starts under it, `?rain=after` starts on the wet ground it left), `?miner` drops you in front of a city's miner (`?miner=2` for the second-nearest city to the default start), and on the dev server `?village` starts you in the nearest mountain village (`?village=snow` for the nearest snow village), and `?settle=<kind>` (`well-camp`, `star-house`, `salt-works`, `glass-kilns`, `ledge`, `bridge`, `caravanserai`, `dyers-town`, `wind-towers` or `stepped-city`) puts you 45 m from the nearest such settlement.
 
 ## Built with
 

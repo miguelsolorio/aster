@@ -95,6 +95,8 @@ export interface FrameState {
   clock: number; // the world clock: in-game days gone by
   storm: number; // 0..1 how thick a sandstorm is round the wanderer (0 underground)
   stormAhead: number; // 0..1 a storm is coming: rises over the in-game hour before it arrives, 1 inside
+  rain: number; // 0..1 how hard it is raining at the wanderer (0 underground)
+  wet: number; // 0..1 how wet the ground is at the wanderer's feet (a rain that has passed leaves it wet for a day)
   stormDir: THREE.Vector2; // the way that storm is going (unit x, z); left as it was when there is none
   weather: Weather;
   camera: THREE.PerspectiveCamera;

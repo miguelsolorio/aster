@@ -159,6 +159,26 @@ describe('Save', () => {
     expect(store.getItem('volume')).toBe('0.5');
   });
 
+  it('keeps the rain day and a sent rain, and reads an old sent storm as sand', () => {
+    const rain = { kind: 'rain' as const, id: -5, x0: 1, z0: 2, hx: 1, hz: 0, t0: 3, t1: 3.5, width: 5000, depth: 3000, speed: 7 };
+    const a = new Save(qs());
+    expect(a.data.rainDay).toBeNull();
+    expect(a.data.sentRain).toBeNull();
+    a.setRainDay(4.25);
+    a.setSentRain(rain);
+    const b = new Save(qs());
+    expect(b.data.rainDay).toBe(4.25);
+    expect(b.data.sentRain).toEqual(rain);
+    b.setSentRain(null);
+    expect(new Save(qs()).data.sentRain).toBeNull();
+    const { kind: _k, ...old } = rain;
+    store.setItem('aster.save', JSON.stringify({ v: 1, sent: old, sentRain: { id: 1 }, rainDay: 'x' }));
+    const c = new Save(qs());
+    expect(c.data.sent?.kind).toBe('sand');
+    expect(c.data.sentRain).toBeNull();
+    expect(c.data.rainDay).toBeNull();
+  });
+
   it('survives unavailable storage', () => {
     const boom = () => {
       throw new Error('denied');
