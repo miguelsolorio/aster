@@ -74,10 +74,18 @@ export interface SaveData {
   sentRain: Storm | null;
   /** Wrecks a storm uncovered and the wanderer reached: x, z and the way each lies, three numbers apiece. */
   wrecks: number[];
+  /** Fallen stars the wanderer has reached or a shower brought down: x, z, two numbers apiece. */
+  fallen: number[];
   /** Songs learned from places (the call comes with the flute and is not stored). */
   songs: Song[];
   /** The clock when the rain song last brought a rain (null: never). */
   rainSung: number | null;
+  /** The constellations a star-house keeper has taught, by id ('nail' for the pole star). */
+  stars: string[];
+  /** The night (by number) of the last lesson: one a night. */
+  lessonNight: number | null;
+  /** The night a star last came down for the wanderer: one a shower. */
+  fallNight: number | null;
   /** What the wanderer is carrying toward a place to bring back: one of each at most. */
   carry: Carry[];
   /** The places brought back, each once (by site key), and the clock when it was done. */
@@ -159,8 +167,12 @@ const fresh = (): SaveData => ({
   rainDay: null,
   sentRain: null,
   wrecks: [],
+  fallen: [],
   songs: [],
   rainSung: null,
+  stars: [],
+  lessonNight: null,
+  fallNight: null,
   carry: [],
   revived: [],
 });
@@ -184,6 +196,7 @@ const readStorm = (v: unknown): Storm | null => {
   return { kind: o.kind === 'rain' ? 'rain' : 'sand', id: s.id, x0: s.x0, z0: s.z0, hx: s.hx, hz: s.hz, t0: s.t0, t1: s.t1, width: s.width, depth: s.depth, speed: s.speed };
 };
 const WRECK_CAP = 64;
+const FALLEN_CAP = 64;
 const REVIVED_CAP = 1024;
 const num = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 /** The places brought back, as far as they can be trusted: well formed, and each key once. */
@@ -246,8 +259,13 @@ export class Save {
         this.data.sentRain = readStorm(raw.sentRain);
         const wr = keys(raw.wrecks);
         this.data.wrecks = wr.slice(0, Math.floor(Math.min(wr.length, WRECK_CAP * 3) / 3) * 3);
+        const fl = keys(raw.fallen);
+        this.data.fallen = fl.slice(0, Math.floor(Math.min(fl.length, FALLEN_CAP * 2) / 2) * 2);
         if (Array.isArray(raw.songs)) this.data.songs = [...new Set((raw.songs as unknown[]).filter(isSong))].filter((s) => s !== 'call');
         this.data.rainSung = typeof raw.rainSung === 'number' && Number.isFinite(raw.rainSung) ? raw.rainSung : null;
+        if (Array.isArray(raw.stars)) this.data.stars = [...new Set((raw.stars as unknown[]).filter((s): s is string => typeof s === 'string'))].slice(0, 32);
+        this.data.lessonNight = typeof raw.lessonNight === 'number' && Number.isFinite(raw.lessonNight) ? raw.lessonNight : null;
+        this.data.fallNight = typeof raw.fallNight === 'number' && Number.isFinite(raw.fallNight) ? raw.fallNight : null;
         if (Array.isArray(raw.carry)) this.data.carry = [...new Set((raw.carry as unknown[]).filter(isCarry))];
         this.data.revived = readRevived(raw.revived);
       }
@@ -296,6 +314,19 @@ export class Save {
   learn(s: Song): void {
     if (s === 'call' || this.data.songs.includes(s)) return;
     this.data.songs.push(s);
+    this.write();
+  }
+
+  /** A keeper has taught a constellation, on this night. */
+  learnStar(id: string, night: number): void {
+    if (!this.data.stars.includes(id)) this.data.stars.push(id);
+    this.data.lessonNight = night;
+    this.write();
+  }
+
+  /** A star has come down for the wanderer on this night. */
+  setFallNight(night: number | null): void {
+    this.data.fallNight = night;
     this.write();
   }
 
@@ -461,6 +492,15 @@ export class Save {
     for (let i = 0; i < w.length; i += 3) if (Math.hypot(w[i] - x, w[i + 1] - z) < 1) return;
     w.push(x, z, rot);
     if (w.length > WRECK_CAP * 3) w.splice(0, w.length - WRECK_CAP * 3);
+    this.write();
+  }
+
+  /** A star has come down at (x, z): it stays where it lies. */
+  keepFallen(x: number, z: number): void {
+    const f = this.data.fallen;
+    for (let i = 0; i < f.length; i += 2) if (Math.hypot(f[i] - x, f[i + 1] - z) < 1) return;
+    f.push(x, z);
+    if (f.length > FALLEN_CAP * 2) f.splice(0, f.length - FALLEN_CAP * 2);
     this.write();
   }
 

@@ -51,6 +51,8 @@ import { SongRing } from './songRing';
 import { LEARNED, NOTHING, RAIN_ARRIVES, RAIN_REST, SONGS, TEACH_R, WAKE_R, WIND_SECONDS, suited, taughtBy, type Song, type Standing } from './songs';
 import { DAY_SECONDS, HOUR_SECONDS, Weather, massifGuard } from '../world/weather';
 import { stormUniforms, updateStorm } from '../render/storm';
+import { Heavens, heavensUniforms } from '../render/heavens';
+import { CONSTELLATIONS, NAIL, bloodMoon, comet, dayOf, eclipse, moonPhase, nextLesson, nightOf, shower } from '../world/sky';
 import { CITY_CELL } from '../city/placement';
 import { bedGeometry, hearthGeometry, solidMaterial } from './equipment';
 
@@ -86,6 +88,7 @@ function start() {
 
   // The star chart's line in the night sky: how bright, and the way it points over the ground.
   u.uChart = { value: 0 };
+  heavensUniforms(u);
   u.uChartDir = { value: new THREE.Vector2(1, 0) };
 
   const qs = new URLSearchParams(location.search);
@@ -411,6 +414,33 @@ function start() {
   sky.renderOrder = -10;
   sky.frustumCulled = false;
   scene.add(sky);
+  // The fixed stars, the moon's phase, meteors, the comet and the eclipse (see render/heavens.ts).
+  const heavens = new Heavens(u);
+  scene.add(heavens.group);
+  // (testing) ?sky=shower|comet|eclipse|blood|new|full moves the sky's calendar on, for this visit
+  // only, to the next night or day there is one; ?stars=all lends every constellation.
+  let skyShift = 0;
+  const lentStars = qs.get('stars') === 'all' ? ['nail', ...CONSTELLATIONS.map((c) => c.id)] : [];
+  const knownStars = () => (lentStars.length ? lentStars : save.data.stars);
+  /** The clock the sky runs on. */
+  const skyClock = () => frame.clock + skyShift;
+  let fallWatch = 0;
+  let skyAsk: string | null = qs.get('sky');
+  /** What the keeper of a star house has to teach tonight, if anything: the Nail first, then one constellation a night. */
+  const skyLesson = (): { lines: string[]; done?: () => void } | null => {
+    if (lentStars.length) return null;
+    const night = nightOf(skyClock(), day.day);
+    const known = save.data.stars;
+    const learn = (id: string) => () => {
+      save.learnStar(id, night);
+      audio.chime('learned');
+    };
+    if (!known.includes('nail')) return { lines: ['Look north. Higher.', NAIL.lesson], done: learn('nail') };
+    const next = nextLesson(known);
+    if (!next) return null;
+    if (save.data.lessonNight === night) return { lines: ['One a night. Any more and you would mix them up.'] };
+    return { lines: ['Look up. Follow my hand.', next.lesson, 'Put a glass on it some night and it will come to you.'], done: learn(next.id) };
+  };
 
   // ---- post
   const postU: Uniforms = { ...u, tColor: { value: null }, tDepth: { value: null }, uRes: { value: new THREE.Vector2(1, 1) } };
@@ -755,6 +785,24 @@ function start() {
     if (list.length !== wrecks.length || list.some((a, i) => a.x !== wrecks[i].x || a.z !== wrecks[i].z || a.rot !== wrecks[i].rot)) wrecks = list;
     discoveries.setWrecks(wrecks);
   };
+  // The fallen stars lying out: every one the wanderer has reached or a shower has brought down
+  // (the save keeps those), and the ones the dev hook lays (this visit only).
+  const devFallen: { x: number; z: number }[] = [];
+  const layFallen = () => {
+    const list: { x: number; z: number }[] = [];
+    const put = (a: { x: number; z: number }) => {
+      if (!list.some((b) => Math.hypot(b.x - a.x, b.z - a.z) < 1)) list.push(a);
+    };
+    const kept = save.data.fallen;
+    for (let i = 0; i + 1 < kept.length; i += 2) put({ x: kept[i], z: kept[i + 1] });
+    for (const a of devFallen) put(a);
+    discoveries.setFallen(list);
+  };
+  /** A star comes down at (x, z): it is kept, and lies there from now on. */
+  const starFalls = (x: number, z: number): void => {
+    save.keepFallen(x, z);
+    layFallen();
+  };
   const digAt = { x: 0, y: 0, z: 0 };
   // Riding: a wild ass, an oryx or a caravan's camel. Both kinds are ridden the same way.
   type Steeds = Pick<Fauna, 'mounted' | 'nearestRideable' | 'rideMark' | 'mount' | 'dismount' | 'ride' | 'seat'>;
@@ -866,6 +914,9 @@ function start() {
         const place = trav.place;
         const lines = SETTLED[place];
         if (s.kind === 'host') {
+          // the old stargazer teaches the sky, after dark, to anyone who has heard the rest
+          const lesson = place === 'star-house' && dark() && hosted.has(place) ? skyLesson() : null;
+          if (lesson) return lesson;
           if (hosted.has(place)) return { lines: [(lastLine = pick(lines.hostAfter, lastLine))] };
           hosted.add(place);
           const site = discoveries.nearestUnfound(s.x, s.z, new Set<string>(save.data.found), 6000);
@@ -1992,6 +2043,51 @@ function start() {
     u.uTime.value = frame.time;
 
     day.update(dt);
+    // The heavens: they turn, the moon keeps its phase, and now and then something happens up there.
+    {
+      if (skyAsk) {
+        const want = skyAsk;
+        skyAsk = null;
+        const ok = (k: number): boolean => {
+          const n = nightOf(frame.clock + k, day.day);
+          return want === 'shower' ? shower(n)
+            : want === 'comet' ? comet(n) >= 1
+            : want === 'blood' ? bloodMoon(n)
+            : want === 'new' ? moonPhase(n) === 0
+            : want === 'full' ? moonPhase(n) === 0.5
+            : want === 'eclipse' ? dayOf(frame.clock + k, day.day) % 11 === 3
+            : true;
+        };
+        for (let k = 0; k < 400 && !ok(k); k++) skyShift = k + 1;
+      }
+      const open = sky.visible && !player.under ? (1 - frame.storm) * (1 - frame.rain) : 0;
+      heavens.group.visible = sky.visible;
+      heavens.update(dt, skyClock(), day.day, camera, renderer.getPixelRatio(), glassK, open, knownStars());
+      glassView.name(glassK > 0.6 ? heavens.reading : '');
+      // On a shower's night one star comes all the way down, once the wanderer has had the sky
+      // to look at for a while. Where it lands is theirs to find: nothing marks it but the flash.
+      const night = nightOf(skyClock(), day.day);
+      if (playing && shower(night) && save.data.fallNight !== night && (u.uStars.value as number) * open > 0.6) {
+        fallWatch += dt;
+        if (fallWatch > 30) {
+          fallWatch = -1e9; // (one try a night: if no ground suits, none falls)
+          const st0 = player.state.pos;
+          for (let k = 0; k < 14; k++) {
+            const a = night * 2.399 + k * 0.9;
+            const d = 1300 + ((k * 397) % 1100);
+            const x = st0.x + Math.cos(a) * d;
+            const z = st0.z + Math.sin(a) * d;
+            if (!wreckSuits(x, z, a) || waterAt(x, z)) continue;
+            heavens.fall(x - st0.x, z - st0.z, () => {
+              save.setFallNight(night);
+              starFalls(x, z);
+              audio.chime();
+            });
+            break;
+          }
+        }
+      } else if (!shower(night)) fallWatch = 0;
+    }
     frame.day = day.day;
     frame.night = day.night;
     // Down in a deep there is no daylight, no haze and no wind: what moves there is dark but for
@@ -2760,6 +2856,7 @@ function start() {
         uncovered.set(s.id, wreckSuits(w.x, w.z, w.rot) ? w : null);
       }
       layWrecks();
+      layFallen();
     }
     // The miner's lamp lies out in the desert until it is carried back: by the nearest city's spring.
     lampT -= dt;
@@ -2922,6 +3019,14 @@ function start() {
           devWrecks.push(w);
           layWrecks();
           return w;
+        },
+        // lay a fallen star 40 m ahead of the wanderer (this visit only, not saved)
+        fall: () => {
+          const p = player.state.pos;
+          const f = { x: p.x + Math.sin(player.facing) * 40, z: p.z + Math.cos(player.facing) * 40 };
+          devFallen.push(f);
+          layFallen();
+          return f;
         },
         weather,
         // advance the simulation by a number of seconds at 60 Hz, then draw (for testing when the tab is throttled)

@@ -60,3 +60,21 @@
 .aster-glass__dot {
   fill: rgba(239, 230, 216, 0.5);
 }
+
+/* The name of a constellation the glass is on: small, under the ring, in the map's hand. */
+.aster-glass__name {
+  position: absolute;
+  left: 50%;
+  top: calc(50% + 64px);
+  transform: translateX(-50%);
+  font: italic 600 17px/1.2 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, serif;
+  letter-spacing: 0.04em;
+  color: rgba(236, 226, 200, 0.92);
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.7);
+  white-space: nowrap;
+  opacity: 0;
+  transition: opacity 0.5s ease;
+}
+.aster-glass__name.is-on {
+  opacity: 1;
+}

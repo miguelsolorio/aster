@@ -200,6 +200,15 @@ function glyph(c: Ctx, kind: string): void {
         c.quadraticCurveTo(x - 1, -5, x + 3.5, -5.5);
       }
       break;
+    case 'fallen-star': // a four-pointed star over the dish it made
+      c.moveTo(0, -7);
+      c.quadraticCurveTo(0.6, -2.6, 4, -2);
+      c.quadraticCurveTo(0.6, -1.4, 0, 3);
+      c.quadraticCurveTo(-0.6, -1.4, -4, -2);
+      c.quadraticCurveTo(-0.6, -2.6, 0, -7);
+      c.moveTo(-6, 4.5);
+      c.quadraticCurveTo(0, 8, 6, 4.5);
+      break;
     case 'sundial':
       c.arc(0, 0.5, 5.8, 0, Math.PI * 2);
       c.moveTo(0, 0.5);

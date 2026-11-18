@@ -8,6 +8,8 @@ export class SpyglassView {
   private readonly arc: SVGCircleElement;
   private shown = 0;
   private prog = -1;
+  private readonly label: HTMLElement;
+  private named = '';
 
   constructor(host: HTMLElement) {
     const root = document.createElement('div');
@@ -15,10 +17,20 @@ export class SpyglassView {
     root.setAttribute('aria-hidden', 'true');
     root.innerHTML =
       '<div class="aster-glass__tube"></div><div class="aster-glass__rim"></div>' +
+      '<div class="aster-glass__name"></div>' +
       '<svg class="aster-glass__mark" viewBox="-20 -20 40 40"><circle class="aster-glass__ring" r="13"/><circle class="aster-glass__arc" r="13" pathLength="100"/><circle class="aster-glass__dot" r="0.9"/></svg>';
     host.appendChild(root);
     this.root = root;
     this.arc = root.querySelector('.aster-glass__arc') as SVGCircleElement;
+    this.label = root.querySelector('.aster-glass__name') as HTMLElement;
+  }
+
+  /** The name of what the glass is on, written under the ring ('' for nothing). */
+  name(text: string): void {
+    if (text === this.named) return;
+    this.named = text;
+    if (text) this.label.textContent = text;
+    this.label.classList.toggle('is-on', !!text);
   }
 
   /** k: 0 lowered .. 1 at the eye. progress: 0..1 of a sighting being held, or 0 for none. */

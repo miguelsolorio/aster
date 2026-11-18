@@ -326,3 +326,26 @@ describe('Save: songs', () => {
     expect(store.getItem('aster.save')).toBeNull();
   });
 });
+
+describe('Save: fallen stars', () => {
+  it('starts with none, keeps each once (within 1 m), and round-trips', () => {
+    const a = new Save(qs());
+    expect(a.data.fallen).toEqual([]);
+    a.keepFallen(100, -200);
+    a.keepFallen(100.5, -200);
+    a.keepFallen(900, 40);
+    expect(a.data.fallen).toEqual([100, -200, 900, 40]);
+    expect(new Save(qs()).data.fallen).toEqual([100, -200, 900, 40]);
+  });
+
+  it('caps at 64 and sanitizes on load', () => {
+    const a = new Save(qs());
+    for (let i = 0; i < 70; i++) a.keepFallen(i * 10, 0);
+    expect(a.data.fallen.length).toBe(128);
+    expect(a.data.fallen.slice(0, 2)).toEqual([60, 0]);
+    store.setItem('aster.save', JSON.stringify({ v: 1, fallen: [1, 2, 3] }));
+    expect(new Save(qs()).data.fallen).toEqual([1, 2]);
+    store.setItem('aster.save', JSON.stringify({ v: 1, fallen: 'x' }));
+    expect(new Save(qs()).data.fallen).toEqual([]);
+  });
+});
