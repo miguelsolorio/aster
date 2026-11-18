@@ -18,6 +18,11 @@ describe('the speed ladder', () => {
     climbs([WALK, RUN_SAND, RUN, RUN * BOOTS, BOARD_BOOST, flightSpeed(false, true), CAMEL_GALLOP, ASS_GALLOP, ORYX_GALLOP, flightSpeed(true, true)]);
   });
 
+  it('makes a board a real step up from going on foot', () => {
+    expect(BOARD).toBeGreaterThan(WALK * 2);
+    expect(BOARD_BOOST).toBeGreaterThan(RUN * BOOTS * 1.5);
+  });
+
   it('is quicker with Shift on every rung', () => {
     expect(BOARD_BOOST).toBeGreaterThan(BOARD);
     expect(flightSpeed(false, true)).toBeGreaterThan(flightSpeed(false, false));
