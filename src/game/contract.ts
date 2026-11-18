@@ -99,6 +99,9 @@ export interface FrameState {
   wet: number; // 0..1 how wet the ground is at the wanderer's feet (a rain that has passed leaves it wet for a day)
   stormDir: THREE.Vector2; // the way that storm is going (unit x, z); left as it was when there is none
   weather: Weather;
+  /** 0..1 the herds are travelling (a day for it, and light), and the way they go (unit x, z). */
+  migrate?: number;
+  migrateDir?: THREE.Vector2;
   camera: THREE.PerspectiveCamera;
   player: PlayerState;
 }

@@ -1257,6 +1257,8 @@ export class People {
   private cityId = -1;
   private cache = new Map<number, CityData>();
   private density = 1;
+  /** 0..1 how much of a market day it is: the streets hold half as many people again. Set by the game. */
+  market = 0;
   private _bustle = 0;
   private hi = 0;
   private heldI = -1; // someone the player is talking to: they stand and face the player
@@ -2400,7 +2402,7 @@ export class People {
       this.cover = Math.min(1, c.coverAt(this.plx, this.plz) / c.maxCover);
     }
     const sizeF = 0.7 + 0.3 * clamp((c.R - 320) / 280, 0, 1);
-    const cap = Math.min(MAXP, Math.round(300 * this.density * sizeF));
+    const cap = Math.min(MAXP, Math.round(300 * this.density * sizeF * (1 + 0.5 * this.market)));
     // a storm coming: the town goes indoors the way it does at night, and comes back after
     this.stormT -= dt;
     if (this.stormT <= 0) {

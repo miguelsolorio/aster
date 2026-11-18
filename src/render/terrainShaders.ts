@@ -248,6 +248,8 @@ vec3 facetNormal(vec2 xz) {
 uniform vec4 uWetA[${WET_MAX}]; // born at x, z; heading x, z
 uniform vec4 uWetB[${WET_MAX}]; // metres travelled, half width, half depth, how wet still (0..1)
 uniform float uWetBloom[${WET_MAX}]; // how much of its flowering is left
+uniform float uFlood; // 0..1 the salt pans stand in water (the night of the new moon)
+uniform float uStars;
 uniform float uRainK; // raining on the eye now
 
 // x: how wet the ground is here. y: how much of it is in flower.
@@ -704,6 +706,9 @@ void main() {
   vec2 flc = p.xz * 3.0;
   float fwFl = max(fwidth(flc.x), fwidth(flc.y));
   vec2 rained = rainedOn(p.xz);
+  // on the night of the new moon the pans flood from below, rain or none
+  float flooded = uFlood * smoothstep(0.25, 0.7, salt) * (1.0 - rock);
+  rained.x = max(rained.x, flooded);
   if (rained.x > 0.002) {
     float wet = rained.x;
     vec3 V = toCam / max(dist, 1e-4);
@@ -727,6 +732,15 @@ void main() {
       vec3 rf = reflect(-V, wn);
       vec3 sky = mix(uHorizon, uTop, pow(clamp(rf.y, 0.0, 1.0), 0.55));
       sky += uSunCol * pow(max(dot(rf, uSunDir), 0.0), 220.0) * (1.0 - 0.6 * uNight) * 1.3 * shadow;
+      // and by night it holds the stars
+      if (uStars > 0.01) {
+        vec2 sq = rf.xz / (abs(rf.y) + 0.3) * 30.0;
+        vec2 sc = floor(sq);
+        vec2 sf = fract(sq) - 0.5 - (hash22(sc) - 0.5) * 0.6;
+        float sfw = max(fwidth(sq.x), fwidth(sq.y));
+        float star = step(0.8, hash21(sc + 7.3)) * (1.0 - smoothstep(0.05, 0.1 + sfw, length(sf))) * min(1.0, 0.12 / max(sfw, 1e-3));
+        sky += vec3(0.9, 0.95, 1.0) * star * uStars * 1.1;
+      }
       // looking straight down, the cracked crust shows through the water
       col = mix(col, mix(col * 0.72, sky, fr), pan * 0.94);
     }

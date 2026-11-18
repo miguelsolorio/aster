@@ -47,7 +47,7 @@ void main() {
   float r2 = dot(p, p);
   if (r2 > 1.0) discard;
   // a hard little core in a soft halo, so it reads as a point at any size
-  float a = smoothstep(0.2, 0.06, r2) * 1.2 + exp(-r2 * 5.0) * 0.5;
+  float a = (1.0 - smoothstep(0.06, 0.2, r2)) * 1.2 + exp(-r2 * 5.0) * 0.5;
   gl_FragColor = vec4(vec3(1.0, 0.96, 0.86) * a * vA * uStars, 1.0);
 }
 `;
