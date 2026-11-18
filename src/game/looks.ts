@@ -19,8 +19,9 @@ export const FOG_CAP = 0.0012;
 const FILM_FOG = [0.0004, 0.00055, 0.0006, 0.00042];
 const FILM_GLOW = [0.5, 0, 1.7, 1.0];
 
-// The game's 35 mm is the gallery's, plus the glints the sand has always had.
-const FILM_GAME: Partial<Params> = { sparkle: 0.35 };
+// The game's 35 mm is the gallery's with the noise rebalanced: half the film grain, and the
+// sand itself carrying more of the texture (glints the gallery lacks, slightly stronger ripples).
+const FILM_GAME: Partial<Params> = { grain: 0.05, sparkle: 0.47, ripple: 0.91, rippleBig: 0.56 };
 
 const INK = '#1a1410';
 const PAPER = '#f4ecdc';
