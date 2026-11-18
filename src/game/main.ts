@@ -46,6 +46,8 @@ import { MapView, groundInk, type MapHint, type MapState } from './mapView';
 import { SpyglassView } from './spyglass';
 import { Compass, nearest, type Thing } from './compass';
 import { SleepView } from './sleep';
+import { SongRing } from './songRing';
+import { LEARNED, NOTHING, RAIN_ARRIVES, RAIN_REST, SONGS, TEACH_R, WAKE_R, WIND_SECONDS, suited, taughtBy, type Song, type Standing } from './songs';
 import { DAY_SECONDS, HOUR_SECONDS, Weather, massifGuard } from '../world/weather';
 import { stormUniforms, updateStorm } from '../render/storm';
 import { CITY_CELL } from '../city/placement';
@@ -1159,6 +1161,9 @@ function start() {
     onFlute() {
       if (ui.state === 'playing') playFlute();
     },
+    onFluteHold() {
+      if (ui.state === 'playing') openSongs(true);
+    },
     onBedroll() {
       if (ui.state === 'playing') useBedroll();
     },
@@ -1304,7 +1309,13 @@ function start() {
     const hit = discoveries.strike(x, z);
     save.setDeed('dug');
     audio.strike('sand', hit.hollow);
+    crackGround(x, z, hit.level, hit.broke);
+  };
+  /** The crust over a cavern cracks where it was struck (level 1..3), or gives way (broke): the marks, dust and sound of it. */
+  const crackGround = (x: number, z: number, level: number, broke: boolean) => {
+    const hit = { level, broke };
     if (hit.level > 0 || hit.broke) {
+      tmp.set(x, world.height(x, z) + 0.05, z);
       const n = hit.broke ? 14 : 3 + hit.level * 3;
       for (let i = 0; i < n; i++) {
         // cracks running out from the blow, longer each time
@@ -1352,14 +1363,137 @@ function start() {
   };
 
   // ---- the flute: a phrase on the reed, and whatever wild thing is near enough to hear comes.
+  // The songs learned from places each do one thing where it suits (see songs.ts).
   let fluteT = 0; // seconds of the phrase still to play
-  let fluteCall = -1; // seconds until the call goes out, or -1
-  const playFlute = () => {
-    if (!save.has('flute') || fluteT > 0 || talk.talking || swingT >= 0 || glassK > 0.1 || discoveries.deepIn) return;
-    fluteT = audio.flute();
-    fluteCall = Math.min(0.9, fluteT * 0.4);
+  let fluteCall = -1; // seconds until the song takes effect (for the call: goes out), or -1
+  let fluteSong: Song = 'call';
+  let teachSong: Exclude<Song, 'call'> | null = null; // the place that will answer once the phrase ends
+  let answerT = -1; // seconds of a place's answer still to play, or -1
+  let lastSong: Song | null = null; // the last one chosen from the ring
+  let windT = 0; // seconds the wind song still holds the air up
+  let windRest = 0; // seconds before the wind song will work again
+  const WIND_REST = 20;
+  const WAKE_REACH = 6000; // how far the stones look for an unfound place (m)
+  const WAKE_GLOW = 12; // seconds the woken stones stay lit
+  const songSites: import('../world/discoveries').SiteRef[] = [];
+  const stonesAt = { x: 0, z: 0 };
+  const knownSongs = () => SONGS.filter((s) => save.knows(s));
+  /** The point a short reach ahead of the feet, where the pick lands (and the opening song is aimed). */
+  const ahead = () => {
+    const st = player.state;
+    return { x: st.pos.x + Math.sin(player.facing) * 0.75, z: st.pos.z + Math.cos(player.facing) * 0.75 };
+  };
+  /** What is true of where the wanderer stands now, for choosing a song. Leaves the nearest stones in stonesAt. */
+  const standing = (): Standing => {
+    const st = player.state;
+    const x = st.pos.x;
+    const z = st.pos.z;
+    discoveries.sitesNear(x, z, Math.max(TEACH_R, WAKE_R), songSites);
+    let teacher: Exclude<Song, 'call'> | null = null;
+    let td = Infinity;
+    let sd = Infinity;
+    for (const site of songSites) {
+      const d = Math.hypot(site.x - x, site.z - z);
+      if (site.kind === 'standing-stones' && d <= WAKE_R && d < sd) {
+        sd = d;
+        stonesAt.x = site.x;
+        stonesAt.z = site.z;
+      }
+      const song = taughtBy(site.kind);
+      if (song && !save.knows(song) && d <= TEACH_R && d < td) {
+        td = d;
+        teacher = song;
+      }
+    }
+    const a = ahead();
+    return {
+      teacher,
+      sealed: discoveries.canBreak(a.x, a.z),
+      stones: sd < Infinity,
+      aloft: !st.grounded && (player.gliding || player.lifting || (player.riding && player.carpet)),
+    };
+  };
+  /** Whether the flute may be raised now. */
+  const canPipe = () => save.has('flute') && fluteT <= 0 && answerT < 0 && !teachSong && !talk.talking && swingT < 0 && glassK <= 0.1 && !discoveries.deepIn;
+  /** Said over the wanderer's head, as a found thing is. */
+  const say = (line: string) => {
+    if (!line) return;
+    const at = player.state.pos;
+    talk.tell({ x: at.x, y: at.y + 1.8, z: at.z }, line);
+  };
+  /** Play a song (or, with none given, the one that suits where the wanderer stands). */
+  const playFlute = (song?: Song) => {
+    if (!canPipe()) return;
+    const at = standing();
+    const chosen = song && save.knows(song) ? song : suited((s) => save.knows(s), at);
+    // a place that teaches a song not yet known hears the plain call, and answers it
+    teachSong = at.teacher;
+    fluteSong = teachSong ? 'call' : chosen;
+    fluteT = audio.flute(fluteSong);
+    fluteCall = fluteSong === 'call' ? Math.min(0.9, fluteT * 0.4) : fluteT * 0.6;
     buzz(10);
   };
+  /** Partway through the phrase, the song does what it does (or says why not). */
+  const songTakes = (song: Song) => {
+    const st = player.state;
+    const px = st.pos.x;
+    const pz = st.pos.z;
+    if (song === 'call') {
+      fauna.call(px, pz);
+      return;
+    }
+    const at = standing();
+    if (song === 'waking') {
+      const site = at.stones ? discoveries.nearestUnfound(px, pz, new Set<string>(save.data.found), WAKE_REACH) : null;
+      if (!site) return say(NOTHING.waking);
+      save.sight(site.key, site.x, site.z);
+      syncMarks();
+      audio.chime('woke');
+      buzz(20);
+      ui.toast('Marked', 2200);
+      discoveries.wakeStones(stonesAt.x, stonesAt.z, WAKE_GLOW, frame.time);
+      return;
+    }
+    if (song === 'wind') {
+      if (windT > 0 || windRest > 0) return; // still resting: it only plays
+      if (!at.aloft) return say(NOTHING.wind);
+      windT = WIND_SECONDS;
+      return;
+    }
+    if (song === 'rain') {
+      const sr = weather.sentRain;
+      const rested = save.data.rainSung === null || frame.clock - save.data.rainSung > RAIN_REST;
+      if (!weather.enabled || discoveries.deepIn || underK > 0.01 || (sr && sr.t1 > frame.clock) || frame.rain > 0 || !rested) return say(NOTHING.rain);
+      const r = weather.aim(frame.clock, px, pz, RAIN_ARRIVES, 'rain');
+      weather.sentRain = r;
+      save.setSentRain(r);
+      save.setRainDay(frame.clock);
+      save.setRainSung(frame.clock);
+      return;
+    }
+    // opening
+    const a = ahead();
+    if (!discoveries.breakOpen(a.x, a.z)) return say(NOTHING.opening);
+    crackGround(a.x, a.z, 0, true);
+    audio.chime('opened');
+  };
+  /** The ring of songs, to choose one by holding the flute key (or button). */
+  const songRing = new SongRing(uiHost, (s) => {
+    if (s) {
+      lastSong = s;
+      playFlute(s);
+    }
+  });
+  /** Open the ring (or, knowing only the call, just play it). */
+  const openSongs = (isTouch: boolean) => {
+    if (!canPipe()) return;
+    const known = knownSongs();
+    if (known.length < 2) return playFlute();
+    const current = lastSong && save.knows(lastSong) ? lastSong : suited((s) => save.knows(s), standing());
+    songRing.open(known, current, isTouch);
+  };
+  let fluteKeyAt = -1; // performance.now() when R went down, or -1 when it is up
+  const FLUTE_HOLD_MS = 300;
 
   // ---- the bedroll: laid on open ground, it stays there. Beside it, the same key sleeps.
   const useBedroll = () => {
@@ -1556,6 +1690,16 @@ function start() {
       if (e.code === 'Space' || e.code.startsWith('Arrow')) e.preventDefault();
       return;
     }
+    // With the ring of songs open, digits choose, Escape puts it away, and R's release plays.
+    if (songRing.isOpen) {
+      if (e.code === 'Escape') {
+        songRing.close();
+        fluteKeyAt = -1;
+      } else if (/^Digit[1-5]$/.test(e.code)) songRing.key(Number(e.code.slice(5)));
+      else if (e.code !== 'KeyR') keys.add(e.code);
+      e.preventDefault();
+      return;
+    }
     if (e.code === 'Escape') {
       // (the same press that has just put the map away does not go on to open the menu)
       if (performance.now() - mapShutAt > 300) ui.openMenu();
@@ -1569,7 +1713,7 @@ function start() {
     if (e.code === 'KeyE' && !e.repeat) interact();
     if (e.code === 'KeyQ' && !e.repeat) toggleBoard();
     if (e.code === 'KeyF' && !e.repeat) glassHeld = true;
-    if (e.code === 'KeyR' && !e.repeat) playFlute();
+    if (e.code === 'KeyR' && !e.repeat) fluteKeyAt = performance.now();
     if (e.code === 'KeyB' && !e.repeat) useBedroll();
     if (e.code === 'KeyC' && !e.repeat && !e.ctrlKey && !e.metaKey) collisionDebug.toggle(); // debug: collision overlay
     keys.add(e.code);
@@ -1577,10 +1721,22 @@ function start() {
   window.addEventListener('keyup', (e) => {
     keys.delete(e.code);
     if (e.code === 'KeyF') glassHeld = false;
+    if (e.code === 'KeyR') {
+      if (songRing.isOpen) {
+        const s = songRing.close();
+        if (s) {
+          lastSong = s;
+          playFlute(s);
+        }
+      } else if (fluteKeyAt >= 0 && ui.state === 'playing') playFlute();
+      fluteKeyAt = -1;
+    }
   });
   window.addEventListener('blur', () => {
     keys.clear();
     glassHeld = false;
+    fluteKeyAt = -1;
+    songRing.close();
   });
   canvas.addEventListener('mousedown', () => {
     if (fromTouch()) return;
@@ -1593,6 +1749,7 @@ function start() {
     const locked = document.pointerLockElement === canvas;
     if (!(locked && ui.state === 'playing') && !(dragging && (ui.state === 'playing' || photo))) return;
     if (map.isOpen) return;
+    if (songRing.isOpen) return songRing.move(e.movementX, e.movementY);
     if (glassK > 0.5) return glassLook(e.movementX, e.movementY);
     camYaw -= e.movementX * 0.0026;
     camPitch = Math.min(1.25, Math.max(-0.35, camPitch + e.movementY * 0.0022));
@@ -1857,6 +2014,12 @@ function start() {
       if (frame.rain > 0.5 && (save.data.rainDay === null || frame.clock - save.data.rainDay > 0.05)) save.setRainDay(frame.clock);
       if (frame.storm > 0.5 && (save.data.stormDay === null || frame.clock - save.data.stormDay > 0.05)) save.setStormDay(frame.clock);
       push.copy(frame.stormDir).multiplyScalar(frame.storm);
+      // The wind song: the air behind the wanderer, the way they are going, as strong as a storm's.
+      if (windT > 0 && push.lengthSq() < 1) {
+        const vl = Math.hypot(st.vel.x, st.vel.z);
+        if (vl > 0.1) push.set(st.vel.x / vl, st.vel.z / vl);
+        else push.set(Math.sin(player.facing), Math.cos(player.facing));
+      }
       // The wind comes round to the way the storm is going, and rises with it.
       if (frame.stormAhead > 0) {
         const k = frame.stormAhead;
@@ -2050,11 +2213,30 @@ function start() {
         figure.swing = -1;
       }
     }
-    // The flute: the phrase plays out, and partway through it the call carries.
+    // The flute: the phrase plays out, and partway through it the song takes (the call carries).
     if (fluteT > 0) {
       fluteT -= dt;
-      if (fluteCall >= 0 && (fluteCall -= dt) < 0) fauna.call(st.pos.x, st.pos.z);
+      if (fluteCall >= 0 && (fluteCall -= dt) < 0) songTakes(fluteSong);
+      // the phrase over, a place that heard it answers with its own
+      if (fluteT <= 0 && teachSong) answerT = Math.max(0.1, audio.answer(teachSong));
     }
+    if (answerT >= 0 && (answerT -= dt) < 0 && teachSong) {
+      const song = teachSong;
+      teachSong = null;
+      save.learn(song);
+      audio.chime('learned');
+      buzz(30);
+      say(LEARNED[song]);
+    }
+    // Held past a moment, the flute key opens the ring of songs instead (knowing only the call,
+    // holding does nothing special: it plays on release).
+    if (fluteKeyAt >= 0 && !songRing.isOpen && performance.now() - fluteKeyAt > FLUTE_HOLD_MS && ui.state === 'playing' && canPipe() && knownSongs().length > 1) openSongs(false);
+    if (songRing.isOpen && ui.state !== 'playing') songRing.close();
+    if (windT > 0) {
+      windT -= dt;
+      frame.gust = Math.max(frame.gust, 1);
+      if (windT <= 0) windRest = WIND_REST;
+    } else if (windRest > 0) windRest -= dt;
     figure.piping = fluteT > 0.15 ? 1 : 0;
     figure.climbing = player.roping ? 1 : 0;
     // The rod is held out wherever the wanderer goes on foot within its reach of a sealed room,
@@ -2609,6 +2791,11 @@ function start() {
         // wake the stone of the nearest built deep, wherever you stand
         wake: () => discoveries.wakeStone(player.state.pos.x, player.state.pos.y, player.state.pos.z, Infinity),
         // put the wanderer down somewhere, feet at y (for getting about a deep): e.g. __ds.tp(...__ds.deep.ledge)
+        // play a song as if chosen from the ring: __ds.sing('waking')
+        sing: (song: Song) => {
+          lastSong = song;
+          playFlute(song);
+        },
         tp: (x: number, y: number, z: number) => {
           player.state.pos.set(x, y, z);
           player.state.vel.set(0, 0, 0);

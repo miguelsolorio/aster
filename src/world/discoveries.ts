@@ -176,6 +176,7 @@ uniform vec3 uTop;
 uniform vec3 uFogCol;
 uniform float uFog;
 uniform float uNight;
+uniform vec4 uWake; // stones woken by the waking song: x, z, how strongly lit (0..1), and when (uTime)
 varying vec3 vW;
 varying vec3 vN;
 varying vec3 vTint;
@@ -217,6 +218,26 @@ void main() {
   } else if (kind > 2.5) {
     col = vec3(1.0, 0.78, 0.46) * (0.55 + 0.6 * uNight);
     fogA *= 0.5;
+  }
+  // Stones the waking song has roused: light comes up in the seams of each, one stone after
+  // another round the ring, and then a slow brightness goes on travelling round them.
+  if (uWake.z > 0.001 && kind < 0.5) {
+    vec2 wd = vW.xz - uWake.xy;
+    float wr = length(wd);
+    if (wr < 60.0) {
+      float ang = atan(wd.y, wd.x);
+      float t = uTime - uWake.w;
+      float turn = (ang + 3.14159) / 6.28318;
+      float risen = smoothstep(0.0, 0.7, t - turn * 2.6);
+      float sweep = pow(0.5 + 0.5 * cos(ang - t * 1.7), 5.0);
+      float sn = dvn(vec2(vW.y * 1.3 + wr * 0.4, ang * 11.0)) * 0.6 + dvn(vW.xz * 2.1 + vW.y * 0.7) * 0.4;
+      // (a seam is where the noise crosses its middle: thin lines, not patches)
+      float seam = 1.0 - smoothstep(0.012, 0.05, abs(sn - 0.5));
+      vec3 gold = vec3(1.0, 0.76, 0.3);
+      float k = uWake.z * (1.0 - smoothstep(45.0, 60.0, wr)) * risen * (0.35 + 0.65 * sweep);
+      col = mix(col, gold * 1.15, k * (0.07 + 0.93 * seam));
+      col += gold * (k * 0.1 * (1.0 + uNight));
+    }
   }
   col = mix(col, uFogCol, fogA);
   gl_FragColor = vec4(col, 1.0);
@@ -3225,7 +3246,7 @@ export class Discoveries {
     this.u = uniforms;
     this.group.name = 'discoveries';
     this.stoneMat = new THREE.ShaderMaterial({
-      uniforms: { ...uniforms },
+      uniforms: { ...uniforms, uWake: this.wakeU },
       vertexShader: stoneVert,
       fragmentShader: stoneFrag,
       side: THREE.DoubleSide,
@@ -3784,14 +3805,69 @@ export class Discoveries {
     best.cav.dimple = DIMPLE + 0.14 * best.hits;
     if (best.hits >= DIG_HITS) {
       out.broke = true;
-      best.cav.open = 1e-4;
-      this.draining = best;
-      if (!this.isBuilt(roofKey(best))) this.buildCavernSite(best);
-      // the deep is made now, while the sand runs out, so it is there when the hole opens
-      this.buildDeep(best);
+      this.breakThrough(best);
     } else out.level = best.hits;
     this.pushCaverns();
     return out;
+  }
+
+  /** The sand over a cavern gives way: it starts to drain, and the deep under it is made. */
+  private breakThrough(best: CavernSite): void {
+    best.cav.open = 1e-4;
+    this.draining = best;
+    if (!this.isBuilt(roofKey(best))) this.buildCavernSite(best);
+    // the deep is made now, while the sand runs out, so it is there when the hole opens
+    this.buildDeep(best);
+  }
+
+  /** The sealed cavern a strike at (x, z) would count toward breaking (within dig reach of its spot, none draining), or null. */
+  private diggable(x: number, z: number): CavernSite | null {
+    if (this.draining) return null;
+    let best: CavernSite | null = null;
+    let bd = DIG_R;
+    for (const cs of this.active) {
+      if (cs.cav.open > 0) continue;
+      const d = Math.hypot(cs.cav.x + cs.cav.dx * cs.cav.spot - x, cs.cav.z + cs.cav.dz * cs.cav.spot - z);
+      if (d <= bd) {
+        bd = d;
+        best = cs;
+      }
+    }
+    return best;
+  }
+
+  /** Whether a strike at (x, z) would count toward breaking into a sealed cavern (as `strike` decides it). */
+  canBreak(x: number, z: number): boolean {
+    return this.diggable(x, z) !== null;
+  }
+
+  /** Break into the sealed cavern at (x, z) at once, as the last strike of the pick does. False if there is none to break. */
+  breakOpen(x: number, z: number): boolean {
+    const best = this.diggable(x, z);
+    if (!best) return false;
+    best.hits = Math.max(best.hits, DIG_HITS);
+    best.cav.dimple = DIMPLE + 0.14 * best.hits;
+    this.breakThrough(best);
+    this.pushCaverns();
+    return true;
+  }
+
+  /** Standing stones woken by the waking song: where, and until when (frame time, s). Drawn by the renderer. */
+  stonesAwake: { x: number; z: number; from: number; until: number } | null = null;
+  private readonly wakeU = { value: new THREE.Vector4(0, 0, 0, 0) };
+  /** Keeps the woken stones' light in step: it comes up with the song and dies away over its last seconds. */
+  private wakeLight(now: number): void {
+    const a = this.stonesAwake;
+    if (!a || now >= a.until) {
+      this.stonesAwake = null;
+      this.wakeU.value.z = 0;
+      return;
+    }
+    this.wakeU.value.set(a.x, a.z, Math.min(1, (a.until - now) / 3), a.from);
+  }
+  /** The waking song has been played among stones at (x, z): they stay lit for `seconds` past `now` (pass FrameState.time). */
+  wakeStones(x: number, z: number, seconds: number, now = performance.now() / 1000): void {
+    this.stonesAwake = { x, z, from: now, until: now + seconds };
   }
 
   /** How long the sand takes to drain once a cavern breaks open (s). */
@@ -4502,6 +4578,7 @@ export class Discoveries {
   update(f: FrameState): void {
     const px = f.player.pos.x;
     const pz = f.player.pos.z;
+    this.wakeLight(f.time);
     // the feather on a summit hangs in the rising air, turning, so it is never edge-on for long
     const fe = this.strays.feather?.children[0];
     if (fe && this.strays.feather?.visible) {
