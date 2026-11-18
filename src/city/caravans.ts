@@ -5,6 +5,7 @@
 // Everything is instanced; all animation (walk, sit, sway, head turn and bow) is in the vertex shaders.
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
+import { CAMEL_GALLOP, RIDE } from '../game/speeds';
 import type { CitySite } from './types';
 import type { Landmark, Village } from '../world/discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
@@ -38,9 +39,9 @@ const CAMEL_REACH = 3.6;
 /** The top of the back over the ground at scale 1, standing (m: the body tube in animalGeometry), and how far it drops kneeling (the shader's). */
 const CAMEL_BACK = 2.88;
 const CAMEL_KNEEL = 1.5;
-const CAMEL_WALK = 1.7; // m/s
-const CAMEL_RUN = 5.5;
+const CAMEL_WALK = 1.7; // m/s, on its own: under a rider it goes at RIDE, and at CAMEL_GALLOP with Shift
 const CAMEL_RUN_STRIDE = 4.4; // metres per gait cycle at a run (a walk is the agent's own stride)
+const CAMEL_RUN_PACE = 1.25; // gait cycles a second at a run: faster than that and the stride lengthens instead
 const CAMEL_TURN = 1.1; // rad/s
 const CAMEL_BODY = 0.8; // kept this far (m) from anything standing in the way
 /** A camel left loose kneels down to wait after this long (s). */
@@ -1773,7 +1774,7 @@ export class Caravans {
 
   /**
    * Steer the ridden camel. (wx, wz) is the way to go in the world (length 0..1, 0 to stand); run
-   * trots it on. A kneeling one gets up first. It turns slowly and wide, takes its time to speed
+   * gallops it. A kneeling one gets up first. It turns slowly and wide, takes its time to speed
    * up, and goes round what is in its way.
    */
   ride(dt: number, wx: number, wz: number, run: boolean): void {
@@ -1798,11 +1799,11 @@ export class Caravans {
       a.yaw += step;
       this.turnRate += (step / dt - this.turnRate) * k(6);
       // (easing off into a turn, and only ambling round one it is far from making)
-      targetSpd = (run ? CAMEL_RUN : CAMEL_WALK) * Math.min(1, want) * (Math.abs(err) < 1.2 ? 1 - 0.3 * (Math.abs(err) / 1.2) : 0.3);
+      targetSpd = (run ? CAMEL_GALLOP : RIDE) * Math.min(1, want) * (Math.abs(err) < 1.2 ? 1 - 0.3 * (Math.abs(err) / 1.2) : 0.3);
     } else this.turnRate += (0 - this.turnRate) * k(6);
     a.spd += (targetSpd - a.spd) * k(targetSpd > a.spd ? 1.2 : 2.5);
     if (a.spd < 0.02) a.spd = 0;
-    a.ph += (a.spd * dt) / (a.spd > CAMEL_WALK * 1.4 ? CAMEL_RUN_STRIDE : a.stride);
+    a.ph += (a.spd * dt) / (a.spd > CAMEL_WALK * 1.4 ? Math.max(CAMEL_RUN_STRIDE, a.spd / CAMEL_RUN_PACE) : a.stride);
     if (a.spd === 0) return;
     // too steep a face and it will not climb; a stone or a wall and it goes round
     const mx = Math.sin(a.yaw) * a.spd * dt;

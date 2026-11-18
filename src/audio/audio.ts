@@ -22,7 +22,7 @@ export interface AudioFrame {
   dt: number;
   day: number; // 0..1 fraction of day: 0 midnight, 0.25 sunrise, 0.5 noon, 0.75 sunset
   night: number; // 0 day .. 1 full night
-  speed: number; // player horizontal speed m/s (walk ~5, run ~9, sliding up to ~25)
+  speed: number; // player horizontal speed m/s (walk ~5, run ~9, a board ~8 to 12 on the flat and more downhill)
   sliding: boolean;
   rock?: boolean; // sliding over rock, not sand: a lower, duller scrape
   grounded: boolean;
@@ -1462,7 +1462,7 @@ export class AudioEngine {
     const c = this.clock;
     const breathe = 0.5 + 0.5 * Math.sin(c * 0.11) * Math.sin(c * 0.067 + 1.3);
     // Air rushing past when moving fast (sliding, launched).
-    const rush = clamp01((f.speed - 8) / 17);
+    const rush = clamp01((f.speed - 6) / 16);
 
     // Buildings shelter you: duck the wind a little as a city closes around you (1 when no city).
     // Rock shuts it out altogether: underground only the air you move through yourself is left.
@@ -1476,7 +1476,7 @@ export class AudioEngine {
     g.whistleGain.gain.setTargetAtTime(0.006 * gust * (0.3 + alt) * breathe * shelter, now, 2);
     g.whistleBP.frequency.setTargetAtTime(700 + 500 * gust + 400 * alt + 200 * breathe, now, 2.5);
 
-    const sand = f.sliding && f.grounded ? clamp01((f.speed - 2) / 16) : 0;
+    const sand = f.sliding && f.grounded ? clamp01((f.speed - 2) / 10) : 0;
     g.hissGain.gain.setTargetAtTime((f.rock ? 0.03 : 0.045) * sand, now, sand > 0 ? 0.25 : 0.6);
     g.hissBP.frequency.setTargetAtTime(f.rock ? 1700 + 900 * sand : 4500 + 2500 * sand, now, f.rock ? 0.15 : 0.5);
 

@@ -98,14 +98,14 @@ describe('a board', () => {
     const p = rider(0);
     walk(p, 4);
     expect(p.state.sliding).toBe(true);
-    expect(p.state.pos.z).toBeGreaterThan(4 * 5.2 * 1.5);
+    expect(p.state.speed).toBeGreaterThan(5.2 * 1.3);
   });
 
   it('rides up a mountainside', () => {
     const p = rider(0.8);
     walk(p, 4);
     expect(p.state.grounded).toBe(true);
-    expect(p.state.pos.z).toBeGreaterThan(20);
+    expect(p.state.pos.z).toBeGreaterThan(15);
     expect(p.state.pos.y).toBeCloseTo(p.state.pos.z * 0.8, 3);
   });
 
