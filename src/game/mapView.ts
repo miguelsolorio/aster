@@ -232,6 +232,8 @@ function glyph(c: Ctx, kind: string): void {
 }
 
 export class MapView {
+  /** The places the wanderer has brought back, as the save keeps them. Set by the game. */
+  revived: readonly { x: number; z: number }[] = [];
   isOpen = false;
   private readonly root: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
@@ -612,6 +614,16 @@ export class MapView {
         c.stroke();
       }
       c.restore();
+      // a place brought back: a small warm dot at the glyph's shoulder, the one mark on the map that is the wanderer's doing
+      if (this.revived.some((r) => Math.abs(r.x - p.x) < 60 && Math.abs(r.z - p.z) < 60)) {
+        c.beginPath();
+        c.arc(x + 8.5, y - 8.5, 3.1, 0, Math.PI * 2);
+        c.fillStyle = '#c9822f';
+        c.fill();
+        c.lineWidth = 1.1;
+        c.strokeStyle = INK;
+        c.stroke();
+      }
       if (names) label(placeName(p.kind), x, y + (town ? 21 : 19), INK, `${town ? '600 12.5px' : '11.5px'} ${SERIF}`);
     }
 

@@ -40,6 +40,7 @@ import { Talk, type Speaker } from './talk';
 import { CLIMBER, FOUND, HERDER, KEEPER, MINER, PILGRIM, SAND, SETTLED, SNOWFOLK, TOWNSFOLK, TRAVELLER, VILLAGER, WATCHER, WEAVER, type Line } from './lines';
 import { CavernHints } from './hints';
 import { offeringAt } from './offerings';
+import { CAMP_OFF, DONE, KEEPER_OF_FLAME, NEEDS, SETTLER, TAKEN, WANTS, stageOf, type Carry } from './restore';
 import { Marks } from './marks';
 import { Atlas, areaAround } from './atlas';
 import { MapView, groundInk, type MapHint, type MapState } from './mapView';
@@ -833,6 +834,9 @@ function start() {
         };
       }
       // The watcher under a village's tower knows where a rope lies, out by the great bones.
+      if (s.kind === 'watcher' && caravans.personAt(s.ref, trav) && trav.place === 'watchtower') {
+        return { lines: [(lastLine = pick(KEEPER_OF_FLAME, lastLine))] };
+      }
       if (s.kind === 'watcher') {
         const rope = save.has('rope') ? null : discoveries.ropeSpot(s.x, s.z, 2500);
         if (rope) {
@@ -852,6 +856,10 @@ function start() {
           return { lines: CLIMBER[want].map((l) => directions(text(l), s.x, s.z, at.x, at.z)), done: () => send(want, at) };
         }
         return { lines: [(lastLine = pick(CLIMBER.after, lastLine))] };
+      }
+      // The people who moved into a hamlet once its well had water again.
+      if ((s.kind === 'host' || s.kind === 'villager') && caravans.personAt(s.ref, trav) && trav.place === 'hamlet') {
+        return { lines: [(lastLine = pick(SETTLER, lastLine))] };
       }
       // The people of the settlements out in the desert.
       if ((s.kind === 'host' || s.kind === 'villager') && caravans.personAt(s.ref, trav) && isSettlement(trav.place)) {
@@ -1251,10 +1259,84 @@ function start() {
   };
   /** Whether a swing may start now: a pick, feet on the ground, and no conversation to have. */
   const canDig = () => save.has('pick') && player.state.grounded && !talk.available;
+  // ---------------------------------------------------------------- bringing a place back
+  const campedAt = new Set<number>();
+  let revivedT = 0;
+  /** Tell the world what has been brought back: the places change, and caravans camp by a hamlet that has people again. */
+  const syncRevived = () => {
+    const p = player.state.pos;
+    const list = save.data.revived;
+    discoveries.setRevived(list, frame.clock, p.x, p.z);
+    map.revived = list;
+    for (const r of list) {
+      if (r.kind !== 'hamlet' || campedAt.has(r.key) || stageOf(r.kind, r.day, frame.clock) < 3) continue;
+      // (a camp is kept for the whole visit, so only the ones near enough to be come upon)
+      if (Math.hypot(r.x - p.x, r.z - p.z) > 4000) continue;
+      campedAt.add(r.key);
+      const a0 = ((r.key % 628) + 628) / 100;
+      let best = { x: r.x, z: r.z };
+      let flat = Infinity;
+      for (let k = 0; k < 8; k++) {
+        const a = a0 + (k / 8) * Math.PI * 2;
+        const x = r.x + Math.cos(a) * CAMP_OFF;
+        const z = r.z + Math.sin(a) * CAMP_OFF;
+        const h = world.height(x, z);
+        let rough = waterAt(x, z) ? 99 : 0;
+        for (let i = 0; i < 6; i++) rough = Math.max(rough, Math.abs(world.height(x + Math.cos(i * 1.05) * 9, z + Math.sin(i * 1.05) * 9) - h));
+        if (rough < flat) {
+          flat = rough;
+          best = { x, z };
+        }
+      }
+      caravans.addCamp(best.x, best.z, WORLD_SEED ^ Math.round(best.x * 31 + best.z * 17));
+      props.keepClear(best.x, best.z, 22);
+    }
+  };
+  /**
+   * The interact key at a place that can be brought back, or at something worth carrying to one.
+   * Gives what the place wants if it is carried; failing that takes up whatever is here to take;
+   * failing that says what the place wants. False when there was nothing of the kind to do.
+   */
+  const tend = (): boolean => {
+    const st = player.state;
+    if (steed || !st.grounded) return false;
+    const p = st.pos;
+    const say = (line: string) => talk.tell({ x: p.x, y: p.y + 1.8, z: p.z }, line, 5);
+    const at = discoveries.revivableNear(p.x, p.z);
+    const empty = at && at.stage === 0 && !save.data.revived.some((r) => r.key === at.key) ? at : null;
+    if (empty && save.carries(WANTS[empty.kind])) {
+      save.setCarry(WANTS[empty.kind], false);
+      save.revive({ key: empty.key, kind: empty.kind, x: empty.x, z: empty.z, day: frame.clock });
+      syncRevived();
+      audio.chime();
+      buzz(40);
+      say(DONE[empty.kind]);
+      return true;
+    }
+    const fx = p.x + Math.sin(player.facing) * 1.5;
+    const fz = p.z + Math.cos(player.facing) * 1.5;
+    const here: Carry[] = [];
+    const src = discoveries.sourceNear(p.x, p.z);
+    if (src) here.push(src);
+    if (wading() || waterAt(fx, fz)) here.push('water');
+    const take = here.find((c) => !save.carries(c));
+    if (take) {
+      save.setCarry(take, true);
+      buzz(14);
+      say(TAKEN[take]);
+      return true;
+    }
+    if (empty) {
+      say(NEEDS[empty.kind]);
+      return true;
+    }
+    return false;
+  };
   const interact = () => {
     const p = player.state.pos;
     if (!talk.talking && discoveries.stoneNear(p.x, p.y, p.z)) discoveries.wakeStone(p.x, p.y, p.z);
     else if (talk.available) talk.interact();
+    else if (tend()) return;
     else if (steed) dismount();
     else if (tryMount()) return;
     else if (canDig() && swingT < 0) {
@@ -1941,6 +2023,10 @@ function start() {
     if (playing) {
       frame.clock += dt / DAY_SECONDS;
       save.setDays(frame.clock);
+    }
+    if ((revivedT -= dt) <= 0) {
+      revivedT = 1;
+      syncRevived();
     }
     {
       const px = st.pos.x;
@@ -2792,6 +2878,18 @@ function start() {
         wake: () => discoveries.wakeStone(player.state.pos.x, player.state.pos.y, player.state.pos.z, Infinity),
         // put the wanderer down somewhere, feet at y (for getting about a deep): e.g. __ds.tp(...__ds.deep.ledge)
         // play a song as if chosen from the ring: __ds.sing('waking')
+        // bring the nearest hamlet, watchtower or spring back as if daysAgo in-game days ago: __ds.revive(2)
+        revive: (daysAgo = 0, kind?: string) => {
+          const p = player.state.pos;
+          const at = discoveries.revivables(p.x, p.z).find((r) => !kind || r.kind === kind);
+          if (!at) return null;
+          save.data.revived = save.data.revived.filter((r) => r.key !== at.key);
+          save.revive({ key: at.key, kind: at.kind, x: at.x, z: at.z, day: frame.clock - daysAgo });
+          discoveries.setRevived(save.data.revived, frame.clock, p.x, p.z, true);
+          syncRevived();
+          return { kind: at.kind, x: at.x, z: at.z, stage: discoveries.revivedStage(at.key) };
+        },
+        revivable: () => discoveries.revivables(player.state.pos.x, player.state.pos.z),
         sing: (song: Song) => {
           lastSong = song;
           playFlute(song);
