@@ -2,6 +2,7 @@
 // seen is washed in its colours; the rest lies under a dusk veil. Places come upon are inked
 // in, and an errand is a dashed round over roughly where to look, whether or not anyone has
 // been there. North is up: east is +x, south is +z.
+import { dayName } from '../world/calendar';
 import './map.css';
 import { ATLAS_CELL, cellKey, keyX, keyZ, type Area, type Atlas } from './atlas';
 import { findName, isFindKind } from './finds';
@@ -243,6 +244,8 @@ function glyph(c: Ctx, kind: string): void {
 export class MapView {
   /** The places the wanderer has brought back, as the save keeps them. Set by the game. */
   revived: readonly { x: number; z: number }[] = [];
+  /** The day of the moon's month it is (0 the new moon, 4 the full), for the almanac along the foot of the sheet. Set by the game. */
+  monthDay = 0;
   isOpen = false;
   private readonly root: HTMLElement;
   private readonly canvas: HTMLCanvasElement;
@@ -755,6 +758,39 @@ export class MapView {
       c.strokeStyle = INK_SOFT;
       c.stroke();
       label('N', x, y + 12.5, INK, `600 11px ${SERIF}`);
+    }
+    // ---- the almanac: the month's eight moons in a row, today's ringed, and what falls on which
+    if (w > 620) {
+      const gap = 46;
+      const x0 = w / 2 - (gap * 7) / 2;
+      const y = h - 38;
+      const r = 6.2;
+      for (let i = 0; i < 8; i++) {
+        const cx = x0 + i * gap;
+        const p = i / 8;
+        c.beginPath();
+        c.arc(cx, y, r, 0, Math.PI * 2);
+        c.fillStyle = INK;
+        c.fill();
+        if (i > 0) {
+          const kk = Math.cos(p * Math.PI * 2);
+          const right = p <= 0.5;
+          c.beginPath();
+          c.arc(cx, y, r - 0.9, -Math.PI / 2, Math.PI / 2, !right);
+          c.ellipse(cx, y, Math.max(0.01, Math.abs(kk) * (r - 0.9)), r - 0.9, 0, Math.PI / 2, -Math.PI / 2, right ? kk > 0 : kk < 0);
+          c.fillStyle = '#efe4c8';
+          c.fill();
+        }
+        if (i === this.monthDay) {
+          c.beginPath();
+          c.arc(cx, y, r + 3.6, 0, Math.PI * 2);
+          c.lineWidth = 1.4;
+          c.strokeStyle = RED;
+          c.stroke();
+        }
+        const name = dayName(i);
+        if (name) label(name, cx, y + 18, i === this.monthDay ? RED : INK_SOFT, `italic 10.5px ${SERIF}`);
+      }
     }
     {
       const steps = [100, 200, 500, 1000, 2000, 5000, 10000, 20000];

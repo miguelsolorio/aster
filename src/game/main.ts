@@ -52,6 +52,8 @@ import { LEARNED, NOTHING, RAIN_ARRIVES, RAIN_REST, SONGS, TEACH_R, WAKE_R, WIND
 import { DAY_SECONDS, HOUR_SECONDS, Weather, massifGuard } from '../world/weather';
 import { stormUniforms, updateStorm } from '../render/storm';
 import { Heavens, heavensUniforms } from '../render/heavens';
+import { Lanterns, type LanternSource } from '../render/lanterns';
+import { almanacLines, festival, flood, market, migration, migrationBearing, monthDay, monthOf } from '../world/calendar';
 import { CONSTELLATIONS, NAIL, bloodMoon, comet, dayOf, eclipse, moonPhase, nextLesson, nightOf, shower } from '../world/sky';
 import { CITY_CELL } from '../city/placement';
 import { bedGeometry, hearthGeometry, solidMaterial } from './equipment';
@@ -89,6 +91,7 @@ function start() {
   // The star chart's line in the night sky: how bright, and the way it points over the ground.
   u.uChart = { value: 0 };
   heavensUniforms(u);
+  u.uFlood = { value: 0 };
   u.uChartDir = { value: new THREE.Vector2(1, 0) };
 
   const qs = new URLSearchParams(location.search);
@@ -425,6 +428,12 @@ function start() {
   /** The clock the sky runs on. */
   const skyClock = () => frame.clock + skyShift;
   let fallWatch = 0;
+  // The lantern festival's lanterns, and the lived-in places near enough to send them up.
+  const lanterns = new Lanterns(u);
+  scene.add(lanterns.group);
+  const lanternFrom: LanternSource[] = [];
+  const lanternSites: import('../world/discoveries').SiteRef[] = [];
+  let lanternScan = 0;
   let skyAsk: string | null = qs.get('sky');
   /** What the keeper of a star house has to teach tonight, if anything: the Nail first, then one constellation a night. */
   const skyLesson = (): { lines: string[]; done?: () => void } | null => {
@@ -1015,6 +1024,7 @@ function start() {
       const hour = d < 0.2 || d > 0.82 ? TOWNSFOLK.night : d < 0.32 ? TOWNSFOLK.dawn : d > 0.7 ? TOWNSFOLK.dusk : d > 0.42 && d < 0.58 ? TOWNSFOLK.noon : [];
       const pool = [...TOWNSFOLK.any, ...(site ? TOWNSFOLK[site.kind] : []), ...hour, ...(save.has('board') ? [] : [...TOWNSFOLK.onFoot, ...TOWNSFOLK.onFoot])];
       // a relic at the belt gets noticed, and in any city someone with no pick is sent to the miner
+      pool.push(...almanacLines(monthDay(dayOf(skyClock(), day.day))));
       if (save.data.items.relic) pool.push(...TOWNSFOLK.relic, ...TOWNSFOLK.relic);
       if (site && !save.has('pick')) {
         // point the way to the miner, from where the player stands
@@ -2056,6 +2066,10 @@ function start() {
             : want === 'new' ? moonPhase(n) === 0
             : want === 'full' ? moonPhase(n) === 0.5
             : want === 'eclipse' ? dayOf(frame.clock + k, day.day) % 11 === 3
+            : want === 'market' ? monthDay(dayOf(frame.clock + k, day.day)) === 2
+            : want === 'herds' ? monthDay(dayOf(frame.clock + k, day.day)) === 5
+            : want === 'lanterns' ? monthDay(n) === 4
+            : want === 'flood' ? monthDay(n) === 0
             : true;
         };
         for (let k = 0; k < 400 && !ok(k); k++) skyShift = k + 1;
@@ -2087,6 +2101,37 @@ function start() {
           }
         }
       } else if (!shower(night)) fallWatch = 0;
+    }
+    // The calendar: what the day of the moon's month brings (see world/calendar.ts).
+    {
+      const sc = skyClock();
+      const today = dayOf(sc, day.day);
+      map.monthDay = monthDay(today);
+      u.uFlood.value = flood(sc, day.day);
+      people.market = market(sc, day.day);
+      frame.migrate = migration(sc, day.day);
+      const b = migrationBearing(monthOf(today));
+      (frame.migrateDir ??= new THREE.Vector2()).set(Math.cos(b), Math.sin(b));
+      const fest = festival(sc, day.day);
+      if (fest > 0 && (lanternScan -= dt) <= 0) {
+        lanternScan = 4;
+        lanternFrom.length = 0;
+        const p = player.state.pos;
+        for (const c of world.cities.near(p.x, p.z).slice(0, 2)) {
+          if (Math.hypot(c.cx - p.x, c.cz - p.z) < 9000) lanternFrom.push({ x: c.cx, y: c.groundY, z: c.cz, r: c.radius * 0.55, weight: 12 });
+        }
+        // every settlement out in the desert, every village, and every hamlet with people in it again
+        lanternSites.length = 0;
+        let small = 0;
+        for (const s of discoveries.sitesNear(p.x, p.z, 3500, lanternSites).sort((a, b) => Math.hypot(a.x - p.x, a.z - p.z) - Math.hypot(b.x - p.x, b.z - p.z))) {
+          if (small >= 6) break;
+          const lived = isSettlement(s.kind) || s.kind === 'mountain-village' || s.kind === 'snow-village' || (s.kind === 'hamlet' && save.data.revived.some((r) => r.key === s.key && stageOf(r.kind, r.day, frame.clock) >= 2));
+          if (!lived) continue;
+          small++;
+          lanternFrom.push({ x: s.x, y: world.height(s.x, s.z), z: s.z, r: 22, weight: 1 });
+        }
+      }
+      lanterns.update(dt, fest * (1 - frame.storm) * (1 - frame.rain), lanternFrom, frame.wind, frame.gust, renderer.getPixelRatio());
     }
     frame.day = day.day;
     frame.night = day.night;
@@ -3044,7 +3089,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, save, atlas, map, talk, figure, trail, dust, bake, renderer, discoveries, props, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
+        player, day, keys, world, save, atlas, map, lanterns, heavens, talk, figure, trail, dust, bake, renderer, discoveries, props, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
   }
 
   let frozen = false;

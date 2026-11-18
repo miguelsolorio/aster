@@ -28,6 +28,8 @@ const FLOCK_KEY = 1e12;
 const MORE_AFTER_RAIN = 0.5;
 const WET_OUT = 0.3;
 const RAIN_LULL = 0.2;
+/** How fast a herd's home travels on a day the herds move (m/s): a walk the slowest of them keeps up with. */
+const MIGRATE_SPEED = 1.3;
 
 /** Goats left to graze round a hamlet or a mountain village: this plus the size of the place's own key. */
 const GRAZE_KEY = 6e12;
@@ -1266,6 +1268,8 @@ interface Herd {
   grace: number;
   /** One of the extra herds that come out on wet ground after rain: out only while it is wet and the rain has stopped. */
   bonus?: boolean;
+  /** Travelling with the rest on a day the herds move: its home walks, and the herd goes after it in file. */
+  moving?: boolean;
   /** Rain and wet ground where the herd is, looked at a few times a second. */
   rain?: number;
   wet?: number;
@@ -1928,6 +1932,16 @@ export class Fauna {
         }
       }
       const drying = (h.wet ?? 0) > WET_OUT && (h.rain ?? 0) < RAIN_LULL;
+      // a day the herds move: the grazers' homes all walk the same way
+      h.moving = (f.migrate ?? 0) > 0.5 && !!f.migrateDir && !h.follow && !h.small && herdSp(h.sp) && (h.sp === ORYX || h.sp === GAZELLE || h.sp === ASS);
+      if (h.moving && f.migrateDir) {
+        const nx = h.hx + f.migrateDir.x * MIGRATE_SPEED * dt;
+        const nz = h.hz + f.migrateDir.y * MIGRATE_SPEED * dt;
+        if (!this.blocked?.(nx, nz)) {
+          h.hx = nx;
+          h.hz = nz;
+        }
+      }
       const awake =
         h.bonus && !drying ? false
         : h.sp === VULTURE && (h.rain ?? 0) > 0.5 ? false
@@ -2067,7 +2081,16 @@ export class Fauna {
       } else {
         a.t -= dt;
         // a shepherd's goats keep round the shepherd: one left behind trots to catch up
-        const hd = flock ? Math.hypot(a.x - h.hx, a.z - h.hz) : 0;
+        const hd = flock || h.moving ? Math.hypot(a.x - h.hx, a.z - h.hz) : 0;
+        // travelling: each makes for a place a little ahead of where the herd has got to, so they string out in file
+        if (h.moving && f.migrateDir && a.state !== 1 && (a.t <= 0 || hd > spec.roam * 0.7)) {
+          const ahead = spec.roam * (0.3 + Math.random() * 0.6);
+          const side = (Math.random() - 0.5) * spec.roam * 0.35;
+          a.tx = h.hx + f.migrateDir.x * ahead - f.migrateDir.y * side;
+          a.tz = h.hz + f.migrateDir.y * ahead + f.migrateDir.x * side;
+          a.state = 1;
+          a.t = 0;
+        }
         if (flock && !flock.rest && (a.state !== 1 ? hd > spec.roam * 1.4 : Math.hypot(a.tx - h.hx, a.tz - h.hz) > spec.roam * 1.5)) {
           const ang = Math.random() * TAU;
           const rr = Math.sqrt(Math.random()) * spec.roam * 0.7;
@@ -2100,7 +2123,8 @@ export class Fauna {
         // standing: a grazer grazes, a fox noses the sand, a sandgrouse pecks, unless the player is near enough to watch
         if (a.state === 0) {
           const grazing =
-            herd ? Math.sin(f.time * 0.21 + a.seed * 30) > ((h.wet ?? 0) > WET_OUT && (h.rain ?? 0) < RAIN_LULL ? -0.85 : -0.3)
+            h.moving ? false
+            : herd ? Math.sin(f.time * 0.21 + a.seed * 30) > ((h.wet ?? 0) > WET_OUT && (h.rain ?? 0) < RAIN_LULL ? -0.85 : -0.3)
             : sp === FOX ? Math.sin(f.time * 0.5 + a.seed * 30) > 0.4
             : sp === GROUSE ? Math.sin(f.time * 2.3 + a.seed * 40) > 0.1
             : false;
