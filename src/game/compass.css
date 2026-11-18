@@ -1,0 +1,158 @@
+/* The compass: a short run of the horizon along the top of the view. No box, only ink. */
+.aster-compass {
+  --ink: #efe6d8;
+  --accent: #e9c98f;
+  --shade: rgba(20, 16, 13, 0.6);
+  position: fixed;
+  top: calc(13px + env(safe-area-inset-top, 0px));
+  left: 50%;
+  width: min(264px, 56vw);
+  height: 34px;
+  margin-left: calc(min(264px, 56vw) / -2);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity 0.6s ease,
+    visibility 0s linear 0.6s;
+}
+.aster-compass.is-on {
+  opacity: 0.86;
+  visibility: visible;
+  transition:
+    opacity 0.6s ease,
+    visibility 0s;
+}
+/* on a narrow screen the count in the corner reaches the middle: sit under it */
+@media (max-width: 760px) {
+  .aster-compass {
+    top: calc(44px + env(safe-area-inset-top, 0px));
+  }
+}
+
+/* the notch the horizon slides past: where the eye is looking */
+.aster-compass__notch {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  width: 0;
+  height: 0;
+  margin-left: -3.5px;
+  border-left: 3.5px solid transparent;
+  border-right: 3.5px solid transparent;
+  border-top: 4px solid var(--ink);
+  filter: drop-shadow(0 0 2px var(--shade));
+}
+
+/* the horizon, thinning away to nothing at either end */
+.aster-compass__window {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 6px;
+  height: 18px;
+  overflow: hidden;
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 22%, #000 78%, transparent);
+  mask-image: linear-gradient(to right, transparent, #000 22%, #000 78%, transparent);
+}
+.aster-compass__track {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  will-change: transform;
+}
+.aster-compass__letter,
+.aster-compass__tick {
+  position: absolute;
+  top: 50%;
+}
+.aster-compass__letter {
+  transform: translate(-50%, -50%);
+  color: var(--ink);
+  font:
+    600 12px / 1 "Iowan Old Style",
+    "Palatino Linotype",
+    Palatino,
+    Georgia,
+    serif;
+  letter-spacing: 0.04em;
+  opacity: 0.82;
+  text-shadow:
+    0 0 3px var(--shade),
+    0 0 8px var(--shade);
+}
+.aster-compass__letter.is-north {
+  color: var(--accent);
+  opacity: 1;
+}
+.aster-compass__tick {
+  width: 1px;
+  height: 3px;
+  margin: -1.5px 0 0 -0.5px;
+  background: var(--ink);
+  opacity: 0.42;
+  box-shadow: 0 0 3px var(--shade);
+}
+.aster-compass__tick.is-half {
+  height: 7px;
+  margin-top: -3.5px;
+  opacity: 0.7;
+}
+
+/* what there is to walk toward, under the horizon */
+.aster-compass__things {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 25px;
+  height: 9px;
+}
+.aster-compass__thing {
+  position: absolute;
+  left: 0;
+  top: 0;
+  box-sizing: border-box;
+  transition: opacity 0.25s ease;
+}
+.aster-compass__thing.is-pinned {
+  opacity: 0.5;
+}
+/* an errand: a small round, as on the map */
+.aster-compass__thing.is-errand {
+  width: 7px;
+  height: 7px;
+  margin: 1px 0 0 -3.5px;
+  border: 1.5px solid var(--accent);
+  border-radius: 50%;
+  box-shadow:
+    0 0 3px var(--shade),
+    inset 0 0 2px var(--shade);
+}
+/* a place marked through the spyglass: a thread of light */
+.aster-compass__thing.is-mark {
+  width: 1.5px;
+  height: 9px;
+  margin-left: -0.75px;
+  border-radius: 1px;
+  background: linear-gradient(to top, #fff2c8, rgba(255, 242, 200, 0.35));
+  box-shadow: 0 0 4px rgba(255, 226, 170, 0.7);
+}
+/* the bedroll: a tent */
+.aster-compass__thing.is-camp {
+  width: 0;
+  height: 0;
+  margin: 1px 0 0 -4.5px;
+  border-left: 4.5px solid transparent;
+  border-right: 4.5px solid transparent;
+  border-bottom: 7px solid var(--ink);
+  filter: drop-shadow(0 0 2px var(--shade));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .aster-compass,
+  .aster-compass.is-on,
+  .aster-compass__thing {
+    transition: none;
+  }
+}

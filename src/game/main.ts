@@ -44,6 +44,7 @@ import { Marks } from './marks';
 import { Atlas, areaAround } from './atlas';
 import { MapView, groundInk, type MapHint, type MapState } from './mapView';
 import { SpyglassView } from './spyglass';
+import { Compass, nearest, type Thing } from './compass';
 import { SleepView } from './sleep';
 import { bedGeometry, hearthGeometry, solidMaterial } from './equipment';
 
@@ -1390,6 +1391,17 @@ function start() {
     return mapState;
   };
   let mapShutAt = -1e9; // when the map was last put away
+  // The compass points at what the map already shows: each errand until the wanderer is inside
+  // its round, the bedroll, and the nearest few places marked through the spyglass.
+  const compass = new Compass(canvasHost);
+  let compassT = 0;
+  const compassThings = (): Thing[] => {
+    const p = player.state.pos;
+    const out: Thing[] = mapHints().map((h) => ({ x: h.x, z: h.z, kind: 'errand', r: h.r }));
+    const camp = save.data.camp;
+    if (camp) out.push({ x: camp.x, z: camp.z, kind: 'camp', r: 30 });
+    return out.concat(nearest(save.data.sightedAt, p.x, p.z, 8, 'mark', 60));
+  };
   const toggleMap = () => {
     if (map.isOpen) {
       map.close();
@@ -2175,6 +2187,12 @@ function start() {
       }
     } else sightKey = null;
     glassView.set(glassK, sightKey !== null ? sightT / SIGHT_HOLD : 0);
+    const compassOn = playing && glassK < 0.5 && !mapOpen && !sleep.isOpen && !sleep.asleep;
+    if (compassOn && (compassT -= dt) <= 0) {
+      compassT = 1;
+      compass.setThings(compassThings());
+    }
+    compass.update(compassOn, camYaw, st.pos.x, st.pos.z);
     if (glassK > 0.5 !== glassHid) {
       glassHid = glassK > 0.5;
       figure.group.visible = !glassHid && !figNear;
