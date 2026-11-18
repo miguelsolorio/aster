@@ -3,7 +3,7 @@
 // bones and ruins. All of them are one instanced draw call: legs, heads, ears, tails and wings
 // move in the vertex shader, and only where they are and what they're doing is worked out here.
 import * as THREE from 'three';
-import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
+import type { FrameState, SaddleSway, SurfaceSample, Uniforms, World } from '../game/contract';
 import { ASS_GALLOP, ORYX_GALLOP, RIDE } from '../game/speeds';
 import { GB } from '../city/caravans';
 import type { Landmark } from './discoveries';
@@ -1825,7 +1825,7 @@ export class Fauna {
   }
 
   /** Where the ridden animal stands and faces, and how fast it goes (valid while mounted). */
-  get seat(): { x: number; z: number; y: number; yaw: number; spd: number; back: number; turn: number } | null {
+  get seat(): { x: number; z: number; y: number; yaw: number; spd: number; back: number; turn: number; sway?: SaddleSway } | null {
     const a = this.ridden;
     if (!a) return null;
     return { x: a.x, z: a.z, y: a.y, yaw: a.yaw, spd: a.spd, back: MOUNT_BACK * a.scale, turn: this.turnRate };

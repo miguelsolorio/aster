@@ -1751,6 +1751,7 @@ function start() {
       const m = sd.seat;
       if (m) {
         st.pos.set(m.x, world.height(m.x, m.z) + m.back - 0.58, m.z);
+        figure.saddle = m.sway ?? null;
         st.vel.set(Math.sin(m.yaw) * m.spd, 0, Math.cos(m.yaw) * m.spd);
         st.speed = m.spd;
         st.grounded = true;
