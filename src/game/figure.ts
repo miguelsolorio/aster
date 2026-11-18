@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import type { PlayerState, Uniforms } from './contract';
+import type { PlayerState, SaddleSway, Uniforms } from './contract';
 import { strideLength } from './player';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import { CHOSEN, TRIM, bedrollGeometry, boardGeometry, bootGeometry, featherGeometry, carpetGeometry, chartGeometry, fluteGeometry, lampGeometry, pickGeometry, relicGeometry, rodGeometry, rollGeometry, ropeCoilGeometry, rugMaterial, solidMaterial, spyglassGeometry, trimGeometry } from './equipment';
@@ -282,6 +282,8 @@ export class Figure {
   /** Sitting astride an animal: the legs hang either side and the walk stops. */
   seated = false;
   private seat = 0;
+  /** How the animal's back is moving under the rider this frame, or null where it holds still. */
+  saddle: SaddleSway | null = null;
   private backU = { value: 0 };
   /** Has a carpet: rolled on the back, it unrolls under the feet whenever the figure flies. */
   carpet = false;
@@ -563,6 +565,14 @@ export class Figure {
     this.torso.rotation.x = Math.sin(a * 2) * 0.02 * this.amp - this.air * 0.1;
     this.torso.rotation.y = s * 0.09 * this.amp;
     this.torso.rotation.z = c * 0.03 * this.amp;
+    // Astride, the hips go with the animal's back and the body above them swings the other way to
+    // stay over it, nodding a little with each footfall.
+    const sd = this.saddle;
+    const ride = sd ? this.seat : 0;
+    if (sd && ride > 0) {
+      this.torso.rotation.z += sd.roll * 1.7 * ride;
+      this.torso.rotation.x += (0.035 * sd.rock + 0.02) * ride;
+    }
 
     // The board lies along the sand under the feet while riding, whatever the body's lean.
     // It stays there in the air too, nose lifting with a climb and dipping with a fall.
@@ -693,6 +703,12 @@ export class Figure {
     g.rotation.set(this.pitch, facing, -this.bank * Math.max(this.slide, air * 0.5) + sway * fly);
     g.position.copy(st.pos);
     g.position.y += -0.03 - Math.abs(s) * 0.045 * this.amp;
+    if (sd && ride > 0) {
+      g.rotation.z -= sd.roll * ride;
+      g.position.x += sd.x * ride;
+      g.position.y += sd.y * ride;
+      g.position.z += sd.z * ride;
+    }
     // In the air, turn about the hips so the body stays centred on the flight path.
     const sf = Math.sin(facing);
     const cf = Math.cos(facing);

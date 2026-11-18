@@ -4,7 +4,7 @@
 // Four draw calls: pack animals, people, ground props, fire/smoke.
 // Everything is instanced; all animation (walk, sit, sway, head turn and bow) is in the vertex shaders.
 import * as THREE from 'three';
-import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
+import type { FrameState, SaddleSway, SurfaceSample, Uniforms, World } from '../game/contract';
 import { CAMEL_GALLOP, RIDE } from '../game/speeds';
 import type { CitySite } from './types';
 import type { Landmark, Village } from '../world/discoveries';
@@ -39,6 +39,7 @@ const CAMEL_REACH = 3.6;
 /** The top of the back over the ground at scale 1, standing (m: the body tube in animalGeometry), and how far it drops kneeling (the shader's). */
 const CAMEL_BACK = 2.88;
 const CAMEL_KNEEL = 1.5;
+const MOUNT_TILT = 0.35; // how far a ridden or loose camel tips to the slope it stands on
 const CAMEL_WALK = 1.7; // m/s, on its own: under a rider it goes at RIDE, and at CAMEL_GALLOP with Shift
 const CAMEL_RUN_STRIDE = 4.4; // metres per gait cycle at a run (a walk is the agent's own stride)
 const CAMEL_RUN_PACE = 1.25; // gait cycles a second at a run: faster than that and the stride lengthens instead
@@ -1764,12 +1765,47 @@ export class Caravans {
   }
 
   /** Where the ridden camel stands and faces, and how fast it goes (valid while mounted). back follows it up off its knees. */
-  get seat(): { x: number; z: number; y: number; yaw: number; spd: number; back: number; turn: number } | null {
+  get seat(): { x: number; z: number; y: number; yaw: number; spd: number; back: number; turn: number; sway?: SaddleSway } | null {
     const m = this.ridden;
     if (!m) return null;
     const a = m.a;
     const back = (CAMEL_BACK - CAMEL_KNEEL * ss(0, 1, a.sit)) * a.scale;
-    return { x: a.x, z: a.z, y: a.y, yaw: a.yaw, spd: a.spd, back, turn: this.turnRate };
+    return { x: a.x, z: a.z, y: a.y, yaw: a.yaw, spd: a.spd, back, turn: this.turnRate, sway: this.saddle(a, back) };
+  }
+
+  private readonly sway: SaddleSway = { x: 0, y: 0, z: 0, roll: 0, rock: 0 };
+  /**
+   * Where the camel's back is, as the animal shader draws it: rolled and bobbing with the gait
+   * and part tipped to the slope (the same numbers as animalVert and putMount, kept in step).
+   */
+  private saddle(a: Agent, back: number): SaddleSway {
+    const g = Math.min(1.25, a.spd / 1.3);
+    const roll = 0.05 * g * Math.sin(TAU * a.ph + 0.4);
+    const bob = Math.sin(2 * TAU * a.ph);
+    const side = Math.sin(roll) * CAMEL_BACK * a.scale;
+    const up = back + 0.04 * g * bob * a.scale;
+    const n = this.world.normal(a.x, a.z, this.nrm);
+    const ux = n.x * MOUNT_TILT;
+    const uy = n.y * MOUNT_TILT + (1 - MOUNT_TILT);
+    const uz = n.z * MOUNT_TILT;
+    const ul = Math.hypot(ux, uy, uz);
+    // the animal's right: up x forward, as the shader has it
+    const fx = Math.sin(a.yaw);
+    const fz = Math.cos(a.yaw);
+    let rx = uy * fz;
+    let ry = uz * fx - ux * fz;
+    let rz = -uy * fx;
+    const rl = Math.hypot(rx, ry, rz) || 1;
+    rx /= rl;
+    ry /= rl;
+    rz /= rl;
+    const s = this.sway;
+    s.x = rx * side + (ux / ul) * up;
+    s.y = ry * side + (uy / ul) * up - back;
+    s.z = rz * side + (uz / ul) * up;
+    s.roll = roll;
+    s.rock = g * bob;
+    return s;
   }
 
   /**
@@ -1900,7 +1936,7 @@ export class Caravans {
     a.y = top > h && top <= a.y + CREATURE_STEP ? top : h;
     w.normal(a.x, a.z, this.nrm);
     // only partly tipped to the slope, so the rider's seat stays over the feet
-    const tilt = 0.35;
+    const tilt = MOUNT_TILT;
     this.put(a, a.x, a.y, a.z, this.nrm.x * tilt, this.nrm.y * tilt + (1 - tilt), this.nrm.z * tilt, m.g, dt, px, pz);
   }
 
@@ -3723,7 +3759,8 @@ export class Caravans {
       let target = 0;
       let bow = 0;
       let rate = 3;
-      if (d < 12 && a !== this.held) {
+      // (not the one being ridden: it would crane round at its own rider the whole way)
+      if (d < 12 && a !== this.held && a !== this.ridden?.a) {
         const c = Math.cos(a.yaw);
         const s = Math.sin(a.yaw);
         const lx = -dx * c + dz * s;

@@ -68,6 +68,19 @@ export interface PlayerState {
   onRock: number; // 0..1
 }
 
+/**
+ * How the back of a ridden animal moves under its rider this frame: where the saddle is from the
+ * point straight above the animal's feet (world metres), how far the body has rolled to its right
+ * (radians), and where in its bob it is (-1..1), scaled by how hard it is going.
+ */
+export interface SaddleSway {
+  x: number;
+  y: number;
+  z: number;
+  roll: number;
+  rock: number;
+}
+
 /** Passed to every system once per frame. Treat as read-only. */
 export interface FrameState {
   dt: number; // seconds, clamped to 0.05
