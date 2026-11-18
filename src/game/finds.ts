@@ -1,7 +1,8 @@
 // The kinds of thing the desert hides, as Discoveries names them when one is first come near
 // (onReach). The world goes on for ever, so what can be counted is the kinds found, not the
-// sites: the tracker reads "Discoveries 3 / 29". The lamp is left out: it is picked up, never
-// come near, so it is never reached.
+// sites: the tracker reads "Discoveries 3 / 30". The lamp is left out: it is picked up, never
+// come near, so it is never reached. A wreck is the one kind the seed does not place: a sandstorm
+// uncovers it.
 
 export const FIND_KINDS = [
   'temple',
@@ -33,6 +34,7 @@ export const FIND_KINDS = [
   'dyers-town',
   'wind-towers',
   'stepped-city',
+  'wreck',
 ] as const;
 
 export type FindKind = (typeof FIND_KINDS)[number];
@@ -67,6 +69,7 @@ const NAMES: Record<FindKind, string> = {
   'dyers-town': "Dyers' town",
   'wind-towers': 'Wind-tower town',
   'stepped-city': 'Stepped city',
+  wreck: 'Wrecked ship',
 };
 
 export function isFindKind(k: unknown): k is FindKind {

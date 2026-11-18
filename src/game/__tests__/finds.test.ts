@@ -10,6 +10,13 @@ describe('finds', () => {
     expect(new Set(FIND_KINDS).size).toBe(FIND_KINDS.length);
   });
 
+  it('counts thirty kinds, the wreck a storm uncovers the last of them', () => {
+    expect(FIND_KINDS.length).toBe(30);
+    expect(FIND_KINDS[FIND_KINDS.length - 1]).toBe('wreck');
+    expect(findsText(3).text).toBe('Discoveries 3 / 30');
+    expect(findName('wreck')).toBe('Wrecked ship');
+  });
+
   it('names every kind in plain words', () => {
     for (const k of FIND_KINDS) expect(findName(k)).toMatch(/^[A-Z][A-Za-z' -]+$/);
   });

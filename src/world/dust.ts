@@ -17,6 +17,9 @@ const SPINDRIFT_MAX_R = 90;
 const SPINDRIFT_DROP = 0.8; // m of height drop over SPINDRIFT_SPAN
 const SPINDRIFT_SPAN = 4;
 const SPINDRIFT_RATE = 3.2; // particles per probe hit at full gust
+const BLOWN_RATE = 560; // particles a second in the thick of a storm
+const BLOWN_R = 20; // metres either side of the eye
+const BLOWN_ALPHA = 0.8;
 const MOTE_COUNT = 200;
 const MOTE_BOX = 40;
 const MOTE_ALPHA = 0.16;
@@ -36,6 +39,7 @@ uniform vec3 uSunDir;
 uniform vec3 uLit;
 uniform vec3 uShade;
 uniform vec3 uFogCol;
+uniform float uStormK;
 varying float vAlpha;
 varying vec3 vCol;
 void main() {
@@ -69,6 +73,8 @@ void main() {
   vec3 col = mix(mix(uShade, uLit, 0.7 + 0.3 * back), uShade * 0.9, low);
   float fog = (1.0 - exp(-dist * uFog)) * 0.6;
   vCol = mix(col, uFogCol, fog);
+  // in a storm the sand going past is paler than the murk it goes through, or it would not show
+  vCol = mix(vCol, uLit * 1.7 + 0.2, 0.8 * uStormK * (1.0 - low));
 }
 `;
 
@@ -315,7 +321,10 @@ export class Dust {
     const h = typeof window !== 'undefined' ? window.innerHeight * Math.min(window.devicePixelRatio || 1, 2) : 1080;
     this.scaleU.value = h / (2 * Math.tan((cam.fov * Math.PI) / 360));
 
-    if (!this.under) this.spindrift(f);
+    if (!this.under) {
+      this.spindrift(f);
+      this.blown(f);
+    }
 
     if (this.dirtyMax >= 0) {
       const b = this.buffer;
@@ -324,6 +333,42 @@ export class Dust {
       b.needsUpdate = true;
       this.dirtyMin = Infinity;
       this.dirtyMax = -1;
+    }
+  }
+
+  /**
+   * Sand carried on the wind past the eye: a little when it blows hard, more as a storm comes on,
+   * and in the storm itself a river of it, low and fast along the way the storm is going.
+   */
+  private blown(f: FrameState): void {
+    const windy = Math.min(1, Math.max(0, (f.gust - 0.72) / 0.26));
+    const k = Math.max(f.storm, f.stormAhead * 0.35, windy * windy * (3 - 2 * windy) * 0.2);
+    if (k < 0.02 || this.density <= 0) return;
+    const stormy = f.storm > 0.01 || f.stormAhead > 0.01;
+    const dx = stormy ? f.stormDir.x : f.wind.x;
+    const dz = stormy ? f.stormDir.y : f.wind.y;
+    const eye = f.camera.position;
+    const n = Math.floor(BLOWN_RATE * k * this.density * f.dt + Math.random());
+    const aloft = eye.y - this.world.height(eye.x, eye.z) > 14;
+    for (let i = 0; i < n; i++) {
+      // (born a little upwind, so most of each one's short life is spent crossing the view)
+      const x = eye.x + (Math.random() - 0.5) * 2 * BLOWN_R - dx * 9;
+      const z = eye.z + (Math.random() - 0.5) * 2 * BLOWN_R - dz * 9;
+      // most of it runs along the ground; the rest is thrown up as high as a house
+      const r = Math.random();
+      const up = r * r * 7.5;
+      const y = aloft ? eye.y + (Math.random() - 0.5) * 12 : this.world.height(x, z) + 0.05 + up;
+      const speed = (12 + Math.random() * 9) * (0.55 + 0.45 * k);
+      const low = !aloft && up < 0.5;
+      this.spawn(
+        x, y, z,
+        dx * speed + (Math.random() - 0.5) * 1.5, (Math.random() - 0.35) * 0.9, dz * speed + (Math.random() - 0.5) * 1.5,
+        0.9 + Math.random() * 0.8,
+        // (grit, not cloud: small and sharp, so each one is seen going by)
+        low ? 0.5 + Math.random() * 0.5 : 0.035 + Math.random() * 0.075,
+        0.05, 0.02,
+        low ? 2 + 0.2 * (0.55 + 0.45 * k) : BLOWN_ALPHA * (0.55 + 0.45 * k),
+      );
     }
   }
 

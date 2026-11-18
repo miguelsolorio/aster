@@ -192,6 +192,7 @@ function glyph(c: Ctx, kind: string): void {
       c.lineTo(0, 6.5);
       break;
     case 'bones':
+    case 'wreck': // (the bones' ribs for now, until the wreck has a mark of its own)
       c.moveTo(-7, 3.5);
       c.lineTo(7, 3.5);
       for (const x of [-4.5, -1, 2.5]) {

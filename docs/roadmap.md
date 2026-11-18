@@ -32,6 +32,8 @@ Weather ships as two builds. Wind and sandstorms come first because they reuse w
 
 **States.** Clear most of the time. Wind is common: sand blowing low over the dunes with no loss of view. A sandstorm comes about once every two or three in-game days. A new save has no storm for its first half day and is guaranteed one before the end of its second day.
 
+As built: the seeded schedule is thin on purpose, with about one storm alive within a dozen kilometres at a time, so a wall on the horizon stays an event. That alone would put a walker inside one only every eight days or so. To keep the agreed pace, a storm is sent toward a wanderer who has gone two and a half days without one. A sent storm is saved, so a reload keeps it.
+
 **The world clock.** The save gains a count of in-game days elapsed. It runs only while the game is open. Every storm's time, origin and heading are worked out from the seed and that clock, so nothing about the weather itself is stored, and a reload in the middle of a storm puts you back in the same storm. Sleeping advances the clock by the hours it skips, so a storm overhead when you lie down has moved on when you wake.
 
 **The front.** A storm has a place in the world. It is about 4 km wide and 1.5 km deep, travels at about 12 m/s on a heading, and stands taller than anything can fly. You can go through it or round it, never over it. It overtakes a walker (10.5 m/s on sand), a board outruns it (30 m/s), and it takes about two minutes to pass over someone standing still.
@@ -40,7 +42,7 @@ Weather ships as two builds. Wind and sandstorms come first because they reuse w
 
 **Inside.** Three things happen and no more. The view closes to a few dozen metres. The sun and the compass marks disappear. Anything airborne is pushed along the storm's heading: a tailwind carries a glider or carpet up to a quarter past the speed cap, and a headwind slows it by as much. On the ground you move as normal. Outside storms, wind stays cosmetic.
 
-**Shelter.** Caverns, caves and the deeps are fully sheltered. Inside a city or town it is calm, with the storm audible outside. A storm thins and dies against a mountain, so the snow villages never see one.
+**Shelter.** Caverns, caves and the deeps are fully sheltered. Inside a city or town it is calm, with the storm audible outside. A storm parts round the foot of every mountain and leaves it standing clear, so the mountain villages never see one.
 
 **The world reacts.** People go indoors. Caravans halt and kneel.
 

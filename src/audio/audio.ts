@@ -28,6 +28,8 @@ export interface AudioFrame {
   grounded: boolean;
   gust: number; // 0..1 slow-varying wind strength
   altitude: number; // metres above the local base level, roughly 0..400
+  storm?: number; // 0..1 how thick the sandstorm is at the listener (0 underground or sheltered); absent = 0
+  stormAhead?: number; // 0..1 rises over the minute before a storm arrives, 1 once inside; absent = 0
 }
 
 /** How close/loud each ambient source is for the listener right now, each 0..1. */
@@ -200,6 +202,8 @@ interface Graph {
   hissSrc: AudioBufferSourceNode;
   hissBP: BiquadFilterNode;
   hissGain: GainNode;
+  stormRumbleGain: GainNode;
+  stormRoarGain: GainNode;
   noise: AudioBuffer; // short mono noise for one-shots
   cityBus: GainNode; // close city sounds: some dry, some space
   cityFarBus: GainNode; // distant city sounds: mostly reverb
@@ -304,6 +308,10 @@ export class AudioEngine {
   private ambT: AmbienceLevels = { water: 0, leaves: 0, mill: 0, fire: 0, birds: 0 };
   private amb: AmbienceLevels = { water: 0, leaves: 0, mill: 0, fire: 0, birds: 0 };
   private ambGust = 0;
+  // Sandstorm: smoothed levels (storm = thickness here, ahead = approach) and the music duck.
+  private storm = 0;
+  private stormAhead = 0;
+  private musicDuck = 1;
   private ambNight = 0;
   private nextAmbTick = 0;
   private nextBird = 0;
@@ -391,7 +399,7 @@ export class AudioEngine {
   /** Level of the score alone, 0..1. 1 is the mix as tuned. */
   setMusicVolume(v: number): void {
     this.musicVol = clamp01(v);
-    this.applyBusLevel(this.g?.musicBuses, this.musicVol);
+    this.applyBusLevel(this.g?.musicBuses, this.musicVol * this.musicDuck);
   }
 
   /** Level of everything that is not the score, 0..1. 1 is the mix as tuned. */
@@ -513,6 +521,14 @@ export class AudioEngine {
     if (at.fire === 0 && am.fire < 1e-4) am.fire = 0;
     if (at.birds === 0 && am.birds < 1e-4) am.birds = 0;
     this.ambGust = clamp01(f.gust);
+    // Sandstorm: ease in and out over a few seconds (absent or bad values count as 0).
+    const stT = Number.isFinite(f.storm) ? clamp01(f.storm as number) : 0;
+    const ahT = Math.max(stT, Number.isFinite(f.stormAhead) ? clamp01(f.stormAhead as number) : 0);
+    const ks = 1 - Math.exp(-dt / 1.8);
+    this.storm += (stT - this.storm) * ks;
+    this.stormAhead += (ahT - this.stormAhead) * ks;
+    if (stT === 0 && this.storm < 1e-4) this.storm = 0;
+    if (ahT === 0 && this.stormAhead < 1e-4) this.stormAhead = 0;
     this.ambNight = clamp01(f.night);
 
     this.paramTimer += dt;
@@ -1320,11 +1336,55 @@ export class AudioEngine {
     hissSrc.connect(hissHP).connect(hissBP).connect(hissGain).connect(bedBus);
     hissSrc.start(0, 3 + Math.random() * 3);
 
+    // Sandstorm: a far low rumble and a mid-band roar that surges. Both run silent at gain 0 and
+    // only their gains move. The slow LFOs are detuned so the swells never line up or repeat.
+    const stormSrcs: AudioScheduledSourceNode[] = [];
+    const rumbleSrc = ctx.createBufferSource();
+    rumbleSrc.buffer = windBuf;
+    rumbleSrc.loop = true;
+    const rumbleLP = ctx.createBiquadFilter();
+    rumbleLP.type = 'lowpass';
+    rumbleLP.frequency.value = 90;
+    rumbleLP.Q.value = 0.7;
+    const stormRumbleGain = gain(0);
+    const rumbleWobble = gain(0.35); // multiplies the rumble level, slowly
+    rumbleSrc.connect(rumbleLP).connect(rumbleWobble).connect(stormRumbleGain).connect(bedBus);
+    rumbleSrc.start(0, Math.random() * 6);
+    stormSrcs.push(rumbleSrc);
+    const stormLfo = (hz: number, depth: number, target: AudioParam): void => {
+      const o = ctx.createOscillator();
+      o.frequency.value = hz;
+      const d = gain(depth);
+      o.connect(d).connect(target);
+      o.start();
+      stormSrcs.push(o);
+    };
+    stormLfo(0.17, 0.2, rumbleWobble.gain);
+    const roarSrc = ctx.createBufferSource();
+    roarSrc.buffer = windBuf;
+    roarSrc.loop = true;
+    const roarBP = ctx.createBiquadFilter();
+    roarBP.type = 'bandpass';
+    roarBP.frequency.value = 400;
+    roarBP.Q.value = 0.8;
+    const roarLP = ctx.createBiquadFilter(); // nothing harsh up top
+    roarLP.type = 'lowpass';
+    roarLP.frequency.value = 3000;
+    const roarSwell = gain(0.62);
+    const stormRoarGain = gain(0);
+    roarSrc.connect(roarBP).connect(roarLP).connect(roarSwell).connect(stormRoarGain).connect(bedBus);
+    roarSrc.start(0, 1 + Math.random() * 5);
+    stormSrcs.push(roarSrc);
+    stormLfo(0.071, 0.16, roarSwell.gain);
+    stormLfo(0.113, 0.12, roarSwell.gain);
+    stormLfo(0.187, 0.08, roarSwell.gain);
+    stormLfo(0.043, 80, roarBP.frequency); // the band drifts a little, 320..480 Hz
+
     // Ambience: beds are always running (silent at level 0) and only their gains move.
     const ambBus = gain(this.fxVol);
     ambBus.connect(gain(0.85)).connect(preMaster);
     ambBus.connect(gain(0.22)).connect(reverbIn);
-    const ambSources: AudioScheduledSourceNode[] = [];
+    const ambSources: AudioScheduledSourceNode[] = [...stormSrcs]; // stopped on dispose
     const ambNoise = makePinkNoise(ctx, 8, 2);
     const noiseSrc = (): AudioBufferSourceNode => {
       const s = ctx.createBufferSource();
@@ -1438,6 +1498,8 @@ export class AudioEngine {
       hissSrc,
       hissBP,
       hissGain,
+      stormRumbleGain,
+      stormRoarGain,
       noise: makeWhiteNoise(ctx, 2),
       cityBus,
       cityFarBus,
@@ -1468,17 +1530,37 @@ export class AudioEngine {
     // Rock shuts it out altogether: underground only the air you move through yourself is left.
     const open = 1 - this.deep;
     const shelter = (1 - 0.35 * this.cityNear) * open;
+    const ahead = this.stormAhead;
+    const storm = this.storm;
+    const calm = 1 - 0.92 * ahead; // calm beds (birds, leaves, water, mill) fade as a storm builds
     const windLevel =
-      (0.025 + 0.07 * gust + 0.04 * alt + 0.015 * breathe) * shelter + 0.07 * rush * (1 - 0.5 * this.deep);
-    const windFreq = 280 + 420 * gust + 260 * alt + 120 * breathe + 700 * rush;
+      ((0.025 + 0.07 * gust + 0.04 * alt + 0.015 * breathe) * shelter + 0.07 * rush * (1 - 0.5 * this.deep)) *
+      (1 + 0.5 * ahead + 0.6 * storm);
+    const windFreq = (280 + 420 * gust + 260 * alt + 120 * breathe + 700 * rush) * (1 - 0.2 * ahead - 0.15 * storm);
     g.windGain.gain.setTargetAtTime(windLevel, now, 1.2);
     g.windBP.frequency.setTargetAtTime(windFreq, now, 1.5);
     g.whistleGain.gain.setTargetAtTime(0.006 * gust * (0.3 + alt) * breathe * shelter, now, 2);
     g.whistleBP.frequency.setTargetAtTime(700 + 500 * gust + 400 * alt + 200 * breathe, now, 2.5);
 
     const sand = f.sliding && f.grounded ? clamp01((f.speed - 2) / 28) : 0;
-    g.hissGain.gain.setTargetAtTime((f.rock ? 0.03 : 0.045) * sand, now, sand > 0 ? 0.25 : 0.6);
-    g.hissBP.frequency.setTargetAtTime(f.rock ? 1700 + 900 * sand : 4500 + 2500 * sand, now, f.rock ? 0.15 : 0.5);
+    g.hissGain.gain.setTargetAtTime(
+      (f.rock ? 0.03 : 0.045) * sand + 0.05 * storm * (1 - this.deep),
+      now,
+      sand > 0 || storm > 0 ? 0.4 : 0.6,
+    );
+    const hissHz = f.rock ? 1700 + 900 * sand : 4500 + 2500 * sand;
+    g.hissBP.frequency.setTargetAtTime(hissHz + (4200 - hissHz) * storm, now, f.rock ? 0.15 : 0.5); // soft above ~5 kHz
+
+    // Sandstorm layers: far rumble from the approach on, roar once inside, both with slow smoothing.
+    const open2 = 1 - this.deep;
+    g.stormRumbleGain.gain.setTargetAtTime(0.32 * Math.max(0.45 * ahead, storm) * open2, now, 1.5);
+    g.stormRoarGain.gain.setTargetAtTime(0.16 * storm * storm * open2, now, 1.5);
+    // Score and mood layers duck by about half in the thick of it.
+    const duck = 1 - 0.5 * storm - 0.1 * ahead * (1 - storm);
+    if (Math.abs(duck - this.musicDuck) > 0.002) {
+      this.musicDuck = duck;
+      this.applyBusLevel(g.musicBuses, this.musicVol * duck);
+    }
 
     // Night: more reverb, less dry pluck.
     g.padRev.gain.setTargetAtTime(0.42 + 0.25 * wn, now, 3);
@@ -1490,10 +1572,10 @@ export class AudioEngine {
     // Ambience beds. Peak gains are conservative: at level 1 each sits well below the pads/plucks
     // (music bus 0.75 x ~0.04..0.07 per voice) and the city murmur (0.24).
     const am = this.amb;
-    g.ambWater.gain.setTargetAtTime(0.05 * am.water, now, 0.25);
+    g.ambWater.gain.setTargetAtTime(0.05 * am.water * (0.4 + 0.6 * calm), now, 0.25);
     // Leaves and the mill are open-air sounds and go with the wind underground; water and fire stay.
-    g.ambLeaves.gain.setTargetAtTime(0.05 * am.leaves * (0.25 + 0.75 * this.ambGust) * open, now, 0.3);
-    g.ambWhoosh.gain.setTargetAtTime(0.03 * am.mill * open, now, 0.3);
+    g.ambLeaves.gain.setTargetAtTime(0.05 * am.leaves * (0.25 + 0.75 * this.ambGust) * open * calm, now, 0.3);
+    g.ambWhoosh.gain.setTargetAtTime(0.03 * am.mill * open * calm, now, 0.3);
     g.ambRumble.gain.setTargetAtTime(0.03 * am.fire, now, 0.3);
 
     this.applyDeep(now, 0.1);
@@ -1919,7 +2001,7 @@ export class AudioEngine {
       this.nextCreak = 0;
     }
     // No daylight and no birds below ground.
-    const day = (1 - this.ambNight) * (1 - this.deep);
+    const day = (1 - this.ambNight) * (1 - this.deep) * (1 - this.stormAhead);
     if (am.birds > 0.03 && day > 0.05) {
       if (this.nextBird < t - 1) this.nextBird = t + rand(1, 4);
       if (this.nextBird <= t + CITY_TICK) {

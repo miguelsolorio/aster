@@ -59,6 +59,7 @@ const CLEAR: Record<string, number> = {
   sundial: 22,
   'balancing-stones': 22,
   shell: 20,
+  wreck: 30,
   lantern: 14,
   'well-camp': 34,
   'star-house': 40,

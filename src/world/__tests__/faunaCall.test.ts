@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { Weather } from '../weather';
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, World } from '../../game/contract';
 import { CALL_R, Fauna, MOUNT_REACH } from '../fauna';
@@ -31,6 +32,11 @@ function frame(): FrameState {
     lightDir: new THREE.Vector3(0, 1, 0),
     wind: new THREE.Vector2(1, 0),
     gust: 0,
+    clock: 0,
+    storm: 0,
+    stormAhead: 0,
+    stormDir: new THREE.Vector2(1, 0),
+    weather: new Weather(1),
     camera: new THREE.PerspectiveCamera(),
     player: { pos: new THREE.Vector3(), vel: new THREE.Vector3(), speed: 0, grounded: true, sliding: false, running: false, onRock: 0 },
   };
