@@ -14,6 +14,8 @@ You start on foot in open sand with a city somewhere in sight. The rest is yours
 
 You carry a map, and it starts empty. Ground is washed in as you see it, towns and finds are inked in once you reach them, and it's all kept between visits. When someone sends you after something, a dashed circle goes on the map over roughly where to look.
 
+A thin compass runs along the top of the view, so "north-east, a fair walk" means something. Under it sit the few places you already know to head for: a small ring for an errand, a thread of light for a place marked through the spyglass, a tent for your bedroll. One that waits dimmed at an end of the strip is off to that side or behind you.
+
 | | |
 |---|---|
 | ![First light on a mountain above rippled sand](docs/screenshots/02-first-light.jpg) | ![Dusk over dark ripples with two peaks behind](docs/screenshots/04-after-sunset.jpg) |
