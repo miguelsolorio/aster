@@ -49,7 +49,7 @@ There are 20 of these in [docs/screenshots](docs/screenshots).
 | `F` | Hold up the spyglass, once you have one |
 | `R` | Play the flute, once you have one. A tap plays the song that suits where you stand; hold it to choose one |
 | `B` | Lay the bedroll and sleep in it, once you have one |
-| `M` | Open the map. `W` `A` `S` `D` move it, the wheel zooms |
+| `M` | Open the map, which pauses the game (even in mid-air). `W` `A` `S` `D` move it, the wheel zooms |
 | `Esc` | Menu and photo mode |
 
 It plays on a phone too, with touch controls.
