@@ -1153,6 +1153,9 @@ function start() {
 
   // ---- input
   const keys = new Set<string>();
+  /** The keys held across (-1 west .. 1 east) and along (-1 back .. 1 ahead). */
+  const keyX = () => (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
+  const keyZ = () => (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
   let jumpQueued = false;
   let camYaw = player.facing + Math.PI;
   let camPitch = 0.22;
@@ -1753,15 +1756,28 @@ function start() {
     if (camp) out.push({ x: camp.x, z: camp.z, kind: 'camp', r: 30 });
     return out.concat(nearest(save.data.sightedAt, p.x, p.z, 8, 'mark', 60));
   };
+  // The map is a pause: the world holds still behind the sheet (see tick), the sound is hushed as
+  // in the menu, and whatever was held when it opened or shut is let go, so a key held to fly
+  // neither slides the sheet about nor carries on steering once it is put away.
+  const letGo = () => {
+    keys.clear();
+    jumpQueued = false;
+    glassHeld = false;
+    fluteKeyAt = -1;
+  };
   const toggleMap = () => {
     if (map.isOpen) {
       map.close();
       mapShutAt = performance.now();
+      letGo();
+      audio.setPaused(ui.state !== 'playing');
       return;
     }
     if (ui.state !== 'playing' || talk.talking || sleep.isOpen || sleep.asleep || glassK > 0.1) return;
+    letGo();
     mapHintT = 0;
     map.open(readMap(0));
+    audio.setPaused(true);
     buzz(8);
   };
   const map = new MapView(uiHost, atlas, mapInk, toggleMap);
@@ -2260,8 +2276,8 @@ function start() {
 
     const mode: TouchMode = playing ? 'play' : photo ? 'photo' : 'off';
     if (mode !== touchMode) touch.setMode((touchMode = mode));
-    const kx = (keys.has('KeyD') || keys.has('ArrowRight') ? 1 : 0) - (keys.has('KeyA') || keys.has('ArrowLeft') ? 1 : 0);
-    const kz = (keys.has('KeyW') || keys.has('ArrowUp') ? 1 : 0) - (keys.has('KeyS') || keys.has('ArrowDown') ? 1 : 0);
+    const kx = keyX();
+    const kz = keyZ();
     // The spyglass comes up only where there is something to see through it, and whoever looks stands still.
     {
       if (!playing) glassHeld = false;
@@ -2274,9 +2290,8 @@ function start() {
       if (glassK < 0.004) glassK = 0;
     }
     if (!playing && sleep.isOpen) sleep.close();
-    // The map: what is stood in is seen (not from down in a deep), and while the sheet is open
-    // the wanderer stands and the keys slide it about.
-    if (!playing && map.isOpen) map.close();
+    // The map: what is stood in is seen (not from down in a deep). While the sheet is open the
+    // world is not stepped at all and tick keeps the sheet (and puts it away on leaving play).
     if (playing !== mapButton) map.setButton((mapButton = playing));
     if ((revealT -= dt) <= 0) {
       revealT = 0.25;
@@ -2287,7 +2302,7 @@ function start() {
       }
     }
     const mapOpen = map.isOpen;
-    map.update(dt, mapOpen ? readMap(dt) : null, kx, -kz);
+    if (!mapOpen) map.update(dt, null);
     const still = glassK > 0.5 || fluteT > 0 || sleep.isOpen || sleep.asleep || mapOpen;
     input.x = playing && !still ? Math.max(-1, Math.min(1, kx + touch.moveX)) : 0;
     input.z = playing && !still ? Math.max(-1, Math.min(1, kz + touch.moveZ)) : 0;
@@ -3107,14 +3122,20 @@ function start() {
     const real = (now - last) / 1000;
     const dt = Math.min(0.05, Math.max(0, real));
     last = now;
-    // The world holds still in the menu and in photo mode. In the menu nothing
-    // changes on screen, so one frame is drawn and then the GPU rests.
-    const still = frozen || ui.state === 'menu';
+    // The world holds still in the menu, behind the map and in photo mode. In the menu and
+    // behind the map nothing changes on screen, so one frame is drawn and then the GPU rests;
+    // the map's sheet is its own canvas and goes on being slid about and drawn.
+    // (update is not run while the sheet is open, so leaving play puts it away here)
+    if (map.isOpen && ui.state !== 'playing') map.close();
+    const mapOpen = map.isOpen;
+    if (mapOpen) map.update(dt, readMap(dt), keyX(), -keyZ());
+    const resting = ui.state === 'menu' || mapOpen;
+    const still = frozen || resting;
     if (still && stillDrawn && !frozen) return;
-    stillDrawn = ui.state === 'menu';
+    stillDrawn = resting;
     update(still || ui.state === 'photo' ? 0 : dt);
     render();
-    if (ui.state === 'playing') auto.frame(real);
+    if (ui.state === 'playing' && !mapOpen) auto.frame(real);
   }
   requestAnimationFrame(tick);
 }
