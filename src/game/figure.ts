@@ -2,17 +2,23 @@ import * as THREE from 'three';
 import type { PlayerState, SaddleSway, Uniforms } from './contract';
 import { strideLength } from './player';
 import { STYLE_GLSL } from '../render/styleGlsl';
+import { detailTexture, loadModel, modelGeometry } from '../render/art';
 import { CHOSEN, TRIM, bedrollGeometry, boardGeometry, bootGeometry, featherGeometry, carpetGeometry, chartGeometry, fluteGeometry, lampGeometry, pickGeometry, relicGeometry, rodGeometry, rollGeometry, ropeCoilGeometry, rugMaterial, solidMaterial, spyglassGeometry, trimGeometry } from './equipment';
 
 // The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
 // legs, a plain white face and a round hood.
 // Local space: feet at y = 0, facing +z. Legs and arms are posed on the CPU; the
 // robe is shaped and fluttered in the vertex shader.
+// The geometry built here is the fallback: the modelled version (pleated cloth, hood rim and
+// point, mittens, wrapped shoes) comes from public/art/wanderer.glb, made by
+// tools/blender/wanderer.py, and is swapped in when it arrives.
 
 const bodyVert = /* glsl */ `
 varying vec3 vW;
 varying vec3 vN;
+varying vec3 vO;
 void main() {
+  vO = position;
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vW = wp.xyz;
   vN = normalize(mat3(modelMatrix) * normal);
@@ -28,8 +34,10 @@ const hoodVert = /* glsl */ `
 varying vec3 vW;
 varying vec3 vN;
 varying vec3 vL;
+varying vec3 vO;
 void main() {
   vL = position;
+  vO = position;
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vW = wp.xyz;
   vN = normalize(mat3(modelMatrix) * normalize(position));
@@ -49,6 +57,7 @@ uniform float uPick;      // 0..1 a pick is tucked slantwise across the back
 attribute vec2 aUV;       // x: -1..1 around the body (0 = front), y: 0 collar .. 1 hem
 varying vec3 vW;
 varying vec3 vN;
+varying vec3 vO;
 void main() {
   vec3 p = position;
   float v = aUV.y;
@@ -90,9 +99,13 @@ void main() {
   float tuck = (1.0 - smoothstep(0.05, 0.13, px)) * smoothstep(0.0, 0.06, p.y) * (1.0 - smoothstep(0.56, 0.62, p.y)) * uPick;
   p.z = mix(p.z, max(p.z, -0.225), tuck);
 
+  vO = p;
   vec4 wp = modelMatrix * vec4(p, 1.0);
   vW = wp.xyz;
-  vec3 nl = radial + vec3(0.0, 1.0, 0.0) * (0.24 + uFlow * w * 0.5 * back - cos(ph) * 0.3 * w * (0.5 + uFlow * 1.8));
+  // the cloth's own normal (its folds), turned to face out, bent by the waves running through it
+  vec3 nm = normal;
+  if (dot(nm, radial) < 0.0) nm = -nm;
+  vec3 nl = nm + vec3(0.0, 1.0, 0.0) * (uFlow * w * 0.5 * back - cos(ph) * 0.3 * w * (0.5 + uFlow * 1.8));
   vN = normalize(mat3(modelMatrix) * nl);
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
@@ -112,8 +125,10 @@ uniform float uTone;   // 0 = the dress, near-black .. 1 = the cloak, a shade wa
 uniform float uDeepDark;  // 0 under the sky .. 1 down in a deep, out of the daylight
 uniform vec4 uCavGlow; // the lamp that matters most down there: position, reach (0 = none)
 uniform vec3 uCavGlowCol;
+uniform sampler2D uDetail; // R: woven cloth, mid-grey = no change
 varying vec3 vW;
 varying vec3 vN;
+varying vec3 vO;
 #ifdef FACE
 varying vec3 vL;
 #endif
@@ -132,6 +147,15 @@ void main() {
   float fw = max(fwidth(d), 1e-4);
   body = smoothstep(FACE_COS - fw, FACE_COS + fw, d);
 #endif
+  // the weave, wrapped round the part's own upright axis about 14 times. The angle wraps at the
+  // back; of two unwrapped readings the one that does not jump there gives the mip level.
+  float wa = atan(vO.x, vO.z) * 0.15915494;
+  float wu1 = fract(wa);
+  float wu2 = wa;
+  vec2 wdx = vec2(abs(dFdx(wu1)) < abs(dFdx(wu2)) ? dFdx(wu1) : dFdx(wu2), dFdx(vO.y)) * vec2(14.0, 10.0);
+  vec2 wdy = vec2(abs(dFdy(wu1)) < abs(dFdy(wu2)) ? dFdy(wu1) : dFdy(wu2), dFdy(vO.y)) * vec2(14.0, 10.0);
+  float weave = textureGrad(uDetail, vec2(wu1 * 14.0, vO.y * 10.0), wdx, wdy).r - 0.5;
+  weave *= 1.0 - smoothstep(8.0, 12.0, dist);
   float inside = 1.0;
   if (dot(n, V) < 0.0) {
     n = -n;
@@ -140,10 +164,10 @@ void main() {
   n = styleFacet(n, vW);
   float ndl = dot(n, uSunDir);
   float l = styleBands(smoothstep(-0.1, 0.35, ndl), vW.xz);
-  // cloth: a warm near-black that only just takes the light
+  // cloth: a warm near-black that only just takes the light, enough on the lit side for its folds to show
   vec3 sh = uFig * mix(0.36, 0.66, uTone);
-  vec3 li = mix(uFig, uFigLit, mix(0.03, 0.2, uTone));
-  vec3 dark = mix(sh, li, l * 0.85) * inside;
+  vec3 li = mix(uFig, uFigLit, mix(0.03, 0.2, uTone)) * 1.3;
+  vec3 dark = mix(sh, li, l * 0.85) * inside * (1.0 + 0.2 * weave);
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * smoothstep(-0.2, 0.3, ndl);
   dark += uSunCol * rim * 0.08 * (1.0 - 0.5 * uNight);
   // face: flat white, tinted by the light and dimmed at night. It takes the smooth light,
@@ -238,6 +262,17 @@ function drapeGeometry(d: Drape): THREE.BufferGeometry {
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
   g.setAttribute('aUV', new THREE.Float32BufferAttribute(uv, 2));
   g.setIndex(idx);
+  // (robeVert shades with these, turned to face outward)
+  g.computeVertexNormals();
+  return g;
+}
+
+/** A modelled drape from the .glb: its `_AUV` attribute (same meaning as aUV) renamed for robeVert. */
+function modelDrape(g: THREE.BufferGeometry | null): THREE.BufferGeometry | null {
+  const auv = g?.getAttribute('_auv');
+  if (!g || !auv || auv.itemSize !== 2 || !g.getAttribute('normal')) return null;
+  g.deleteAttribute('_auv');
+  g.setAttribute('aUV', auv);
   return g;
 }
 
@@ -254,6 +289,10 @@ export class Figure {
   private hips: THREE.Group[] = [];
   private knees: THREE.Group[] = [];
   private arms: THREE.Group[] = []; // [right, left]
+  /** Mittens at the ends of the arms, once the model has arrived (see reach). */
+  private hands: THREE.Object3D[] = [];
+  /** The feet (wrapped shoes when modelled), hidden under boots. */
+  private feet: THREE.Mesh[] = [];
   private tmp = new THREE.Vector3();
   private torso = new THREE.Group();
   private flow = { value: 0 };
@@ -337,9 +376,10 @@ export class Figure {
 
   constructor(u: Uniforms) {
     this.group.rotation.order = 'YXZ';
+    const detail = { value: detailTexture() };
     const mat = (body: number, tone = 0, extra: Uniforms = {}, vert = bodyVert, side: THREE.Side = THREE.FrontSide) =>
       new THREE.ShaderMaterial({
-        uniforms: { ...u, uBody: { value: body }, uTone: { value: tone }, ...extra },
+        uniforms: { ...u, uBody: { value: body }, uTone: { value: tone }, uDetail: detail, ...extra },
         vertexShader: vert,
         fragmentShader: frag,
         side,
@@ -353,14 +393,16 @@ export class Figure {
     };
 
     // legs: thin sticks. hip pivot (hidden up inside the robe) -> thigh -> knee pivot -> shin and foot
+    const thighs: THREE.Mesh[] = [];
+    const shins: THREE.Mesh[] = [];
     for (const sx of [-1, 1]) {
       const hip = new THREE.Group();
       hip.position.set(sx * 0.065, HIP, 0);
-      add(hip, new THREE.CylinderGeometry(0.03, 0.024, THIGH, 8).translate(0, -THIGH / 2, 0), cloth);
+      thighs.push(add(hip, new THREE.CylinderGeometry(0.03, 0.024, THIGH, 8).translate(0, -THIGH / 2, 0), cloth));
       const knee = new THREE.Group();
       knee.position.y = -THIGH;
-      add(knee, new THREE.CylinderGeometry(0.024, 0.02, SHIN - 0.01, 8).translate(0, -(SHIN - 0.01) / 2, 0), cloth);
-      add(knee, new THREE.BoxGeometry(0.056, 0.036, 0.15).translate(0, -SHIN + 0.014, 0.04), cloth);
+      shins.push(add(knee, new THREE.CylinderGeometry(0.024, 0.02, SHIN - 0.01, 8).translate(0, -(SHIN - 0.01) / 2, 0), cloth));
+      this.feet.push(add(knee, new THREE.BoxGeometry(0.056, 0.036, 0.15).translate(0, -SHIN + 0.014, 0.04), cloth));
       hip.add(knee);
       this.group.add(hip);
       this.hips.push(hip);
@@ -372,21 +414,56 @@ export class Figure {
     t.position.y = HIP;
     this.group.add(t);
     const cloth2 = { uFlow: this.flow, uLocalWind: this.localWind, uSpread: this.spreadU, uStep: this.stepU, uBack: this.backU, uRoll: this.rollU, uPick: this.pickU };
-    add(t, drapeGeometry(DRESS).translate(0, -HIP, 0), mat(0, 0, cloth2, robeVert, THREE.DoubleSide));
-    add(t, drapeGeometry(CLOAK).translate(0, -HIP, 0), mat(0, 1, cloth2, robeVert, THREE.DoubleSide));
+    const dress = add(t, drapeGeometry(DRESS).translate(0, -HIP, 0), mat(0, 0, cloth2, robeVert, THREE.DoubleSide));
+    const cloak = add(t, drapeGeometry(CLOAK).translate(0, -HIP, 0), mat(0, 1, cloth2, robeVert, THREE.DoubleSide));
     // hood: a plain round cowl set a little behind the head, so the face shows as a disc (see hoodVert)
     const hoodMat = mat(0, 1, {}, hoodVert);
     hoodMat.defines = { FACE: '', FACE_AXIS: `normalize(vec3(0.0, ${-FACE_DROP}, 1.0))`, FACE_COS: FACE_COS.toFixed(4) };
     add(t, new THREE.SphereGeometry(HOOD_R, 48, 32).scale(1, 1.03, 1), hoodMat).position.set(0, HOOD_Y - HIP, HOOD_Z);
     add(t, new THREE.SphereGeometry(HEAD_R, 48, 32).translate(0, HEAD_Y - HOOD_Y, 0.035 - HOOD_Z), hoodMat).position.set(0, HOOD_Y - HIP, HOOD_Z);
 
+    const armMeshes: THREE.Mesh[] = [];
     for (const sx of [-1, 1]) {
       const arm = new THREE.Group();
       arm.position.set(sx * 0.09, SHOULDER_Y, 0);
-      add(arm, new THREE.CylinderGeometry(0.02, 0.017, 1, 6).translate(0, -0.5, 0), cloth);
+      armMeshes.push(add(arm, new THREE.CylinderGeometry(0.02, 0.017, 1, 6).translate(0, -0.5, 0), cloth));
       t.add(arm);
       this.arms.push(arm);
     }
+
+    // The modelled figure, when it arrives: the same parts, made properly in Blender
+    // (tools/blender/wanderer.py), swapped into the meshes above; and what the sticks lacked:
+    // a rim and a point to the hood, mittens and wrapped shoes.
+    void loadModel('wanderer.glb').then((gltf) => {
+      if (!gltf) return;
+      const swap = (mesh: THREE.Mesh, g: THREE.BufferGeometry | null) => {
+        if (!g) return;
+        mesh.geometry.dispose();
+        mesh.geometry = g;
+      };
+      swap(dress, modelDrape(modelGeometry(gltf, 'Dress'))?.translate(0, -HIP, 0) ?? null);
+      swap(cloak, modelDrape(modelGeometry(gltf, 'Cloak'))?.translate(0, -HIP, 0) ?? null);
+      for (const m of thighs) swap(m, modelGeometry(gltf, 'LegUpper'));
+      for (const m of shins) swap(m, modelGeometry(gltf, 'LegLower'));
+      for (const m of this.feet) swap(m, modelGeometry(gltf, 'Shoe'));
+      for (const m of armMeshes) swap(m, modelGeometry(gltf, 'ArmLimb'));
+      // the hood's rim and point are plain cloth in the hood's tone, lit by their own normals
+      const hoodCloth = mat(0, 1);
+      for (const name of ['HoodRim', 'HoodPoint']) {
+        const g = modelGeometry(gltf, name);
+        if (g) add(t, g.translate(0, -HIP, 0), hoodCloth);
+      }
+      const hand = modelGeometry(gltf, 'Hand');
+      if (hand) {
+        for (const arm of this.arms) {
+          // at the end of the unit-length arm; reach() undoes the arm's stretch on it
+          const h = add(arm, hand, cloth);
+          h.position.y = -1;
+          h.scale.set(1, arm.scale.x / arm.scale.y, 1);
+          this.hands.push(h);
+        }
+      }
+    });
 
     // What it has been given. The designs live in equipment.ts.
     const solid = solidMaterial(u);
@@ -462,6 +539,9 @@ export class Figure {
     arm.quaternion.setFromUnitVectors(DOWN, d.divideScalar(len));
     arm.scale.set(thick, len, thick);
     arm.visible = thick > 0.03;
+    // the mitten keeps its shape however long the arm is drawn
+    const hand = this.hands[this.arms.indexOf(arm)];
+    if (hand) hand.scale.set(1, thick / len, 1);
   }
 
   /**
@@ -645,6 +725,7 @@ export class Figure {
       this.chartMesh.rotation.set(-0.55 + sw * 0.1, 0, 0.3);
     }
     for (const m of this.bootMeshes) m.visible = this.boots;
+    for (const m of this.feet) m.visible = !this.boots;
     this.featherMesh.visible = this.feather;
     // (it swells like the rest when it is new)
     if (this.feather) this.featherMesh.scale.setScalar(pop);

@@ -19,6 +19,7 @@
 import * as THREE from 'three';
 import type { FrameState, Uniforms } from '../game/contract';
 import { CITY_SHADOW_GLSL } from './cityGlsl';
+import { detailTexture, loadModel, modelGeometry } from '../render/art';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import type { CityKind, CityPlan, CitySite, Spot, SpotKind } from './types';
 import { CHOSEN, heapGeometry, lampGeometry, pickGeometry, solidMaterial } from '../game/equipment';
@@ -793,6 +794,7 @@ varying float vMul;
 varying float vSun;
 varying vec3 vTint2;
 varying vec3 vInfo;    // material, height along the robe, banded
+varying vec3 vL;       // the figure's own rest-pose metres, for the weave
 ${CITY_SHADOW_GLSL}
 // The robe's outline for each silhouette: radius, height, forward offset.
 vec3 robe(float v, float shape) {
@@ -806,7 +808,7 @@ void main() {
   float shape = floor(iE.w + 0.01);
   bool mine = aKind.y < -1.5 ? abs(shape - 1.0) > 0.5 : (aKind.y < -0.5 || abs(aKind.y - shape) < 0.5);
   if (iD.x < 0.004 || !mine || (aPart.x > 3.5 && iB.z > 0.3)) {
-    vW = vec3(0.0); vTint = vec3(0.0); vMul = 0.0; vSun = 0.0; vTint2 = vec3(0.0); vInfo = vec3(0.0);
+    vW = vec3(0.0); vTint = vec3(0.0); vMul = 0.0; vSun = 0.0; vTint2 = vec3(0.0); vInfo = vec3(0.0); vL = vec3(0.0);
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
     return;
   }
@@ -816,6 +818,7 @@ void main() {
     vec3 o = robe(aKind.z, shape);
     p = vec3(position.x * o.x, o.y, position.z * o.x * 0.86 + o.z);
   }
+  vL = p;
   float t = uTime + iC.w * 61.0;
   float ph = iB.x * 6.2831853;
   float amp = clamp(iB.y / 1.3, 0.0, 1.4);
@@ -909,6 +912,7 @@ uniform vec3 uFigLit;
 uniform vec3 uFogCol;
 uniform float uFog;
 uniform float uNight;
+uniform sampler2D uDetail;
 varying vec3 vW;
 varying vec3 vTint;
 varying float vFade;
@@ -916,6 +920,7 @@ varying float vMul;
 varying float vSun;
 varying vec3 vTint2;
 varying vec3 vInfo;
+varying vec3 vL;
 ${STYLE_GLSL}
 void main() {
   if (vFade < 0.995) {
@@ -951,6 +956,16 @@ void main() {
   } else if (vInfo.x > 0.5) {
     // the face: flat white, tinted by the light and dimmed at night
     col = vec3(0.97, 0.95, 0.9) * mix(vec3(1.0), uSunCol, 0.3) * (1.0 - 0.42 * uNight) * mix(0.7, 1.0, l);
+  } else {
+    // a faint weave in the cloth (detail map R, mid-grey = none), projected from the figure's own
+    // front and side so it moves with them, gone by ten metres
+    float wNear = 1.0 - smoothstep(6.0, 10.0, dist);
+    if (wNear > 0.0) {
+      vec3 a = abs(cross(dFdx(vL), dFdy(vL)));
+      float wz = a.z / max(a.x + a.z, 1e-6);
+      float wv = mix(texture2D(uDetail, vL.zy * 1.5).r, texture2D(uDetail, vL.xy * 1.5).r, wz);
+      col *= 1.0 + (wv - 0.5) * 0.16 * wNear;
+    }
   }
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * smoothstep(-0.2, 0.3, ndl) * vSun;
   col += uSunCol * rim * 0.1 * (1.0 - 0.5 * uNight);
@@ -1149,6 +1164,28 @@ function figureGeometry(): THREE.InstancedBufferGeometry {
   return g;
 }
 
+/**
+ * The modelled figure (tools/blender/townsfolk.py writes public/art/townsfolk.glb), swapped into
+ * these geometries in place of figureGeometry()'s when it arrives. Same attributes, same meaning;
+ * the instanced attributes are left as they are. Without the file the built figure stays.
+ */
+function modelledFigure(geos: THREE.InstancedBufferGeometry[]): void {
+  loadModel('townsfolk.glb').then((gltf) => {
+    const m = gltf ? modelGeometry(gltf, 'townsfolk') : null;
+    const index = m?.getIndex();
+    const pos = m?.getAttribute('position');
+    const part = m?.getAttribute('_apart');
+    const kind = m?.getAttribute('_akind');
+    if (!index || !pos || !part || !kind || part.itemSize !== 2 || kind.itemSize !== 3) return;
+    for (const g of geos) {
+      g.setAttribute('position', pos);
+      g.setAttribute('aPart', part);
+      g.setAttribute('aKind', kind);
+      g.setIndex(index);
+    }
+  });
+}
+
 /** One person on the dev review sheet. */
 /** A townsperson, as the talking needs them (see People.nearestPerson). */
 export interface FolkOut {
@@ -1201,12 +1238,20 @@ export function townsfolkSheet(uniforms: Uniforms, kind: CityKind, list: SheetPe
   g.setAttribute('iC', new THREE.InstancedBufferAttribute(a, 4));
   g.setAttribute('iE', new THREE.InstancedBufferAttribute(b, 4));
   g.instanceCount = n;
+  modelledFigure([g]);
   const blank = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
   blank.needsUpdate = true;
   const mesh = new THREE.Mesh(
     g,
     new THREE.ShaderMaterial({
-      uniforms: { uCityMap: { value: blank }, uCityRect: { value: new THREE.Vector4() }, uCityGround: { value: 0 }, uWindL: { value: new THREE.Vector2() }, ...uniforms },
+      uniforms: {
+        uCityMap: { value: blank },
+        uCityRect: { value: new THREE.Vector4() },
+        uCityGround: { value: 0 },
+        uWindL: { value: new THREE.Vector2() },
+        uDetail: { value: detailTexture() },
+        ...uniforms,
+      },
       vertexShader: figureVert,
       fragmentShader: figureFrag,
     }),
@@ -1375,6 +1420,7 @@ export class People {
       ...this.fallback,
       ...uniforms,
       uWindL: { value: this.windL },
+      uDetail: { value: detailTexture() },
     });
 
     this.dynA = new Float32Array(MAXP * DYN);
@@ -1455,6 +1501,7 @@ export class People {
     this.minerShadow.frustumCulled = false;
     this.minerShadow.renderOrder = 1;
     this.group.add(this.minerFig, this.minerShadow);
+    modelledFigure([this.figGeo, this.minerGeo]);
     const solid = solidMaterial(uniforms);
     for (let i = 0; i < MINER_MAX; i++) {
       const pick = new THREE.Mesh(pickGeometry(CHOSEN.pick), solid);

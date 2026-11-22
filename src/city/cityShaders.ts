@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Uniforms } from '../game/contract';
 import { CITY_SHADOW_GLSL } from './cityGlsl';
 import { STYLE_GLSL } from '../render/styleGlsl';
+import { detailTexture } from '../render/art';
 
 // Shaders for the cities: masonry (walls, roofs, domes, wood, cloth, plants), the pool,
 // and the warm glows (lamps, lit windows, lanterns) that make a city read at night.
@@ -137,6 +138,7 @@ uniform vec3 uSunCol;
 uniform vec3 uFogCol;
 uniform float uFog;
 uniform float uNight;
+uniform sampler2D uDetail; // baked grain: R cloth weave, G limewash, B stone (mid-grey = no change)
 varying vec3 vW;
 varying vec3 vN;
 varying float vH;
@@ -269,6 +271,20 @@ void main() {
     masonry = 0.6;
   }
 
+  // baked surface grain on the albedo (not on glow, windows, openings, wood, plants, soil)
+  {
+    float chan = (mat < 1.5 || mat > 8.5) ? 1.0 : mat < 2.5 ? 2.0 : (mat > 4.5 && mat < 5.5) ? 0.0 : -1.0;
+    float fadeD = 1.0 - smoothstep(25.0, 70.0, dist);
+    if (chan >= 0.0 && fadeD > 0.0) {
+      vec3 an = abs(ng);
+      vec2 puv = an.y >= an.x && an.y >= an.z ? vW.xz : an.x >= an.z ? vW.zy : vW.xy;
+      vec3 dt = texture2D(uDetail, puv * (chan < 0.5 ? 2.0 : 0.625)).rgb - 0.5;
+      float t = chan < 0.5 ? dt.r : chan < 1.5 ? dt.g : dt.b;
+      float k = 1.0 + t * 0.22 * fadeD;
+      sh *= k;
+      li *= k;
+    }
+  }
   vec3 col = mix(sh, li, l);
   col *= 1.0 + (0.12 * m - 0.07) * masonry;
 
@@ -482,7 +498,7 @@ export function createMasonryMaterial(shared: Uniforms, o: MasonryOptions): THRE
   if (o.sway) defines.SWAY = 1;
   if (o.cut) defines.CUT = 1;
   return new THREE.ShaderMaterial({
-    uniforms: withShared(shared, o.cut ? { uCutBox: o.cut.uCutBox, uCutY: o.cut.uCutY } : {}),
+    uniforms: withShared(shared, { uDetail: { value: detailTexture() }, ...(o.cut ? { uCutBox: o.cut.uCutBox, uCutY: o.cut.uCutY } : {}) }),
     vertexShader: masonryVert,
     fragmentShader: masonryFrag,
     defines,
