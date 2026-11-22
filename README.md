@@ -80,4 +80,4 @@ A few URL options help when testing. `?tools=board,carpet,pick,spyglass,flute,be
 
 ## Built with
 
-[three.js](https://threejs.org), TypeScript and Vite. The terrain, sky and water are custom shaders, and the world is generated from a seed, so the world itself needs no texture or model files. The wanderer, the townsfolk and one small detail texture are modelled in Blender (`tools/blender`, written to `public/art`, about 680 KB in all); the game runs without them and takes them as they load.
+[three.js](https://threejs.org), TypeScript and Vite. The terrain, sky and water are custom shaders, and the world is generated from a seed, so the world itself needs no texture or model files. The wanderer, the townsfolk, the animals, the palms, shrubs and rocks, and two small detail textures are made in Blender (`tools/blender`, written to `public/art`, about 1.6 MB in all); the game runs without them and takes them as they load.

@@ -5,7 +5,8 @@
 
 import * as THREE from 'three';
 import type { Uniforms } from '../../game/contract';
-import { STYLE_GLSL } from '../../render/styleGlsl';
+import { DETAIL_GLSL, STYLE_GLSL } from '../../render/styleGlsl';
+import { detailTexture2 } from '../../render/art';
 
 const NOISE = /* glsl */ `
 float dh21(vec2 p) {
@@ -57,6 +58,7 @@ uniform float uDeepTime;
 uniform float uDeepSky;
 uniform float uDeepWake;
 uniform vec3 uDeepStone;
+uniform sampler2D uDetailMap2; // baked grain (render/art.ts): G rock strata
 varying vec3 vL;
 varying vec3 vV;
 varying vec4 vLight;
@@ -64,7 +66,10 @@ varying vec3 vTint;
 varying float vKind;
 ${NOISE}
 ${STYLE_GLSL}
+${DETAIL_GLSL}
 void main() {
+  // the face's normal in the mesh's own frame, for the grain's projection (vL.y is height)
+  vec3 nl = cross(dFdx(vL), dFdy(vL));
   // flat shading: the triangle's own normal, which in view space always faces the eye
   vec3 nv = cross(dFdx(vV), dFdy(vV));
   nv = normalize(nv + vec3(0.0, 0.0, 1e-12));
@@ -83,6 +88,9 @@ void main() {
     tone = 0.72 + 0.3 * b1 + 0.14 * b2;
     sh = mix(uRockShade, uShade * 0.85, sel);
     li = mix(uRockLit, uLit * 0.85, sel);
+    // bedding, joints and pits close by, one tile per 3 m, level on the walls
+    float gf = detailFade(length(vV), 20.0, 60.0);
+    if (gf > 0.0) tone *= detailMul(texture2D(uDetailMap2, detailPlane(vL, nl) / 3.0).g - 0.5, 0.22, gf);
   } else if (vKind < 1.5) {
     sh = mix(uRockShade, uSaltShade, 0.7);
     li = uSaltLit;
@@ -288,6 +296,7 @@ export function deepMaterials(shared?: Uniforms): DeepMaterials {
   const stone = { value: new THREE.Vector3(0, -1e4, 0) };
   const own: Uniforms = { uDeepTime: time, uDeepSky: sky, uDeepWake: wake, uDeepStone: stone };
   const u = withDefaults(shared, own);
+  u.uDetailMap2 = { value: detailTexture2() };
   // seen only from inside, so either face will do; this spares every builder the winding
   const rock = new THREE.ShaderMaterial({ uniforms: u, vertexShader: deepVert, fragmentShader: deepFrag, side: THREE.DoubleSide });
   const add = { blending: THREE.AdditiveBlending, depthWrite: false, transparent: true } as const;

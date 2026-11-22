@@ -2,7 +2,7 @@
 // The game wears one of each (CHOSEN); the dev page at /equipment.html shows them all.
 //
 // Every design obeys the same rules as the rest of the world: flat-shaded low-poly
-// forms, no textures, at most three colours, and those colours come from the cloth
+// forms, no painted textures (only a faint baked grain close up), at most three colours, from the cloth
 // and loads the travellers already carry. Pattern is made of coloured faces.
 //
 // Local spaces. Board: flat in x, z, nose toward +z, deck up, centred. Carpet: the same.
@@ -10,7 +10,8 @@
 // grip at the origin, head at the top, striking edge toward +z.
 import * as THREE from 'three';
 import type { Uniforms } from './contract';
-import { STYLE_GLSL } from '../render/styleGlsl';
+import { DETAIL_GLSL, STYLE_GLSL } from '../render/styleGlsl';
+import { detailTexture, detailTexture2 } from '../render/art';
 
 type V3 = [number, number, number];
 
@@ -38,11 +39,24 @@ const STONE: V3 = [0.42, 0.38, 0.34];
 
 // ------------------------------------------------------------------ builder
 
+/**
+ * Baked close-up grain for what is built next (aGrain, read in frag): none, the carpet weave,
+ * or wood fibres running along the piece's local x, y or z.
+ */
+const GRAIN = { none: 0, weave: 1, woodX: 2, woodY: 3, woodZ: 4 } as const;
+
 /** Collects flat-shaded triangles, each with its own colour. */
 class Build {
   private pos: number[] = [];
   private nrm: number[] = [];
   private col: number[] = [];
+  private grn: number[] = [];
+  /** The grain of the triangles that follow (GRAIN). */
+  grain: number;
+
+  constructor(grain: number = GRAIN.none) {
+    this.grain = grain;
+  }
 
   tri(a: V3, b: V3, c: V3, col: V3): void {
     const nx = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]);
@@ -54,6 +68,7 @@ class Build {
       this.pos.push(p[0], p[1], p[2]);
       this.nrm.push(nx / len, ny / len, nz / len);
       this.col.push(col[0], col[1], col[2]);
+      this.grn.push(this.grain);
     }
   }
 
@@ -121,6 +136,7 @@ class Build {
     g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
     g.setAttribute('normal', new THREE.Float32BufferAttribute(this.nrm, 3));
     g.setAttribute('aCol', new THREE.Float32BufferAttribute(this.col, 3));
+    g.setAttribute('aGrain', new THREE.Float32BufferAttribute(this.grn, 1));
     return g;
   }
 }
@@ -290,7 +306,7 @@ const BOARD_SPECS: BoardSpec[] = [
 ];
 
 function buildBoard(s: BoardSpec): THREE.BufferGeometry {
-  const b = new Build();
+  const b = new Build(GRAIN.woodZ);
   const rock = (t: number) => s.nose * Math.pow(Math.max(0, t - 0.62), 2) + s.tail * Math.pow(Math.max(0, 0.38 - t), 2);
   const at = (u: number, t: number, dy = 0): V3 => [u * s.half(t), rock(t) + THICK + dy, (t - 0.5) * s.len];
   for (let j = 0; j < BT; j++) {
@@ -452,7 +468,7 @@ const CARPET_SPECS: CarpetSpec[] = [
 ];
 
 function buildCarpet(s: CarpetSpec): THREE.BufferGeometry {
-  const b = new Build();
+  const b = new Build(GRAIN.weave);
   const x = (i: number) => (i / CX - 0.5) * s.w;
   const z = (j: number) => (j / CZ - 0.5) * s.len;
   for (let j = 0; j < CZ; j++) {
@@ -488,7 +504,7 @@ function buildCarpet(s: CarpetSpec): THREE.BufferGeometry {
 
 /** The carpet rolled up and strapped: its own weave wrapped round the bundle, folded once to shorten it. */
 function buildRoll(s: CarpetSpec): THREE.BufferGeometry {
-  const b = new Build();
+  const b = new Build(GRAIN.weave);
   const L = Math.min(0.78, s.w * 0.46);
   const R = 0.07 + s.len * 0.006;
   const SIDES = 8;
@@ -735,8 +751,9 @@ export const spyglassGeometry = (): THREE.BufferGeometry => {
 
 /** A reed flute: a pale cane along the y axis, mouth at the top, bound in red thread at the joints. */
 export const fluteGeometry = (): THREE.BufferGeometry => {
-  const b = new Build();
+  const b = new Build(GRAIN.woodY);
   b.tube([[0, 0, 0], [0, 0.4, 0]], [0.0125, 0.0105], 5, PALE);
+  b.grain = GRAIN.none;
   for (const y of [0.05, 0.19, 0.33]) b.tube([[0, y, 0], [0, y + 0.022, 0]], [0.0155, 0.0155], 5, RED);
   // the finger holes, as dark flecks down the front
   for (let i = 0; i < 4; i++) b.box([0, 0.085 + i * 0.03, 0.0115], [0.007, 0.009, 0.004], DARK);
@@ -794,11 +811,13 @@ export const hearthGeometry = (): THREE.BufferGeometry => {
  * either hand, so it is held level out in front and dips about the grips (the origin).
  */
 export const rodGeometry = (): THREE.BufferGeometry => {
-  const b = new Build();
+  const b = new Build(GRAIN.woodZ);
   const fork: V3 = [0, 0, 0.17];
   b.tube([fork, [0, 0.004, 0.27], [0, 0, 0.36]], [0.012, 0.01, 0.005], 5, BROWN);
   for (const sx of [-1, 1]) {
+    b.grain = GRAIN.woodZ;
     b.tube([fork, [sx * 0.05, 0, 0.09], [sx * 0.095, 0, 0]], [0.011, 0.0105, 0.01], 5, BROWN);
+    b.grain = GRAIN.none;
     b.tube([[sx * 0.095, 0, 0], [sx * 0.1, 0, -0.012]], [0.0102, 0.0102], 5, BONE); // the cut ends
   }
   return b.done();
@@ -891,14 +910,21 @@ export const featherGeometry = (): THREE.BufferGeometry => {
 
 const solidVert = /* glsl */ `
 attribute vec3 aCol;
+attribute float aGrain;
 varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
+varying vec3 vO;
+varying vec3 vNo;
+varying float vGrain;
 void main() {
   vec4 wp = modelMatrix * vec4(position, 1.0);
   vW = wp.xyz;
   vN = normalize(mat3(modelMatrix) * normal);
   vCol = aCol;
+  vO = position;
+  vNo = normal;
+  vGrain = aGrain;
   gl_Position = projectionMatrix * viewMatrix * wp;
 }
 `;
@@ -906,13 +932,20 @@ void main() {
 // A carpet in the air: it ripples from nose to tail, faster and deeper with speed.
 const rugVert = /* glsl */ `
 attribute vec3 aCol;
+attribute float aGrain;
 uniform float uTime;
 uniform float uRug;    // 0 hanging in the air .. 1 at full speed
 uniform float uRugLen; // length of the carpet, metres
 varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
+varying vec3 vO;
+varying vec3 vNo;
+varying float vGrain;
 void main() {
+  vO = position; // the weave stays put on the cloth as it ripples
+  vNo = normal;
+  vGrain = aGrain;
   vec3 p = position;
   float tail = clamp(0.5 - p.z / uRugLen, 0.0, 1.0);   // 0 at the nose .. 1 at the tail
   float side = abs(p.x) / 0.8;
@@ -944,14 +977,37 @@ uniform float uUnder;  // how dark the underside is, for cloth seen from below
 uniform float uDeepDark; // 0 under the sky .. 1 down in a deep, out of the daylight
 uniform vec4 uCavGlow;   // the lamp that matters most down there: position, reach (0 = none)
 uniform vec3 uCavGlowCol;
+uniform sampler2D uDetailMap;  // baked grain (render/art.ts): R woven cloth
+uniform sampler2D uDetailMap2; // baked grain: B wood fibres
 varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
+varying vec3 vO;
+varying vec3 vNo;
+varying float vGrain;
 ${STYLE_GLSL}
+${DETAIL_GLSL}
 void main() {
   vec3 toCam = cameraPosition - vW;
   float dist = length(toCam);
   vec3 V = toCam / max(dist, 1e-4);
+  // baked close-up grain in the piece's own frame, so it rides along with it: the weave on
+  // carpets, fibres along the member on wood (aGrain: 1 weave, 2..4 wood along local x, y, z)
+  vec3 alb = vCol;
+  float gf = detailFade(dist, 10.0, 30.0) * step(0.5, vGrain);
+  if (gf > 0.0) {
+    vec3 no = normalize(vNo);
+    float t;
+    if (vGrain < 1.5) {
+      t = texture2D(uDetailMap, detailPlane(vO, no) * 2.0).r - 0.5;
+    } else {
+      vec3 ax = vGrain < 2.5 ? vec3(1.0, 0.0, 0.0) : vGrain < 3.5 ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+      vec3 ac = cross(no, ax);
+      if (dot(ac, ac) < 0.01) ac = cross(no, ax.yzx); // end grain
+      t = texture2D(uDetailMap2, vec2(dot(vO, ax), dot(vO, normalize(ac))) * 2.0).b - 0.5;
+    }
+    alb *= detailMul(t, vGrain < 1.5 ? 0.22 : 0.24, gf);
+  }
   vec3 n = normalize(vN);
   // Turn the normal to the viewer. A carpet's normal always points up out of its weave, so
   // one seen from below is its underside, and that is darker.
@@ -965,10 +1021,10 @@ void main() {
   float l = styleBands(smoothstep(-0.35, 0.75, ndl), vW.xz);
   float bright = clamp(uLit.g * 1.25, 0.12, 1.0);
   vec3 tint = mix(vec3(1.0), uLit / max(uLit.g, 0.02), 0.35);
-  vec3 lit = vCol * tint * bright * face;
+  vec3 lit = alb * tint * bright * face;
   vec3 ratio = clamp(uShade / max(uLit, vec3(0.03)), 0.3, 0.85);
   vec3 col = mix(lit * ratio, lit, l);
-  col += vCol * vec3(0.10, 0.13, 0.19) * uNight;
+  col += alb * vec3(0.10, 0.13, 0.19) * uNight;
   col *= 0.9 + 0.1 * n.y;
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * smoothstep(-0.2, 0.3, ndl);
   col += uSunCol * rim * 0.1 * (1.0 - 0.5 * uNight);
@@ -979,7 +1035,7 @@ void main() {
       vec3 gd = uCavGlow.xyz - vW;
       float g2 = dot(gd, gd);
       float ga = 1.0 / (1.0 + g2 / (0.16 * uCavGlow.w * uCavGlow.w));
-      lit = uCavGlowCol * vCol * (0.85 * ga * (0.45 + 0.55 * max(dot(n, gd * inversesqrt(g2 + 1e-3)), 0.0)));
+      lit = uCavGlowCol * alb * (0.85 * ga * (0.45 + 0.55 * max(dot(n, gd * inversesqrt(g2 + 1e-3)), 0.0)));
     }
     col = mix(col, col * 0.2 + lit, uDeepDark);
   }
@@ -990,13 +1046,18 @@ void main() {
 
 /** The material for boards, picks and rolled carpets. */
 export function solidMaterial(u: Uniforms): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({ uniforms: { ...u, uUnder: { value: 1 } }, vertexShader: solidVert, fragmentShader: frag, side: THREE.DoubleSide });
+  return new THREE.ShaderMaterial({
+    uniforms: { ...u, uUnder: { value: 1 }, uDetailMap: { value: detailTexture() }, uDetailMap2: { value: detailTexture2() } },
+    vertexShader: solidVert,
+    fragmentShader: frag,
+    side: THREE.DoubleSide,
+  });
 }
 
 /** The material for a carpet in flight. `speed` is 0..1 and `len` the carpet's length; both are read every frame. */
 export function rugMaterial(u: Uniforms, speed: THREE.IUniform, len: THREE.IUniform): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
-    uniforms: { ...u, uUnder: { value: 0.6 }, uRug: speed, uRugLen: len },
+    uniforms: { ...u, uUnder: { value: 0.6 }, uRug: speed, uRugLen: len, uDetailMap: { value: detailTexture() }, uDetailMap2: { value: detailTexture2() } },
     vertexShader: rugVert,
     fragmentShader: frag,
     side: THREE.DoubleSide,

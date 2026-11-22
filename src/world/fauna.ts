@@ -8,6 +8,7 @@ import { ASS_GALLOP, BOOTS, ORYX_GALLOP, RUN } from '../game/speeds';
 import { GB } from '../city/caravans';
 import type { Landmark } from './discoveries';
 import { STYLE_GLSL } from '../render/styleGlsl';
+import { detailTexture, loadModel, modelGeometry } from '../render/art';
 import { steer, steered, type SolidQuery } from './avoid';
 
 // Every instance runs the whole mesh (all species) through the vertex shader, so the cap is what
@@ -1003,6 +1004,82 @@ function faunaGeometry(): THREE.InstancedBufferGeometry {
   return b.geometry();
 }
 
+/** The meshes of public/art/fauna.glb, by species. */
+const MODEL_NAMES = ['oryx', 'fox', 'hare', 'lizard', 'vulture', 'gazelle', 'ass', 'goat', 'tortoise', 'snake', 'grouse'];
+
+/**
+ * The modelled animals (tools/blender/fauna.py writes public/art/fauna.glb), swapped into these
+ * geometries in place of faunaGeometry()'s when they arrive. Same attributes, same meaning: the
+ * file carries aRig as two pairs (_arig, _arigzw), aPivot and the material (aMP.x); the species
+ * (aMP.y) is the mesh's name. The instanced attributes are left as they are. Without the file, or
+ * with any species missing from it, the built animals stay.
+ */
+function modelledFauna(geos: THREE.InstancedBufferGeometry[]): void {
+  loadModel('fauna.glb').then((gltf) => {
+    if (!gltf) return;
+    const parts: THREE.BufferGeometry[] = [];
+    for (const name of MODEL_NAMES) {
+      const m = modelGeometry(gltf, name);
+      const ok =
+        m?.getIndex() &&
+        m.getAttribute('position') &&
+        m.getAttribute('normal') &&
+        m.getAttribute('_arig')?.itemSize === 2 &&
+        m.getAttribute('_arigzw')?.itemSize === 2 &&
+        m.getAttribute('_apivot')?.itemSize === 3 &&
+        m.getAttribute('_amat')?.itemSize === 1;
+      if (!m || !ok) return;
+      parts.push(m);
+    }
+    let nv = 0;
+    let ni = 0;
+    for (const m of parts) {
+      nv += m.getAttribute('position').count;
+      ni += m.getIndex()?.count ?? 0;
+    }
+    const pos = new Float32Array(nv * 3);
+    const nrm = new Float32Array(nv * 3);
+    const rig = new Float32Array(nv * 4);
+    const piv = new Float32Array(nv * 3);
+    const mp = new Float32Array(nv * 2);
+    const idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
+    let v0 = 0;
+    let i0 = 0;
+    parts.forEach((m, sp) => {
+      const P = m.getAttribute('position');
+      const N = m.getAttribute('normal');
+      const R = m.getAttribute('_arig');
+      const W = m.getAttribute('_arigzw');
+      const V = m.getAttribute('_apivot');
+      const M = m.getAttribute('_amat');
+      for (let i = 0; i < P.count; i++) {
+        const o = v0 + i;
+        pos.set([P.getX(i), P.getY(i), P.getZ(i)], o * 3);
+        nrm.set([N.getX(i), N.getY(i), N.getZ(i)], o * 3);
+        rig.set([R.getX(i), R.getY(i), W.getX(i), W.getY(i)], o * 4);
+        piv.set([V.getX(i), V.getY(i), V.getZ(i)], o * 3);
+        mp.set([M.getX(i), sp], o * 2);
+      }
+      const I = m.getIndex();
+      if (I) for (let k = 0; k < I.count; k++) idx[i0 + k] = I.getX(k) + v0;
+      v0 += P.count;
+      i0 += I?.count ?? 0;
+    });
+    const attrs: Array<[string, THREE.BufferAttribute]> = [
+      ['position', new THREE.BufferAttribute(pos, 3)],
+      ['normal', new THREE.BufferAttribute(nrm, 3)],
+      ['aRig', new THREE.BufferAttribute(rig, 4)],
+      ['aPivot', new THREE.BufferAttribute(piv, 3)],
+      ['aMP', new THREE.BufferAttribute(mp, 2)],
+    ];
+    const index = new THREE.BufferAttribute(idx, 1);
+    for (const g of geos) {
+      for (const [name, a] of attrs) g.setAttribute(name, a);
+      g.setIndex(index);
+    }
+  });
+}
+
 // ------------------------------------------------------------------ shaders
 
 const vert = /* glsl */ `
@@ -1018,6 +1095,7 @@ varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
+varying vec3 vL;
 vec3 rotX(vec3 v, float a) { float c = cos(a); float s = sin(a); return vec3(v.x, v.y * c - v.z * s, v.y * s + v.z * c); }
 vec3 rotY(vec3 v, float a) { float c = cos(a); float s = sin(a); return vec3(v.x * c + v.z * s, v.y, -v.x * s + v.z * c); }
 vec3 rotZ(vec3 v, float a) { float c = cos(a); float s = sin(a); return vec3(v.x * c - v.y * s, v.x * s + v.y * c, v.z); }
@@ -1026,7 +1104,7 @@ void main() {
   float seed = fract(iCoat.w);
   if (abs(aMP.y - sp) > 0.5 || iMot.w < 0.001) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0;
+    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0; vL = vec3(0.0);
     return;
   }
   float TAU = 6.2831853;
@@ -1109,6 +1187,8 @@ void main() {
     p.y += (0.015 + 0.05 * run) * walk * sin(2.0 * TAU * ph) * (S == 1 ? 0.3 : S == 10 ? 0.15 : 1.0);
   }
   vY = position.y;
+  // the rest pose, in metres: the hide's grain stays put on the animal as it moves
+  vL = position * iMot.w;
   p *= iMot.w;
   vec3 up = normalize(iUp.xyz);
   float yaw = iPos.w;
@@ -1145,6 +1225,8 @@ varying vec3 vW;
 varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
+varying vec3 vL;
+uniform sampler2D uDetail;
 ${STYLE_GLSL}
 void main() {
   vec3 toCam = cameraPosition - vW;
@@ -1153,11 +1235,17 @@ void main() {
   vec3 n = normalize(vN);
   if (!gl_FrontFacing) n = -n;
   n = styleFacet(n, vW);
+  // a faint grain in the hide (detail map B, mid-grey = none), projected from the animal's own
+  // side, front and top so it moves with it; about 8% either way, gone by twelve metres
+  vec3 fa = abs(cross(dFdx(vL), dFdy(vL)));
+  fa /= max(fa.x + fa.y + fa.z, 1e-6);
+  float grain = texture2D(uDetail, vL.zy * 2.5).b * fa.x + texture2D(uDetail, vL.xy * 2.5).b * fa.z + texture2D(uDetail, vL.xz * 2.5).b * fa.y;
+  float gNear = 1.0 - smoothstep(7.0, 12.0, dist);
   float ndl = dot(n, uSunDir);
   float l = styleBands(smoothstep(-0.35, 0.75, ndl), vW.xz);
   float bright = clamp(uLit.g * 1.25, 0.12, 1.0);
   vec3 tint = mix(vec3(1.0), uLit / max(uLit.g, 0.02), 0.35);
-  vec3 lit = vCol * tint * bright;
+  vec3 lit = vCol * (1.0 + (grain - 0.5) * 0.16 * gNear) * tint * bright;
   vec3 ratio = clamp(uShade / max(uLit, vec3(0.03)), 0.3, 0.85);
   vec3 col = mix(lit * ratio, lit, l);
   col += vCol * vec3(0.10, 0.13, 0.19) * uNight;
@@ -1333,7 +1421,8 @@ export class Fauna {
     this.geo.setAttribute('iMot', this.iMot.attr);
     this.geo.setAttribute('iCoat', this.iCoat.attr);
     this.geo.instanceCount = 0;
-    this.mat = new THREE.ShaderMaterial({ uniforms: { ...uniforms }, vertexShader: vert, fragmentShader: frag, side: THREE.DoubleSide });
+    modelledFauna([this.geo]);
+    this.mat = new THREE.ShaderMaterial({ uniforms: { ...uniforms, uDetail: { value: detailTexture() } }, vertexShader: vert, fragmentShader: frag, side: THREE.DoubleSide });
     const mesh = new THREE.Mesh(this.geo, this.mat);
     mesh.frustumCulled = false;
     mesh.name = 'fauna-draw';
@@ -2300,7 +2389,8 @@ export function faunaSheet(uniforms: Uniforms, list: SheetAnimal[]): { group: TH
   geo.setAttribute('iMot', M.attr);
   geo.setAttribute('iCoat', C.attr);
   geo.instanceCount = list.length;
-  const mat = new THREE.ShaderMaterial({ uniforms, vertexShader: vert, fragmentShader: frag, side: THREE.DoubleSide });
+  modelledFauna([geo]);
+  const mat = new THREE.ShaderMaterial({ uniforms: { ...uniforms, uDetail: { value: detailTexture() } }, vertexShader: vert, fragmentShader: frag, side: THREE.DoubleSide });
   const mesh = new THREE.Mesh(geo, mat);
   mesh.frustumCulled = false;
   const group = new THREE.Group();

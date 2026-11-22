@@ -56,3 +56,19 @@ vec3 styleFacet(vec3 n, vec3 w) {
   return dot(f, n) < 0.0 ? -f : f;
 }
 `;
+
+// Baked detail maps (render/art.ts detailTexture / detailTexture2): mid-grey on average, read as
+// (texel - 0.5) and turned into an albedo multiplier before lighting, faded out with distance so
+// nothing tiles or shimmers far off. Shaders declare their own sampler uniforms.
+export const DETAIL_GLSL = /* glsl */ `
+// World-space plane across the dominant axis of n: xz on floors, and on walls a plane whose
+// second coordinate is height, so anything laid along the texture's x runs level.
+vec2 detailPlane(vec3 w, vec3 n) {
+  vec3 a = abs(n);
+  return a.y >= a.x && a.y >= a.z ? w.xz : a.x >= a.z ? w.zy : w.xy;
+}
+// 1 up to near, 0 past far.
+float detailFade(float d, float near, float far) { return 1.0 - smoothstep(near, far, d); }
+// The albedo multiplier for a centred texel value t (texel - 0.5) at strength k, faded by f.
+float detailMul(float t, float k, float f) { return 1.0 + t * k * f; }
+`;

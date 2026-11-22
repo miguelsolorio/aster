@@ -6,7 +6,8 @@
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import { WORLD_SCALE } from './scale';
-import { STYLE_GLSL } from '../render/styleGlsl';
+import { DETAIL_GLSL, STYLE_GLSL } from '../render/styleGlsl';
+import { detailTexture, detailTexture2 } from '../render/art';
 import { MAX_CAVERNS, TERRAIN, writeCaverns, type Cave, type Cavern, type DesertWorld, type Massif } from './surface';
 import { rockCapVert, terrainFrag } from '../render/terrainShaders';
 import { CITY_CELL } from '../city/placement';
@@ -190,12 +191,15 @@ uniform vec3 uFogCol;
 uniform float uFog;
 uniform float uNight;
 uniform vec4 uWake; // stones woken by the waking song: x, z, how strongly lit (0..1), and when (uTime)
+uniform sampler2D uDetailMap;  // baked grain (render/art.ts): B mud brick / dressed stone
+uniform sampler2D uDetailMap2; // baked grain: G rock strata, B wood
 varying vec3 vW;
 varying vec3 vN;
 varying vec3 vTint;
 varying float vKind;
 ${NOISE}
 ${STYLE_GLSL}
+${DETAIL_GLSL}
 void main() {
   ${DISSOLVE}
   vec3 n = normalize(vN);
@@ -209,6 +213,18 @@ void main() {
   if (kind < 0.5) { sh = uRockShade; li = uRockLit; }
   else if (kind < 1.5) { sh = mix(uRockShade, uSaltShade, 0.7); li = uSaltLit; }
   vec3 col = mix(sh, li, l * 0.9);
+  // baked close-up grain, world-space: strata on the rock palette, mud brick on the sand palette,
+  // and wood grain on its wood (kind + 0.25; fibres upright on walls, so doors and posts read)
+  float grainF = detailFade(dist, 25.0, 70.0);
+  if (grainF > 0.0 && kind < 2.4 && (kind < 0.5 || kind > 1.5)) {
+    vec3 an = abs(vN);
+    vec2 puv = detailPlane(vW, vN);
+    float t;
+    if (kind < 0.5) t = texture2D(uDetailMap2, puv * 0.5).g - 0.5;
+    else if (kind > 2.1) t = texture2D(uDetailMap2, (an.y < max(an.x, an.z) ? puv.yx : puv) * 0.83).b - 0.5;
+    else t = texture2D(uDetailMap, puv * 0.625).b - 0.5;
+    col *= detailMul(t, kind > 2.1 ? 0.26 : 0.22, grainF);
+  }
   float m = dvn(vW.xz * 0.45 + vec2(vW.y * 0.6, -vW.y * 0.3)) * 0.6 + dvn(vW.xz * 1.7 + vW.y) * 0.4;
   col *= vTint * (0.88 + 0.24 * m);
   col += (uTop - col) * 0.06 * max(n.y, 0.0) * (1.0 - l);
@@ -439,6 +455,15 @@ const _p = new THREE.Vector3();
 const _s = new THREE.Vector3();
 const _mi = new THREE.Matrix4();
 
+// The two wood colours (the builders' WOOD and settlements' wood; a wreck's weathered wood), by
+// hue: a sand-palette piece in either is drawn with wood grain (see stoneFrag).
+const WOOD_HUES: [number, number][] = [
+  [0.33 / 0.46, 0.23 / 0.46],
+  [0.42 / 0.5, 0.33 / 0.5],
+];
+const isWoodHue = (r: number, g: number, b: number): boolean =>
+  r > 0 && WOOD_HUES.some(([gr, br]) => Math.abs(g / r - gr) < 0.01 && Math.abs(b / r - br) < 0.01);
+
 class StoneBuilder {
   pos: number[] = [];
   tint: number[] = [];
@@ -448,6 +473,8 @@ class StoneBuilder {
   b = 1;
   k = 0;
   rough = 0;
+  /** 0.25 added to the kind of sand-palette wood, so the shader can give it wood grain. */
+  grain = 0;
   salt = 1;
   /** Deep in a cavern: out of the sun, lit only by what glows there. */
   dark = false;
@@ -458,6 +485,7 @@ class StoneBuilder {
     this.b = b;
     this.k = k;
     this.rough = rough;
+    this.grain = k === 2 && isWoodHue(r, g, b) ? 0.25 : 0;
   }
 
   vert(x: number, y: number, z: number): void {
@@ -472,7 +500,7 @@ class StoneBuilder {
     }
     this.pos.push(x, y, z);
     this.tint.push(this.r, this.g, this.b);
-    this.kind.push(this.dark ? this.k + 10 : this.k);
+    this.kind.push((this.dark ? this.k + 10 : this.k) + this.grain);
   }
 
   geo(g: THREE.BufferGeometry, m: THREE.Matrix4): void {
@@ -3493,14 +3521,20 @@ export class Discoveries {
     this.u = uniforms;
     this.group.name = 'discoveries';
     this.stoneMat = new THREE.ShaderMaterial({
-      uniforms: { ...uniforms, uWake: this.wakeU },
+      uniforms: { ...uniforms, uWake: this.wakeU, uDetailMap: { value: detailTexture() }, uDetailMap2: { value: detailTexture2() } },
       vertexShader: stoneVert,
       fragmentShader: stoneFrag,
       side: THREE.DoubleSide,
     });
     this.rockMat = new THREE.ShaderMaterial({
       // the ground's own shader; no clipmap level to cut out of it
-      uniforms: { ...uniforms, uInnerCenter: { value: new THREE.Vector2() }, uInnerHalf: { value: -1 } },
+      uniforms: {
+        ...uniforms,
+        uInnerCenter: { value: new THREE.Vector2() },
+        uInnerHalf: { value: -1 },
+        uDetailMap: { value: detailTexture() },
+        uDetailMap2: { value: detailTexture2() },
+      },
       vertexShader: rockCapVert,
       fragmentShader: terrainFrag,
       side: THREE.DoubleSide,

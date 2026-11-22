@@ -16,7 +16,7 @@ import { DEEP_HOLE } from '../world/deep/types';
 import { CITY_SHADOW_GLSL, CITY_SITES_GLSL } from '../city/cityGlsl';
 import { ROUTE_GLSL } from '../city/routes';
 import { FOOT_GLSL } from '../city/footpaths';
-import { STYLE_GLSL } from './styleGlsl';
+import { DETAIL_GLSL, STYLE_GLSL } from './styleGlsl';
 import { WET_MAX } from './storm';
 
 // The look's settings (see render/types.ts Params; the game's 35 mm look sets them
@@ -205,6 +205,8 @@ uniform vec3 uCavGlowCol;
 
 uniform vec2 uInnerCenter; // centre of the next finer level
 uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
+uniform sampler2D uDetailMap;  // baked grain (render/art.ts): G limewash, read for snow
+uniform sampler2D uDetailMap2; // baked grain: R sand, G rock strata, B wood
 
 varying vec3 vW;
 varying vec3 vN;
@@ -212,6 +214,7 @@ varying vec4 vMask;
 varying float vCave;
 
 ${LOOK}
+${DETAIL_GLSL}
 ${COMMON}
 ${HIGH}
 ${ROUTE_GLSL}
@@ -364,7 +367,9 @@ void main() {
   vec2 sc = p.xz / 0.03;
   vec2 fwScV = fwidth(sc);
   float fwSc = max(max(fwScV.x, fwScV.y), 1e-4);
-  vec3 meshFace = cross(dFdx(p), dFdy(p)); // Low Poly off the heightmap: the mesh's own triangles
+  vec3 dpX = dFdx(p);
+  vec3 dpY = dFdy(p);
+  vec3 meshFace = cross(dpX, dpY); // Low Poly off the heightmap: the mesh's own triangles
 
   // ---- clipmap overlap: the finer level draws here
   if (uInnerHalf > 0.0) {
@@ -425,6 +430,12 @@ void main() {
 
   // Optional work shrinks toward the camera at low detail (1.0 at full detail).
   float dk = mix(0.45, 1.0, clamp(uDetail, 0.0, 1.0));
+
+  // Baked close-up grain (detail maps, see render/art.ts). Read with explicit gradients from
+  // dpX / dpY because the reads sit in branches; each one is skipped where its fade is zero.
+  float grainOn = 1.0 - uFlat;
+  float sandFade = detailFade(dist, 12.0 * dk, 40.0 * dk) * grainOn;
+  float rockFade = detailFade(dist, 30.0 * dk, 90.0 * dk) * grainOn;
 
   // ---- sand ripples, two scales (analytic derivative along the wind)
   float rip = sandW * (1.0 - 0.85 * track) * (1.0 - smoothstep(0.35, 0.75, 1.0 - n0.y));
@@ -535,6 +546,12 @@ void main() {
   // ---- sand
   vec3 sandCol = mix(uShade * (0.82 + 0.18 * ambS), uLit, l);
   if (uFlat < 0.999) sandCol *= mix(0.965 + 0.07 * fbm(p.xz * 0.3 + vec2(2.3, 7.1)), 1.0, uFlat);
+  // wind-sorted grain: one tile per 0.9 m on the ground plane
+  if (sandFade > 0.0 && sandW > 0.01) {
+    const float SAND_TILE = 1.0 / 0.9;
+    float g = textureGrad(uDetailMap2, p.xz * SAND_TILE, dpX.xz * SAND_TILE, dpY.xz * SAND_TILE).r - 0.5;
+    sandCol *= detailMul(g, 0.16, sandFade);
+  }
 
   // ---- rock: strata bands on world height plus blotches
   vec3 rockCol = vec3(0.0);
@@ -550,6 +567,16 @@ void main() {
     float tone = 0.9 + 0.22 * (band - 0.5) * aaS + 0.07 * (band2 - 0.5) * aaS2 + 0.22 * (blot - 0.5);
     tone *= 0.95 + 0.1 * vnoise(vec2(p.y * 0.9, warp * 3.0));
     rockCol = mix(uRockShade * (0.8 + 0.2 * ambS), uRockLit, l) * mix(tone, 0.94, uFlat * 0.85);
+    // bedding, joints and pits, one tile per 3 m: on cliffs the plane's second axis is height, so
+    // the strata run level (the smooth mesh normal picks the plane, so crags do not flicker it)
+    if (rockFade > 0.0) {
+      const float ROCK_TILE = 1.0 / 3.0;
+      vec2 ruv = detailPlane(p, n0) * ROCK_TILE;
+      vec2 rdx = detailPlane(dpX, n0) * ROCK_TILE;
+      vec2 rdy = detailPlane(dpY, n0) * ROCK_TILE;
+      float g = textureGrad(uDetailMap2, ruv, rdx, rdy).g - 0.5;
+      rockCol *= detailMul(g, 0.22, rockFade);
+    }
   }
 
   // ---- salt: pale crust with polygonal cracks
@@ -583,7 +610,14 @@ void main() {
   // ---- snow on the high peaks
   if (p.y > SNOW_LINE - 50.0 || inFrost(p)) {
     float snow = snowAt(p, n.y);
-    col = mix(col, mix(uSnowShade * (0.85 + 0.15 * ambS), uSnowLit, l), snow);
+    vec3 snowCol = mix(uSnowShade * (0.85 + 0.15 * ambS), uSnowLit, l);
+    // a very faint, matte grain in the crust close by (detail.png G: no glints)
+    if (sandFade > 0.0 && snow > 0.01) {
+      const float SNOW_TILE = 1.0 / 1.2;
+      float g = textureGrad(uDetailMap, p.xz * SNOW_TILE, dpX.xz * SNOW_TILE, dpY.xz * SNOW_TILE).g - 0.5;
+      snowCol *= detailMul(g, 0.08, sandFade);
+    }
+    col = mix(col, snowCol, snow);
     // where the road runs through it the snow is packed down: greyer, bluer, scuffed close by
     if (paved > 0.001) {
       float scuff = 0.9 + 0.2 * (vnoise(p.xz * 2.3) * 0.6 + vnoise(p.xz * 7.0) * 0.4);
@@ -605,6 +639,12 @@ void main() {
       vec2 pc = cells(p.xz / 1.5);
       float joint = 1.0 - smoothstep(0.03, 0.09, pc.x);
       paveCol *= 1.0 - (0.06 * joint + 0.04 * (pc.y - 0.5)) * pf * smoothstep(0.35, 0.6, worn);
+    }
+    // packed grit underfoot: the sand grain, a little coarser and fainter
+    if (sandFade > 0.0) {
+      const float PAVE_TILE = 1.0 / 1.3;
+      float g = textureGrad(uDetailMap2, p.xz * PAVE_TILE, dpX.xz * PAVE_TILE, dpY.xz * PAVE_TILE).r - 0.5;
+      paveCol *= detailMul(g, 0.12, sandFade);
     }
     col = mix(col, paveCol, pave);
   }

@@ -7,15 +7,12 @@ import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js'
 
 const BASE = `${import.meta.env.BASE_URL}art/`;
 
-let detail: THREE.Texture | null = null;
+const details = new Map<string, THREE.Texture>();
 
-/**
- * One tileable 512 px detail map, mid-grey (0.5) on average in every channel:
- * R woven cloth, G limewashed plaster, B dressed stone. Until it has loaded it is flat grey,
- * so a shader that reads `(texel - 0.5)` adds nothing.
- */
-export function detailTexture(): THREE.Texture {
-  if (detail) return detail;
+/** A tileable detail map from public/art, flat mid-grey until it loads (so `texel - 0.5` adds nothing). */
+function detailMap(file: string): THREE.Texture {
+  const cached = details.get(file);
+  if (cached) return cached;
   const tex = new THREE.Texture();
   if (typeof document !== 'undefined') {
     const c = document.createElement('canvas');
@@ -30,10 +27,10 @@ export function detailTexture(): THREE.Texture {
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = THREE.NoColorSpace;
   tex.needsUpdate = true;
-  detail = tex;
+  details.set(file, tex);
   if (typeof document !== 'undefined') {
     new THREE.ImageLoader().load(
-      `${BASE}detail.png`,
+      `${BASE}${file}`,
       (img) => {
         tex.image = img;
         tex.generateMipmaps = true;
@@ -47,6 +44,23 @@ export function detailTexture(): THREE.Texture {
     );
   }
   return tex;
+}
+
+/**
+ * One tileable 512 px detail map, mid-grey (0.5) on average in every channel:
+ * R woven cloth, G limewashed plaster, B dressed stone. Until it has loaded it is flat grey,
+ * so a shader that reads `(texel - 0.5)` adds nothing.
+ */
+export function detailTexture(): THREE.Texture {
+  return detailMap('detail.png');
+}
+
+/**
+ * The second detail map, same rules: R wind-sorted sand grain, G sedimentary rock (bedding
+ * runs along the texture's x, so project it with height on y), B wood grain (fibres along x).
+ */
+export function detailTexture2(): THREE.Texture {
+  return detailMap('detail2.png');
 }
 
 const models = new Map<string, Promise<GLTF | null>>();
