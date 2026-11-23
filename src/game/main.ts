@@ -16,6 +16,7 @@ import { Fauna } from '../world/fauna';
 import { Props } from '../world/props';
 import { blockedAt } from '../world/avoid';
 import { Cities } from '../city/cities';
+import { cityShadowQ } from '../city/cityGlsl';
 import { FootpathNet } from '../city/footpaths';
 import { Caravans, ROLE_CLIMBER, ROLE_HERDER, ROLE_HOST, ROLE_KEEPER, ROLE_PILGRIM, ROLE_VILLAGER, ROLE_WATCHER } from '../city/caravans';
 import { Waymarks } from '../city/waymarks';
@@ -240,6 +241,7 @@ function start() {
   let rainAsk: 'near' | 'in' | 'after' | null = qs.has('rain') ? (rainParam === 'in' ? 'in' : rainParam === 'after' ? 'after' : 'near') : null;
   const bake = new HeightBake(renderer, u);
   const trail = new TrailField(renderer, u);
+  u.uCityShadowQ = cityShadowQ; // the one holder every city shader and the terrain share
   const clipmap = new Clipmap(u);
   const dust = new Dust(world, u);
   const discoveries = new Discoveries(world, u);
@@ -506,6 +508,11 @@ function start() {
   postScene.add(quad);
 
   let rt: THREE.WebGLRenderTarget | null = null;
+  let rtDepth: THREE.WebGLRenderTarget | null = null;
+  const rtSize = new THREE.Vector2(2, 2);
+  /** True when the post shader reads the depth buffer this frame: a storm in reach or a rainbow (storm.ts), or the depth-edge outline (shaders.ts). */
+  const postNeedsDepth = () =>
+    (u.uStormN.value as number) > 0.5 || (u.uRainbow.value as number) > 0.001 || (u.uOutline.value as number) > 0.001 || Math.abs((u.uMode.value as number) - 3) < 0.5;
   let stillDrawn = false; // the paused frame has been drawn; nothing more to render until something changes
   // Quality: a tier (mobile / low / high) plus a render scale the game lowers by itself if frames run slow.
   const auto = new AutoQuality(defaultTier(), (tier) => {
@@ -514,7 +521,7 @@ function start() {
   });
   const perf = createPerfHud(renderer, auto);
   function applyTier() {
-    applyQuality(QUALITY[auto.tier], { uniforms: u, clipmap, bake, dust });
+    applyQuality(QUALITY[auto.tier], { uniforms: u, clipmap, bake, dust, trail });
     people.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     caravans.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
     fauna.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
@@ -533,13 +540,19 @@ function start() {
     const pw = Math.max(2, Math.round(w * ratio));
     const ph = Math.max(2, Math.round(h * ratio));
     renderer.setSize(pw, ph, false);
-    rt?.depthTexture?.dispose();
     rt?.dispose();
+    rtDepth?.depthTexture?.dispose();
+    rtDepth?.dispose();
+    rtDepth = null;
+    // The scene is drawn into a target whose depth is only a renderbuffer (a tiler need not write it
+    // out). A second target with a depth texture is made the first time the post pass reads depth
+    // (a storm in reach, the outline, a rainbow), and kept until the next resize, so there is no
+    // per-frame reallocation and nothing is created for a game that never needs it.
     rt = new THREE.WebGLRenderTarget(pw, ph, { samples: q.samples, depthBuffer: true });
-    rt.depthTexture = new THREE.DepthTexture(pw, ph);
     postU.tColor.value = rt.texture;
-    postU.tDepth.value = rt.depthTexture;
+    postU.tDepth.value = null;
     (postU.uRes.value as THREE.Vector2).set(pw, ph);
+    rtSize.set(pw, ph);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     stillDrawn = false;
@@ -3079,7 +3092,19 @@ function start() {
     // the storms, where the eye is now
     camera.updateMatrixWorld();
     updateStorm(u, frame, (x, z) => world.height(x, z), guard.peaks);
-    renderer.setRenderTarget(rt);
+    let target = rt;
+    if (postNeedsDepth()) {
+      if (!rtDepth) {
+        rtDepth = new THREE.WebGLRenderTarget(rtSize.x, rtSize.y, { samples: QUALITY[auto.tier].samples, depthBuffer: true });
+        rtDepth.depthTexture = new THREE.DepthTexture(rtSize.x, rtSize.y);
+      }
+      target = rtDepth;
+    }
+    if (target) {
+      postU.tColor.value = target.texture;
+      postU.tDepth.value = target.depthTexture;
+    }
+    renderer.setRenderTarget(target);
     renderer.render(scene, camera);
     renderer.setRenderTarget(null);
     renderer.render(postScene, postCam);

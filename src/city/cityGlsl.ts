@@ -1,4 +1,18 @@
 // GLSL shared by the terrain and the city shaders.
+import * as THREE from 'three';
+
+/**
+ * Quality knob for cityShadow: x = march steps (at most 26), y = growth per step. Every material that
+ * draws cityShadow shares this one holder; applyQuality (game/quality.ts) sets it. Steps and growth
+ * go together so the march reaches the same distance whatever the step count.
+ */
+export const cityShadowQ: { value: THREE.Vector2 } = { value: new THREE.Vector2(26, 0.12) };
+
+/** Value for cityShadowQ at a step count: 26 is the original march (growth 0.12); fewer steps grow faster to the same reach. */
+export function cityShadowQFor(steps: number, out: THREE.Vector2 = new THREE.Vector2()): THREE.Vector2 {
+  const n = Math.max(1, Math.min(26, Math.round(steps)));
+  return out.set(n, n === 26 ? 0.12 : (1.12 ** 26) ** (1 / n) - 1);
+}
 
 /** How many city sites the shaders consider at once (the nearest ones to the camera). */
 export const MAX_SITES = 4;
@@ -233,6 +247,7 @@ export const CITY_SHADOW_GLSL = /* glsl */ `
 uniform sampler2D uCityMap;
 uniform vec4 uCityRect;
 uniform float uCityGround;
+uniform vec2 uCityShadowQ; // x: march steps (<= 26), y: growth per step
 
 vec2 cityLocal(vec2 xz) {
   vec2 d = xz - uCityRect.xy;
@@ -267,12 +282,13 @@ float cityShadow(vec3 p, vec3 sunDir) {
   float lit = 1.0;
   float t = 0.7;
   for (int i = 0; i < 26; i++) {
+    if (float(i) >= uCityShadowQ.x) break;
     // Only buildings cast shadows here: the ground around the plateau can lie below it
     // (terraces, basins), and must not be shaded by the empty plateau level.
     float roof = cityRoof(l + dl * t);
     if (roof > 0.0) lit = min(lit, clamp((y + sunDir.y * t - roof) * 1.4 + 0.5, 0.0, 1.0));
     if (lit <= 0.0 || y + sunDir.y * t > 64.0) break;
-    t += 0.9 + t * 0.12;
+    t += (t + 7.5) * uCityShadowQ.y;
   }
   return lit;
 }

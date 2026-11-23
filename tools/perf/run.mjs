@@ -33,6 +33,8 @@ const SCENARIOS = {
   city: { query: '?miner' },
   stepped: { query: '?settle=stepped-city' },
   cavern: { query: '?cavern', hold: 'w' },
+  // standing in the thick of a sandstorm (dev-only ?storm=in)
+  storm: { query: '?storm=in&day=0.45' },
   night: { query: '?day=0.95&tools=chart', hold: 'w' },
   // 1.7 km out from a city's edge, walking in: the full city appears about 12 s into the window
   cityApproach: { query: '?approach=1700&day=0.45', hold: 'w' },
