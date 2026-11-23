@@ -17,6 +17,7 @@ import { depthIn, roomAt, shellCeil, shellSolid, shellTop } from './rooms';
 import type { Room } from './types';
 import { contactShade } from './contactShade';
 import type { PenLocal, PenSpot } from './pens';
+import { Relief } from './relief';
 
 const KIND_ID: Record<CityKind, number> = { hill: 1, canyon: 2, oasis: 3, trade: 4 };
 
@@ -45,7 +46,12 @@ interface Loaded {
   interiors: Interiors | null;
   /** The animal pens of its outskirts, in world space (for the caravans to keep beasts in). */
   pens: PenSpot[];
+  /** The drawn shape of its buildings over the height grid: domes, parapets, round towers. */
+  relief: Relief;
 }
+
+/** Milliseconds a frame may spend working out the relief of a city coming into view. */
+const RELIEF_BUDGET = 3;
 
 /** Seconds for the roof of the room you are in to fade away (and back). */
 const CUT_FADE = 0.35;
@@ -159,14 +165,21 @@ export class Cities {
     if (i < 0 || j < 0 || i >= p.gridSize || j >= p.gridSize) return top;
     const k = j * p.gridSize + i;
     const ri = p.roomOf[k];
+    const rel = c.relief;
     if (ri > 0) {
       // a hollow building: its shell answers (walls, the doorway, the floor inside, the roof)
       const r = p.rooms[ri - 1];
-      const st = shellTop(r, lx, lz, y - s.groundY, r === this.cutRoom ? this.cutAbove : false);
+      let st = shellTop(r, lx, lz, y - s.groundY, r === this.cutRoom ? this.cutAbove : false);
+      // over its walls and its roof, whatever is drawn on top of them (a dome, a parapet) stands too
+      if (st >= r.h) st = Math.max(st, rel.at(k, lx, lz));
       return st > -Infinity ? Math.max(top, s.groundY + st) : top;
     }
     const h = p.grid[k];
-    return h > 0 ? Math.max(top, s.groundY + h) : top;
+    if (h <= 0) return top;
+    // the block, and whatever is drawn on its roof; a round building's lot is open where nothing is drawn
+    const v = rel.at(k, lx, lz);
+    if (v === -Infinity && rel.isWhole(k)) return top;
+    return Math.max(top, s.groundY + Math.max(h, v));
   }
 
   /** Whether the point (x, y, z), grown by a margin, is inside a building of the loaded city. */
@@ -194,11 +207,17 @@ export class Cities {
       if (ri > 0) {
         // (the point itself with the margin all round; a probe off to the side, as it stands)
         const r = p.rooms[ri - 1];
-        if (shellSolid(r, lx + ox, ly, lz + oz, k === 0 ? m : 0, r === this.cutRoom ? this.cutAbove : false)) return true;
+        const cut = r === this.cutRoom ? this.cutAbove : false;
+        if (shellSolid(r, lx + ox, ly, lz + oz, k === 0 ? m : 0, cut)) return true;
+        // what is drawn on its roof, unless the roof is drawn away
+        if (cut === false && ly >= r.h && ly < c.relief.at(q, lx + ox, lz + oz) + m) return true;
         continue;
       }
       const h = p.grid[q];
-      if (h > 0 && ly < h + m) return true;
+      if (h <= 0) continue;
+      const v = c.relief.at(q, lx + ox, lz + oz);
+      if (v === -Infinity && c.relief.isWhole(q)) continue;
+      if (ly < Math.max(h, v) + m) return true;
     }
     return false;
   }
@@ -363,7 +382,11 @@ export class Cities {
     holder.add(meshes.near, meshes.far);
     meshes.near.visible = false;
     this.group.add(holder);
-    const entry: Loaded = { site, plan, meshes, holder, map: null, crowns: [], reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex(), interiors: null, pens: [] };
+    const mg = meshes.masonry;
+    const relief = mg?.index
+      ? new Relief(plan, mg.attributes.position.array, mg.index.array, mg.index.count)
+      : new Relief(plan, new Float32Array(0), new Uint32Array(0));
+    const entry: Loaded = { site, plan, meshes, holder, map: null, crowns: [], reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex(), interiors: null, pens: [], relief };
     this.loaded.set(site.id, entry);
     return entry;
   }
@@ -390,6 +413,18 @@ export class Cities {
 
   update(dt: number, pos: THREE.Vector3) {
     this.setFocus(pos.x, pos.z);
+    // The relief of the nearest city shown in full, a slice per frame until it is done.
+    let near: Loaded | null = null;
+    let nearD = Infinity;
+    for (const c of this.loaded.values()) {
+      if (c.relief.done || !c.meshes.near.visible) continue;
+      const d = Math.hypot(c.site.cx - pos.x, c.site.cz - pos.z);
+      if (d < nearD) {
+        nearD = d;
+        near = c;
+      }
+    }
+    near?.relief.step(RELIEF_BUDGET);
     this.scanT -= dt;
     if (this.scanT > 0 && this.loaded.size > 0) {
       this.checkReach(pos);
