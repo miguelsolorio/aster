@@ -26,6 +26,10 @@ export interface CityMeshes {
   masonry: THREE.BufferGeometry | null;
   /** Every door the near city cut into its walls (local, on the wall plane, outward normal). */
   doors: Array<{ x: number; z: number; nx: number; nz: number; w: number }>;
+  /** Whether it was built before the modelled details arrived and has not been given them yet. */
+  readonly needsDetails: boolean;
+  /** Adds the modelled details (see detailData) as the 'city-details' mesh, once; returns it, if any. */
+  setDetails(detail: GeoData | null, tris: number): THREE.Mesh | null;
   dispose(): void;
 }
 
@@ -1201,7 +1205,7 @@ export function archKitFrom(gltf: GLTF): ArchKit | null {
 }
 
 /** Starts loading the modelled details (once); resolves to them, or null without the file. */
-function loadArchitecture(): Promise<ArchKit | null> {
+export function loadArchitecture(): Promise<ArchKit | null> {
   archLoad ??= loadModel('architecture.glb').then((gltf) => {
     ARCH = gltf ? archKitFrom(gltf) : null;
     return ARCH;
@@ -3107,19 +3111,127 @@ function mesh(g: THREE.BufferGeometry, m: THREE.Material, name: string, order = 
   return me;
 }
 
-function farGroup(plan: CityPlan, uniforms: Uniforms, geos: THREE.BufferGeometry[], mats: THREE.Material[]): THREE.Group {
+/** A built geometry as plain arrays: what the plan worker hands back (the arrays are transferred, not copied). */
+export interface GeoData {
+  attrs: Array<{ name: string; array: Float32Array | Int8Array | Uint8Array; itemSize: number; normalized: boolean }>;
+  index: Uint32Array | Uint16Array | null;
+  /** Bounds as built: min xyz, max xyz; centre xyz, radius. */
+  box: number[] | null;
+  sphere: number[] | null;
+}
+
+/** Everything of a city's buildings that is worked out from the plan alone: the geometry, not the materials. */
+export interface CityData {
+  masonry: GeoData | null;
+  cloth: GeoData | null;
+  plants: GeoData | null;
+  water: GeoData | null;
+  glows: GeoData | null;
+  farMasonry: GeoData | null;
+  farGlows: GeoData | null;
+  doors: CityMeshes['doors'];
+  triangles: number;
+  /** Whether it was built with the modelled details (the kit), and those details, if it was. */
+  kit: boolean;
+  detail: GeoData | null;
+  detailTris: number;
+}
+
+/** The modelled details of a city alone: what a city built before the kit arrived gets once it has. */
+export interface DetailData {
+  detail: GeoData | null;
+  tris: number;
+}
+
+function toData(g: THREE.BufferGeometry | null): GeoData | null {
+  if (!g) return null;
+  const attrs: GeoData['attrs'] = [];
+  for (const [name, a] of Object.entries(g.attributes)) {
+    const b = a as THREE.BufferAttribute;
+    attrs.push({ name, array: b.array as GeoData['attrs'][number]['array'], itemSize: b.itemSize, normalized: b.normalized });
+  }
+  const bb = g.boundingBox;
+  const bs = g.boundingSphere;
+  return {
+    attrs,
+    index: g.index ? (g.index.array as Uint32Array | Uint16Array) : null,
+    box: bb ? [bb.min.x, bb.min.y, bb.min.z, bb.max.x, bb.max.y, bb.max.z] : null,
+    sphere: bs ? [bs.center.x, bs.center.y, bs.center.z, bs.radius] : null,
+  };
+}
+
+function fromData(d: GeoData): THREE.BufferGeometry {
+  const g = new THREE.BufferGeometry();
+  for (const a of d.attrs) g.setAttribute(a.name, new THREE.BufferAttribute(a.array, a.itemSize, a.normalized));
+  if (d.index) g.setIndex(new THREE.BufferAttribute(d.index, 1));
+  if (d.box) g.boundingBox = new THREE.Box3(new THREE.Vector3(d.box[0], d.box[1], d.box[2]), new THREE.Vector3(d.box[3], d.box[4], d.box[5]));
+  if (d.sphere) g.boundingSphere = new THREE.Sphere(new THREE.Vector3(d.sphere[0], d.sphere[1], d.sphere[2]), d.sphere[3]);
+  return g;
+}
+
+/** The buffers of a CityData (or of its details alone), to transfer it from a worker. */
+export function cityDataBuffers(d: Partial<CityData>): ArrayBuffer[] {
+  const out = new Set<ArrayBuffer>();
+  for (const g of [d.masonry, d.cloth, d.plants, d.water, d.glows, d.farMasonry, d.farGlows, d.detail]) {
+    if (!g) continue;
+    for (const a of g.attrs) out.add(a.array.buffer as ArrayBuffer);
+    if (g.index) out.add(g.index.buffer as ArrayBuffer);
+  }
+  return [...out];
+}
+
+function farData(plan: CityPlan): Pick<CityData, 'farMasonry' | 'farGlows'> {
+  const { w, glows } = buildFar(plan);
+  return { farMasonry: toData(w.geometry()), farGlows: toData(glows.geometry()) };
+}
+
+/**
+ * The geometry of a city from its plan, with the modelled details if the kit is given (by default
+ * the kit if it has loaded). Pure work on arrays: the plan worker runs it too, with its copy of the kit.
+ */
+export function cityData(plan: CityPlan, kit: ArchKit | null = ARCH): CityData {
+  const nb = new NearBuilder(plan, kit);
+  nb.build();
+  const masonry = toData(nb.w.geometry());
+  const cloth = toData(nb.cloth.geometry());
+  nb.plants.orient();
+  const plants = toData(nb.plants.geometry());
+  const water = toData(nb.waterGeometry);
+  const glows = toData(nb.glows.geometry());
+  return {
+    masonry,
+    cloth,
+    plants,
+    water,
+    glows,
+    ...farData(plan),
+    doors: nb.doors,
+    triangles: nb.w.tris + nb.cloth.tris + nb.plants.tris,
+    kit: kit !== null,
+    detail: kit ? toData(nb.detail.geometry()) : null,
+    detailTris: kit ? nb.detail.tris : 0,
+  };
+}
+
+/** The modelled details of a city: the city built again with the kit, of which only they are kept. */
+export function detailData(plan: CityPlan, kit: ArchKit): DetailData {
+  const nb = new NearBuilder(plan, kit);
+  nb.build();
+  return { detail: toData(nb.detail.geometry()), tris: nb.detail.tris };
+}
+
+function farGroup(uniforms: Uniforms, d: Pick<CityData, 'farMasonry' | 'farGlows'>, geos: THREE.BufferGeometry[], mats: THREE.Material[]): THREE.Group {
   const far = new THREE.Group();
   far.name = 'city-far';
-  const { w, glows } = buildFar(plan);
-  const fg = w.geometry();
-  if (fg) {
+  if (d.farMasonry) {
+    const fg = fromData(d.farMasonry);
     const m = createMasonryMaterial(uniforms, { shadow: false, twoSided: false, sway: false });
     mats.push(m);
     geos.push(fg);
     far.add(mesh(fg, m, 'city-far-masonry'));
   }
-  const gg = glows.geometry();
-  if (gg) {
+  if (d.farGlows) {
+    const gg = fromData(d.farGlows);
     const m = createGlowMaterial(uniforms, false);
     mats.push(m);
     geos.push(gg);
@@ -3130,18 +3242,23 @@ function farGroup(plan: CityPlan, uniforms: Uniforms, geos: THREE.BufferGeometry
   return far;
 }
 
-export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
+/**
+ * Meshes of a city. `data` is its geometry worked out ahead (in the plan worker); without it the
+ * geometry is worked out here. Either way the result is the same: only the materials are made here.
+ * A city built before the modelled details arrived gets them later through setDetails: by itself
+ * when built here without `data`, else from whoever passed the data (see Cities).
+ */
+export function buildCity(plan: CityPlan, uniforms: Uniforms, data?: CityData): CityMeshes {
   const geos: THREE.BufferGeometry[] = [];
   const mats: THREE.Material[] = [];
-  const kit = ARCH;
+  const given = data !== undefined;
   const loading = loadArchitecture();
-  const nb = new NearBuilder(plan, kit);
-  nb.build();
+  const d = data ?? cityData(plan, ARCH);
 
   const near = new THREE.Group();
   near.name = 'city-near';
   const cut = createCutUniforms();
-  const mg = nb.w.geometry();
+  const mg = d.masonry ? fromData(d.masonry) : null;
   let masonryMat: THREE.ShaderMaterial | null = null;
   if (mg) {
     const m = createMasonryMaterial(uniforms, { shadow: true, twoSided: false, sway: false, cut });
@@ -3150,26 +3267,15 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
     geos.push(mg);
     near.add(mesh(mg, m, 'city-masonry'));
   }
-  // the modelled details, drawn with the masonry's own material (so its light, grain, night and
-  // cut-away) but kept out of the masonry geometry, which collision is worked out from
-  const addDetails = (w: Writer): void => {
-    const g = w.geometry();
-    if (!g || !masonryMat) return;
-    geos.push(g);
-    near.add(mesh(g, masonryMat, 'city-details'));
-    near.userData.triangles = ((near.userData.triangles as number | undefined) ?? 0) + w.tris;
-  };
-  let disposed = false;
-  const cg = nb.cloth.geometry();
-  if (cg) {
+  if (d.cloth) {
+    const cg = fromData(d.cloth);
     const m = createMasonryMaterial(uniforms, { shadow: true, twoSided: true, sway: false });
     mats.push(m);
     geos.push(cg);
     near.add(mesh(cg, m, 'city-cloth'));
   }
-  nb.plants.orient();
-  const pg = nb.plants.geometry();
-  if (pg) {
+  if (d.plants) {
+    const pg = fromData(d.plants);
     const m = createMasonryMaterial(uniforms, { shadow: true, twoSided: true, sway: true });
     mats.push(m);
     geos.push(pg);
@@ -3177,14 +3283,15 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
     near.add(me);
     pg.boundingSphere!.radius += 1; // sway
   }
-  if (nb.waterGeometry) {
+  if (d.water) {
+    const wg = fromData(d.water);
     const m = createWaterMaterial(uniforms);
     mats.push(m);
-    geos.push(nb.waterGeometry);
-    near.add(mesh(nb.waterGeometry, m, 'city-water'));
+    geos.push(wg);
+    near.add(mesh(wg, m, 'city-water'));
   }
-  const gg = nb.glows.geometry();
-  if (gg) {
+  if (d.glows) {
+    const gg = fromData(d.glows);
     const m = createGlowMaterial(uniforms, true);
     mats.push(m);
     geos.push(gg);
@@ -3193,16 +3300,29 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
     near.add(me);
   }
 
-  const far = farGroup(plan, uniforms, geos, mats);
-  near.userData.triangles = nb.w.tris + nb.cloth.tris + nb.plants.tris;
-  if (kit) addDetails(nb.detail);
-  else {
+  const far = farGroup(uniforms, d, geos, mats);
+  near.userData.triangles = d.triangles;
+  let disposed = false;
+  let needsDetails = !d.kit;
+  // the modelled details, drawn with the masonry's own material (so its light, grain, night and
+  // cut-away) but kept out of the masonry geometry, which collision is worked out from
+  const setDetails = (dd: GeoData | null, tris: number): THREE.Mesh | null => {
+    needsDetails = false;
+    if (disposed || !dd || !masonryMat) return null;
+    const g = fromData(dd);
+    geos.push(g);
+    const me = mesh(g, masonryMat, 'city-details');
+    near.add(me);
+    near.userData.triangles = ((near.userData.triangles as number | undefined) ?? 0) + tris;
+    return me;
+  };
+  if (d.kit) setDetails(d.detail, d.detailTris);
+  else if (!given) {
     // built before the details arrived: build the city again with them, once, and keep only those
     void loading.then((K) => {
-      if (!K || disposed) return;
-      const again = new NearBuilder(plan, K);
-      again.build();
-      addDetails(again.detail);
+      if (!K || disposed || !needsDetails) return;
+      const dd = detailData(plan, K);
+      setDetails(dd.detail, dd.tris);
     });
   }
   return {
@@ -3210,7 +3330,11 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
     near,
     far,
     masonry: mg,
-    doors: nb.doors,
+    doors: d.doors,
+    get needsDetails() {
+      return needsDetails && !disposed;
+    },
+    setDetails,
     dispose() {
       disposed = true;
       for (const g of geos) g.dispose();
@@ -3225,7 +3349,7 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
 export function buildSkyline(plan: CityPlan, uniforms: Uniforms): { far: THREE.Group; dispose(): void } {
   const geos: THREE.BufferGeometry[] = [];
   const mats: THREE.Material[] = [];
-  const far = farGroup(plan, uniforms, geos, mats);
+  const far = farGroup(uniforms, farData(plan), geos, mats);
   return {
     far,
     dispose() {

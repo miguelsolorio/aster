@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import type { FrameState } from '../../game/contract';
+import type { FrameState, Uniforms } from '../../game/contract';
+import { warmObject } from '../../render/warm';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx } from '../extras';
 import { bodyFaces, insideBody, isRound } from '../shape';
 import type { Building } from '../types';
@@ -314,12 +315,7 @@ function buildBirds(ctx: ExtraCtx, near: THREE.Group, emitters: Emitter[], owned
   geo.setAttribute('aPos', posAttr);
   geo.setAttribute('aSt', stAttr);
   geo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seed, 1));
-  const mat = new THREE.ShaderMaterial({
-    uniforms: { ...ctx.uniforms },
-    vertexShader: BIRD_VERT,
-    fragmentShader: BIRD_FRAG,
-    side: THREE.DoubleSide,
-  });
+  const mat = birdMaterial(ctx.uniforms);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'city-birds';
   mesh.frustumCulled = false; // instances wander; the whole thing is tiny anyway
@@ -605,16 +601,7 @@ function buildSmoke(ctx: ExtraCtx, near: THREE.Group, owned: Array<{ dispose(): 
   geo.instanceCount = N;
   const uAct = { value: 0 };
   const uGust = { value: 0 };
-  const mat = new THREE.ShaderMaterial({
-    uniforms: { ...ctx.uniforms, uAct, uGust },
-    vertexShader: SMOKE_VERT,
-    fragmentShader: SMOKE_FRAG,
-    transparent: true,
-    premultipliedAlpha: true,
-    depthWrite: false,
-    depthTest: true,
-    blending: THREE.NormalBlending,
-  });
+  const mat = smokeMaterial(ctx.uniforms, uAct, uGust);
   const mesh = new THREE.Mesh(geo, mat);
   mesh.name = 'city-smoke';
   mesh.frustumCulled = false;
@@ -666,3 +653,30 @@ export const life: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     },
   };
 };
+
+function birdMaterial(uniforms: Uniforms): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...uniforms },
+    vertexShader: BIRD_VERT,
+    fragmentShader: BIRD_FRAG,
+    side: THREE.DoubleSide,
+  });
+}
+
+function smokeMaterial(uniforms: Uniforms, uAct: { value: number }, uGust: { value: number }): THREE.ShaderMaterial {
+  return new THREE.ShaderMaterial({
+    uniforms: { ...uniforms, uAct, uGust },
+    vertexShader: SMOKE_VERT,
+    fragmentShader: SMOKE_FRAG,
+    transparent: true,
+    premultipliedAlpha: true,
+    depthWrite: false,
+    depthTest: true,
+    blending: THREE.NormalBlending,
+  });
+}
+
+/** Samples of what this draws, for the shader warm-up (see render/warm.ts). */
+export function warmLife(uniforms: Uniforms): THREE.Object3D[] {
+  return [warmObject(birdMaterial(uniforms), { normals: false }), warmObject(smokeMaterial(uniforms, { value: 0 }, { value: 0 }), { normals: false })];
+}

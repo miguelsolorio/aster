@@ -2,9 +2,9 @@ import * as THREE from 'three';
 import type { Uniforms } from '../game/contract';
 import type { DesertWorld } from '../world/surface';
 import { MAX_SITES } from './cityGlsl';
-import { buildCity, type CityMeshes } from './build';
+import { type ArchKit, buildCity, cityData, detailData, loadArchitecture, type CityMeshes } from './build';
 import { planCity } from './plan';
-import { PlanAhead } from './planAhead';
+import { PlanAhead, type CityPrep } from './planAhead';
 import type { CityKind, CityPlan, CitySite } from './types';
 import type { FrameState } from '../game/contract';
 import { EMITTER_KINDS, SolidIndex, createExtraCtx, type EmitterKind, type Extra, type ExtraCtx } from './extras';
@@ -15,9 +15,14 @@ import { Interiors } from './interiors';
 import { ceilOf, storeyAt } from './furnish';
 import { depthIn, roomAt, shellCeil, shellSolid, shellTop } from './rooms';
 import type { Room } from './types';
-import { contactShade } from './contactShade';
+import { contactBase, roofBytes, shadeCrowns } from './contactShade';
 import type { PenLocal, PenSpot } from './pens';
 import { Relief } from './relief';
+import { warmObject, warmSource } from '../render/warm';
+import { createCutUniforms, createGlowMaterial, createMasonryMaterial, createWaterMaterial } from './cityShaders';
+import { warmFurniture } from './extra/furniture';
+import { warmLife } from './extra/life';
+import { warmWater } from './extra/water';
 
 const KIND_ID: Record<CityKind, number> = { hill: 1, canyon: 2, oasis: 3, trade: 4 };
 
@@ -27,6 +32,7 @@ const PLAN_IN = FAR_IN + 1200; // its plan is asked for (off the main thread) th
 const PLAN_NOW = 3000; // a city this near with no plan yet (the game has just begun) is planned on the spot
 const NEAR_IN = 1500; // full buildings appear
 const NEAR_OUT = 1800;
+const STAGE_IN = NEAR_IN + 2000; // its full detail is sent to the GPU ahead of being shown, from this far out
 const REACH = 40; // metres inside the edge that counts as arriving
 
 interface Loaded {
@@ -35,8 +41,15 @@ interface Loaded {
   meshes: CityMeshes;
   holder: THREE.Group;
   map: THREE.DataTexture | null;
+  /** The map's texels, and the contact shade they are packed from (the buildings', then the crowns' so far). */
+  roof: Uint8Array | null;
+  shade: Float32Array | null;
   /** Tree crowns (city-local x, z, radius triples) that shade the ground in the map's G channel. */
   crowns: number[];
+  /** How many numbers of crowns are in the shade and the map already. */
+  crownsIn: number;
+  /** Whether its full detail has been sent ahead (see STAGE_IN). */
+  staged: boolean;
   reached: boolean;
   /** Plants, water, furniture and the rest: built one per scan after the city loads. */
   extras: Extra[];
@@ -85,6 +98,13 @@ export class Cities {
   private sites: CitySite[] = [];
   private blank: THREE.DataTexture;
   private scanT = 0;
+  /**
+   * The renderer's ways to send things to the GPU ahead of need (set by the game): a texture at
+   * once, and the meshes under an object a frame at a time. Without them they go up when first drawn.
+   */
+  warm: { texture(t: THREE.Texture): void; upload(o: THREE.Object3D): void } | null = null;
+  /** Fired when a city is near enough to be shown in full soon (its detail is sent ahead then). */
+  onStage: ((city: { site: CitySite; plan: CityPlan }) => void) | null = null;
 
   constructor(
     private world: DesertWorld,
@@ -101,6 +121,28 @@ export class Cities {
     u.uCityMap = { value: this.blank };
     u.uCityRect = { value: new THREE.Vector4() };
     u.uCityGround = { value: 0 };
+    warmSource(() => cityWarmSamples(u));
+    // the modelled details: to the plan worker once they have loaded, for the cities it builds next
+    void loadArchitecture().then((kit) => {
+      this.kit = kit;
+      if (kit) this.plans.setKit(kit);
+    });
+  }
+
+  /** The modelled details, once loaded (see build.ts). */
+  private kit: ArchKit | null = null;
+
+  /**
+   * A city built before the modelled details arrived gets them: worked out in the plan worker
+   * (here only where there is none), then sent ahead with the rest of its detail if it is staged.
+   */
+  private fillDetails(c: Loaded): boolean {
+    if (!this.kit || !c.meshes.needsDetails) return false;
+    const d = this.plans.takeDetails(c.site.id) ?? (this.plans.askDetails(c.site) ? null : detailData(c.plan, this.kit));
+    if (!d) return false;
+    const me = c.meshes.setDetails(d.detail, d.tris);
+    if (me && c.staged) this.warm?.upload(me);
+    return true;
   }
 
   /** The nearest city to a point. */
@@ -282,7 +324,16 @@ export class Cities {
   setDensity(d: number) {
     if (d === this.density) return;
     this.density = d;
-    for (const c of this.loaded.values()) this.dropExtras(c);
+    for (const c of this.loaded.values()) {
+      this.dropExtras(c);
+      // the crowns go with their trees: the ground shade starts again from the buildings'
+      c.crowns = [];
+      c.crownsIn = 0;
+      c.shade = null;
+      c.roof = null;
+      c.map?.dispose();
+      c.map = null;
+    }
   }
 
   /** Per-frame work of the city the player is in, and how loud each kind of ambient sound is here (0..1). */
@@ -347,13 +398,10 @@ export class Cities {
     c.meshes.near.add(e.near);
     if (e.far) c.meshes.far.add(e.far);
     for (const s of e.solids) c.solids.add(s);
-    // tree crowns shade the ground: rebuild the map with them (the update below rebinds it)
+    if (c.staged) this.warm?.upload(e.near);
+    // tree crowns shade the ground: the map takes them in when next asked for (see roofMap)
     const crowns = e.near.userData.crowns as number[] | undefined;
-    if (crowns && crowns.length > 0) {
-      for (const v of crowns) c.crowns.push(v);
-      c.map?.dispose();
-      c.map = null;
-    }
+    if (crowns) for (const v of crowns) c.crowns.push(v);
     const pens = e.near.userData.pens as PenLocal[] | undefined;
     if (pens) {
       const s = c.site;
@@ -374,8 +422,9 @@ export class Cities {
     return true;
   }
 
-  private load(site: CitySite, plan: CityPlan): Loaded {
-    const meshes = buildCity(plan, this.u);
+  private load(site: CitySite, plan: CityPlan, prep: CityPrep | null): Loaded {
+    // (the geometry worked out in the plan worker, or here when it was planned here)
+    const meshes = buildCity(plan, this.u, prep?.data ?? cityData(plan));
     const holder = new THREE.Group();
     holder.position.set(site.cx, site.groundY, site.cz);
     holder.rotation.y = -site.rot;
@@ -386,29 +435,46 @@ export class Cities {
     const relief = mg?.index
       ? new Relief(plan, mg.attributes.position.array, mg.index.array, mg.index.count)
       : new Relief(plan, new Float32Array(0), new Uint32Array(0));
-    const entry: Loaded = { site, plan, meshes, holder, map: null, crowns: [], reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex(), interiors: null, pens: [], relief };
+    const entry: Loaded = { site, plan, meshes, holder, map: null, roof: prep?.roof ?? null, shade: prep?.shade ?? null, crowns: [], crownsIn: 0, staged: false, reached: this.reachedIds.has(site.id), extras: [], ctx: null, solids: new SolidIndex(), interiors: null, pens: [], relief };
     this.loaded.set(site.id, entry);
     return entry;
   }
 
+  /**
+   * The city map: R roof height (0.25 m steps), G soft contact shade on the ground around the
+   * buildings and trees. The buildings' part is usually worked out with the plan, off the page;
+   * the crowns of the trees are added as they are planted, only the cells under them redone.
+   */
   private roofMap(c: Loaded): THREE.DataTexture {
-    if (c.map) return c.map;
-    // R: roof height (0.25 m steps), G: soft contact shade on the ground around the buildings and trees
     const { grid, gridSize, gridHalf } = c.plan;
-    const shade = contactShade(grid, gridSize, gridHalf, c.crowns);
-    const n = gridSize * gridSize;
-    const data = new Uint8Array(n * 2);
-    for (let k = 0; k < n; k++) {
-      data[2 * k] = Math.min(255, Math.round(grid[k] * 4));
-      data[2 * k + 1] = Math.min(255, Math.round(shade[k] * 255));
+    if (!c.shade || !c.roof) {
+      c.shade = contactBase(grid, gridSize);
+      c.roof = roofBytes(grid, c.shade);
     }
-    const tex = new THREE.DataTexture(data, gridSize, gridSize, THREE.RGFormat, THREE.UnsignedByteType);
+    if (c.crownsIn < c.crowns.length) {
+      shadeCrowns(c.shade, gridSize, gridHalf, c.crowns, c.crownsIn, c.roof);
+      c.crownsIn = c.crowns.length;
+      if (c.map) c.map.needsUpdate = true;
+    }
+    if (c.map) return c.map;
+    const tex = new THREE.DataTexture(c.roof, gridSize, gridSize, THREE.RGFormat, THREE.UnsignedByteType);
     tex.unpackAlignment = 2;
     tex.minFilter = tex.magFilter = THREE.LinearFilter;
     tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
     tex.needsUpdate = true;
     c.map = tex;
     return tex;
+  }
+
+  /** Sends a city's full detail ahead of its being shown: the map now, the meshes a frame each. */
+  private stage(c: Loaded) {
+    c.staged = true;
+    const w = this.warm;
+    if (w) {
+      w.texture(this.roofMap(c));
+      w.upload(c.meshes.near);
+    }
+    this.onStage?.(c);
   }
 
   update(dt: number, pos: THREE.Vector3) {
@@ -442,16 +508,18 @@ export class Cities {
       if (d >= FAR_IN || built) continue;
       // Its plan was asked for on the way here and is nearly always waiting. One still being
       // worked out is waited for, unless the city is close enough to be missed.
-      const plan = this.plans.take(site) ?? (d < PLAN_NOW || !this.plans.working ? planCity(site) : null);
+      const ahead = this.plans.take(site);
+      const prep = ahead ? this.plans.prep(site.id) : null;
+      const plan = ahead ?? (d < PLAN_NOW || !this.plans.working ? planCity(site) : null);
       if (!plan) continue;
       this.plans.forget(site.id);
-      this.load(site, plan);
+      this.load(site, plan, prep);
       built = true;
     }
-    // Then fill in their extras, nearest city first, one piece per scan.
+    // Then fill in their extras (and late details), nearest city first, one piece per scan.
     if (!built) {
       const order = [...this.loaded.values()].sort((p, q) => Math.hypot(p.site.cx - pos.x, p.site.cz - pos.z) - Math.hypot(q.site.cx - pos.x, q.site.cz - pos.z));
-      for (const c of order) if (this.buildExtra(c)) break;
+      for (const c of order) if (this.fillDetails(c) || this.buildExtra(c)) break;
     }
     // Every loaded city, wherever it is: drop the far ones, and choose skyline or full detail.
     for (const c of this.loaded.values()) {
@@ -468,6 +536,8 @@ export class Cities {
         continue;
       }
       const near = c.meshes.near.visible ? d < NEAR_OUT : d < NEAR_IN;
+      // close enough to be shown soon, with its outskirts all built (or about to be shown anyway)
+      if (!c.staged && d < STAGE_IN && (near || c.extras.length >= EXTRAS.length)) this.stage(c);
       c.meshes.near.visible = near;
       c.meshes.far.visible = !near;
     }
@@ -525,4 +595,29 @@ export class Cities {
       this.onReach?.(c.site);
     }
   }
+}
+
+/**
+ * One of each material a city is drawn with (buildings near and far, the outskirts, the rooms'
+ * cut-away), for the shader warm-up: see render/warm.ts. Kept in step with build.ts and the extras.
+ */
+function cityWarmSamples(u: Uniforms): THREE.Object3D[] {
+  const cut = createCutUniforms();
+  const masonry = [
+    { shadow: true, twoSided: false, sway: false, cut }, // near masonry, interiors
+    { shadow: true, twoSided: false, sway: false }, // outskirts, furniture, fountains
+    { shadow: true, twoSided: true, sway: false }, // cloth
+    { shadow: true, twoSided: true, sway: true }, // plants, trees
+    { shadow: false, twoSided: false, sway: false }, // the skyline
+  ];
+  return [
+    ...masonry.map((o) => warmObject(createMasonryMaterial(u, o))),
+    warmObject(createWaterMaterial(u), { normals: false }),
+    warmObject(createGlowMaterial(u, true), { normals: false }),
+    warmObject(createGlowMaterial(u, false), { normals: false }),
+    warmObject(createGlowMaterial(u, true, cut), { normals: false }),
+    ...warmWater(u),
+    ...warmFurniture(u),
+    ...warmLife(u),
+  ];
 }

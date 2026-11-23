@@ -10,6 +10,8 @@ import { DETAIL_GLSL, SAND_WALL_GLSL, STYLE_GLSL } from '../render/styleGlsl';
 import { detailTexture, detailTexture2 } from '../render/art';
 import { MAX_CAVERNS, TERRAIN, writeCaverns, type Cave, type Cavern, type DesertWorld, type Massif } from './surface';
 import { rockCapVert, terrainFrag } from '../render/terrainShaders';
+import { warmMaterial, warmSource, warmObject } from '../render/warm';
+import { deepMaterials } from './deep/material';
 import { CITY_CELL } from '../city/placement';
 import { Solids, type SolidKind } from './solids';
 import { assembleDeep, createDeep, type DeepData } from './deep/index';
@@ -3785,6 +3787,14 @@ export class Discoveries {
       depthWrite: false,
       side: THREE.DoubleSide,
       blending: THREE.AdditiveBlending,
+    });
+    // compiled before play (see render/warm.ts): what the finds, their tools and the deeps are drawn with
+    warmMaterial([this.stoneMat, this.rockMat, this.waterMat, this.underWaterMat, this.frondMat], { normals: true });
+    warmMaterial([this.glowMat, this.beaconMat, this.veinMat, this.relicGlowMat, this.shaftMat], { normals: false });
+    warmSource(() => {
+      const d = deepMaterials(uniforms);
+      this.toolMat ??= solidMaterial(uniforms);
+      return [warmObject(this.toolMat), ...[d.rock, d.glow, d.beam, d.water].map((m) => warmObject(m, { normals: false }))];
     });
   }
 

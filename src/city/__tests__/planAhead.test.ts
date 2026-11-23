@@ -11,7 +11,7 @@ function fakeWorker() {
     onmessage: null,
     onerror: null,
     dead: false,
-    postMessage: (s) => void posted.push(s),
+    postMessage: (s) => void posted.push(s as CitySite),
     terminate: () => void (w.dead = true),
     answer: () => {
       const s = posted.shift()!;

@@ -7,6 +7,13 @@
  * crowns: city-local x, z, radius triples.
  */
 export function contactShade(grid: Float32Array, size: number, half: number, crowns: ArrayLike<number>): Float32Array {
+  const a = contactBase(grid, size);
+  shadeCrowns(a, size, half, crowns);
+  return a;
+}
+
+/** The buildings' part of the contact shade alone (the plan worker works it out ahead). */
+export function contactBase(grid: Float32Array, size: number): Float32Array {
   const S = size | 0;
   const a = new Float32Array(S * S);
   for (let k = 0; k < a.length; k++) a[k] = grid[k] > 0 ? Math.min(1, 0.35 + grid[k] / 4) : 0;
@@ -16,7 +23,17 @@ export function contactShade(grid: Float32Array, size: number, half: number, cro
     blurRows(a, S, 2, tmp);
     blurCols(a, S, 2, tmp);
   }
-  for (let i = 0; i + 2 < crowns.length; i += 3) {
+  return a;
+}
+
+/**
+ * Adds the pools under tree crowns from triple `from` on (an index into crowns), in order, so
+ * crowns added a few at a time come out as if all were added at once. Where `map` is given (the
+ * packed city map, see roofBytes) the cells touched are repacked into its G channel too.
+ */
+export function shadeCrowns(a: Float32Array, size: number, half: number, crowns: ArrayLike<number>, from = 0, map?: Uint8Array): void {
+  const S = size | 0;
+  for (let i = from; i + 2 < crowns.length; i += 3) {
     const cx = crowns[i] + half, cz = crowns[i + 1] + half, r = crowns[i + 2];
     const i0 = Math.max(0, Math.floor(cx - r)), i1 = Math.min(S - 1, Math.ceil(cx + r));
     const j0 = Math.max(0, Math.floor(cz - r)), j1 = Math.min(S - 1, Math.ceil(cz + r));
@@ -28,10 +45,21 @@ export function contactShade(grid: Float32Array, size: number, half: number, cro
         const v = 0.7 * t * t * (3 - 2 * t);
         const k = j * S + q;
         a[k] = 1 - (1 - a[k]) * (1 - v);
+        if (map) map[2 * k + 1] = Math.min(255, Math.round(a[k] * 255));
       }
     }
   }
-  return a;
+}
+
+/** The city map's texels: R roof height (0.25 m steps), G the contact shade. */
+export function roofBytes(grid: Float32Array, shade: Float32Array): Uint8Array {
+  const n = shade.length;
+  const data = new Uint8Array(n * 2);
+  for (let k = 0; k < n; k++) {
+    data[2 * k] = Math.min(255, Math.round(grid[k] * 4));
+    data[2 * k + 1] = Math.min(255, Math.round(shade[k] * 255));
+  }
+  return data;
 }
 
 function blurRows(a: Float32Array, S: number, r: number, tmp: Float32Array): void {

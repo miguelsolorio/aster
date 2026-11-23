@@ -3,6 +3,7 @@
 // centred on the player. Uniform convention: uv = (xz - origin) / size,
 // u grows with world x, v grows with world z.
 import * as THREE from 'three';
+import { warmObjects } from '../render/warm';
 import type { Uniforms } from '../game/contract';
 
 const RES = 1024;
@@ -188,6 +189,7 @@ export class TrailField {
 
     this.clear();
     for (const c of this.cascades) this.publish(c);
+    warmObjects(this.scrollScene, this.stampScene); // compiled before play (see render/warm.ts)
   }
 
   /** Queue a soft elliptical stamp (world metres). heading = atan2(dz, dx), aspect = length/width. */
