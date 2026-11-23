@@ -4,3 +4,4 @@ dist
 
 # Tripo source models (regenerate with tools/tripo/batch.sh)
 tools/tripo/source/
+tools/perf/out/
