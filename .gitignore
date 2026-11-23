@@ -1,3 +1,6 @@
 node_modules
 dist
 .DS_Store
+
+# Tripo source models (regenerate with tools/tripo/batch.sh)
+tools/tripo/source/
