@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Uniforms } from '../../game/contract';
 import { warmObject } from '../../render/warm';
 import { Glows, Writer, layoutOf } from '../build';
-import { CITY_SHADOW_GLSL } from '../cityGlsl';
+import { CITY_SHADOW_GLSL, cityShadowQ } from '../cityGlsl';
 import { loadModel, modelGeometry } from '../../render/art';
 import { STYLE_GLSL } from '../../render/styleGlsl';
 import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, trackViewport } from '../cityShaders';
@@ -60,6 +60,7 @@ const FALLBACKS: Record<string, () => unknown> = {
   uCityMap: () => null,
   uCityRect: () => new THREE.Vector4(0, 0, 0, 0),
   uCityGround: () => 0,
+  uCityShadowQ: () => cityShadowQ.value,
 };
 
 function forward(shared: Uniforms, name: string, fallback: unknown): THREE.IUniform {

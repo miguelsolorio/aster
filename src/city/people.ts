@@ -18,7 +18,7 @@
 
 import * as THREE from 'three';
 import type { FrameState, Uniforms } from '../game/contract';
-import { CITY_SHADOW_GLSL } from './cityGlsl';
+import { CITY_SHADOW_GLSL, cityShadowQ } from './cityGlsl';
 import { detailTexture, loadModel, modelGeometry } from '../render/art';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import type { CityKind, CityPlan, CitySite, Spot, SpotKind } from './types';
@@ -1348,6 +1348,7 @@ export function townsfolkSheet(uniforms: Uniforms, kind: CityKind, list: SheetPe
       uCityMap: { value: blank },
       uCityRect: { value: new THREE.Vector4() },
       uCityGround: { value: 0 },
+      uCityShadowQ: cityShadowQ,
       uWindL: { value: new THREE.Vector2() },
       uDetail: { value: detailTexture() },
       ...uniforms,
@@ -1520,6 +1521,7 @@ export class People {
       uCityMap: { value: this.blank },
       uCityRect: { value: new THREE.Vector4() },
       uCityGround: { value: 0 },
+      uCityShadowQ: cityShadowQ,
     };
     const own = (): Uniforms => ({
       ...this.fallback,

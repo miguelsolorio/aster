@@ -4,7 +4,9 @@
 import type { Uniforms } from './contract';
 import type { Clipmap } from '../world/clipmap';
 import type { HeightBake } from '../world/heightBake';
+import { cityShadowQ, cityShadowQFor } from '../city/cityGlsl';
 import type { Dust } from '../world/dust';
+import type { TrailField } from '../world/trailField';
 
 export type QualityTier = 'mobile' | 'low' | 'high';
 
@@ -17,14 +19,20 @@ export interface QualitySettings {
   bakeSize: number; // heightmap resolution (2048 or 1024)
   dust: number; // 0..1 particle density scale
   detail: number; // 0..1 scale for optional fragment work
+  trailRes: number; // texels per side of the footprint maps (same ground covered)
+  trailScroll: number; // the footprint window re-centres in steps of this many texels
+  trailDecay: number; // decay passes run this many times less often
+  dustCapacity: number; // particles in the dust pool (at most 2200)
+  dustMaxPx: number; // largest dust point drawn, in pixels
+  cityShadowSteps: number; // masonry shadow march steps (26 = full; fewer steps are longer, same reach)
 }
 
 export const QUALITY: Record<QualityTier, QualitySettings> = {
-  high: { pixelBudget: 3.8e6, maxRatio: 2, samples: 4, shadowSteps: 30, clipLevels: 8, bakeSize: 2048, dust: 1, detail: 1 },
-  low: { pixelBudget: 1.5e6, maxRatio: 1, samples: 0, shadowSteps: 22, clipLevels: 8, bakeSize: 2048, dust: 0.7, detail: 0.7 },
+  high: { pixelBudget: 3.8e6, maxRatio: 2, samples: 4, shadowSteps: 30, clipLevels: 8, bakeSize: 2048, dust: 1, detail: 1, trailRes: 1024, trailScroll: 1, trailDecay: 1, dustCapacity: 2200, dustMaxPx: 72, cityShadowSteps: 26 },
+  low: { pixelBudget: 1.5e6, maxRatio: 1, samples: 0, shadowSteps: 22, clipLevels: 8, bakeSize: 2048, dust: 0.7, detail: 0.7, trailRes: 1024, trailScroll: 1, trailDecay: 1, dustCapacity: 2200, dustMaxPx: 72, cityShadowSteps: 26 },
   // All 8 levels even here: level 8 is a thin band near the horizon (cheap), and
   // without it the ground ends 2-2.9 km out where fog is only ~55%, a hard edge.
-  mobile: { pixelBudget: 0.95e6, maxRatio: 1.5, samples: 0, shadowSteps: 14, clipLevels: 8, bakeSize: 1024, dust: 0.4, detail: 0.4 },
+  mobile: { pixelBudget: 0.95e6, maxRatio: 1.25, samples: 0, shadowSteps: 14, clipLevels: 8, bakeSize: 1024, dust: 0.4, detail: 0.4, trailRes: 512, trailScroll: 4, trailDecay: 2, dustCapacity: 900, dustMaxPx: 32, cityShadowSteps: 12 },
 };
 
 /** 'mobile' on phones and tablets (coarse primary pointer or touch points with a small screen, or a mobile user agent), else 'high'. */
@@ -69,12 +77,15 @@ function setU(u: Uniforms, name: string, value: number): void {
  * Pushes a tier's settings into the systems. Safe to call repeatedly.
  * pixelBudget, maxRatio and samples belong to the caller's resize() (see pixelRatioFor).
  */
-export function applyQuality(q: QualitySettings, sys: { uniforms: Uniforms; clipmap: Clipmap; bake: HeightBake; dust: Dust }): void {
+export function applyQuality(q: QualitySettings, sys: { uniforms: Uniforms; clipmap: Clipmap; bake: HeightBake; dust: Dust; trail?: TrailField }): void {
   setU(sys.uniforms, 'uShadowSteps', q.shadowSteps);
   setU(sys.uniforms, 'uDetail', q.detail);
+  cityShadowQFor(q.cityShadowSteps, cityShadowQ.value);
   sys.clipmap.setLevels(q.clipLevels);
   sys.bake.setSize(q.bakeSize);
   sys.dust.setDensity(q.dust);
+  sys.dust.setBudget(q.dustCapacity, q.dustMaxPx);
+  sys.trail?.setQuality(q.trailRes, q.trailScroll, q.trailDecay);
 }
 
 const SCALES = [1, 0.85, 0.7, 0.6];
