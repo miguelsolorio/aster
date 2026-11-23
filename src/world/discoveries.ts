@@ -17,7 +17,7 @@ import { Solids, type SolidKind } from './solids';
 import { assembleDeep, createDeep, type DeepData } from './deep/index';
 import { DeepAhead } from './deep/deepAhead';
 import { frostLayout, frostRegion, frostCover, frostWayMarks, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
-import { footVillages, type FootVillage } from './foothills';
+import { footSpots, footVillagesJob, type FootVillage } from './foothills';
 import { footVillageFolk, hamletFolk, snowVillageFolk, towerFolk, type FolkMark, type FolkRole, type HamletHouse } from './villagers';
 import { GIVE_R, SOURCES, TAKE_R, isRevivable, stageOf, type Carry, type Revivable, type Revived } from '../game/restore';
 import { CHOSEN, bedrollGeometry, bootGeometry, carpetGeometry, featherGeometry, chartGeometry, fluteGeometry, rodGeometry, ropeCoilGeometry, rugMaterial, solidMaterial } from '../game/equipment';
@@ -27,8 +27,10 @@ import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types
 import { type Lead, leadPoint } from './lead';
 import { isSettlement } from './settlementKinds';
 import { settle, type SettleWorld } from './settle';
-import { buildSettlement, loadSettlementModels, settlementModelsReady, type Kit } from './settlements';
+import { buildSettlementJob, loadSettlementModels, settlementModelsReady, type Kit } from './settlements';
 import { RouteNet, routePos, type TravelRoute } from '../city/routes';
+import { Task, finish, frameBudget, type Job } from './budget';
+import { SOUP_STEP, soupNormals, soupSphere } from './soup';
 
 const CELL = 900 * WORLD_SCALE;
 const MARGIN = 150; // keeps sites at least 300 m apart
@@ -46,6 +48,12 @@ const LEAD_MAX = BUILD_R - DRAW_R;
 const SCAN_MS = 4; // the most a scan spends building before it leaves the rest to the next frame
 const DROP_R = 3500;
 const SCAN_EVERY = 0.3;
+// A site still being finished (see finishSite) is finished at once when the wanderer comes within
+// this of it: further than anyone reaches a site's solids in the few frames a job takes.
+const MUST_R = 450;
+// The wanderer moving further than this in a frame has jumped (a teleport, a restore): what is
+// around them is built at once, as on the first scan.
+const JUMP = 200;
 const GROVE_P = 0.7; // chance an otherwise empty cell beside a river holds a grove
 const HAMLET_P = 0.5; // chance an otherwise empty cell (away from rivers) holds a hamlet
 const TOWER_P = 0.2; // and the chance it holds a lone watchtower instead
@@ -58,6 +66,13 @@ const VILLAGE_KEY = -4e12; // the keys of the mountain villages count down from 
 const VILLAGE_CITY_CLEAR = 450; // a mountain village keeps this far outside a city (m)
 const VILLAGE_REACH = 1.25; // no village stands further from its massif's centre than this many radii
 const NO_VILLAGES: FootVillage[] = [];
+const SPRING_REACH = 1.15; // findSprings sweeps out to this many radii of a massif's middle (and settles within some 32 m of what it finds)
+const NO_SPRINGS: Spring[] = [];
+// The warm-up works these out ahead of need: the caverns of the cells this many out from the
+// wanderer's (scanCaverns wants two), and the villages of a massif from this far beyond where
+// scanMassifs first wants them (m).
+const WARM_CELLS = 3;
+const WARM_AHEAD = 3000;
 const GROVE_REACH = 260; // metres from a river that counts as beside it
 const CAVERN_P = 1; // chance a cell hides a cavern where the ground suits one: measured, about one cell in two ends up with one (most of the rest are rock, salt or river)
 const CAVERN_BUILD_R = 900; // an open cavern's roof is built inside this
@@ -472,10 +487,31 @@ const WOOD_HUES: [number, number][] = [
 const isWoodHue = (r: number, g: number, b: number): boolean =>
   r > 0 && WOOD_HUES.some(([gr, br]) => Math.abs(g / r - gr) < 0.01 && Math.abs(b / r - br) < 0.01);
 
+/** Numbers kept for each deferred primitive: its matrix (16), tint (3), kind, roughness, salt, and where it falls among the plain vertices. */
+const OP = 23;
+const _om = new THREE.Matrix4();
+
+/**
+ * The stone of a site, as triangle soup. A primitive placed with geo() is only noted down (its
+ * matrix and the colour it takes); its vertices are written out when the mesh is made, a slice
+ * at a time (see steps), in the order everything was added, so the mesh is the same as if they
+ * had been written there and then. Vertices given one at a time (vert) are written at once.
+ */
 class StoneBuilder {
-  pos: number[] = [];
-  tint: number[] = [];
-  kind: number[] = [];
+  /** The plain vertices, in order: position, tint and kind. */
+  private readonly pos: number[] = [];
+  private readonly tint: number[] = [];
+  private readonly kind: number[] = [];
+  /**
+   * The deferred primitives, in order: each one's positions and index as they were when it was
+   * placed (the attributes, not the geometry, which may be a scratch one given other attributes
+   * after: see settlements.ts piece), with OP numbers each in `ops`.
+   */
+  private readonly srcs: THREE.BufferAttribute[] = [];
+  private readonly idxs: (THREE.BufferAttribute | null)[] = [];
+  private readonly ops: number[] = [];
+  /** Every vertex, plain and deferred. */
+  private count = 0;
   r = 1;
   g = 1;
   b = 1;
@@ -509,28 +545,110 @@ class StoneBuilder {
     this.pos.push(x, y, z);
     this.tint.push(this.r, this.g, this.b);
     this.kind.push((this.dark ? this.k + 10 : this.k) + this.grain);
+    this.count++;
   }
 
   geo(g: THREE.BufferGeometry, m: THREE.Matrix4): void {
     const p = g.attributes.position as THREE.BufferAttribute;
     const idx = g.index;
     const n = idx ? idx.count : p.count;
-    for (let i = 0; i < n; i++) {
-      const j = idx ? idx.getX(i) : i;
-      _v.fromBufferAttribute(p, j).applyMatrix4(m);
-      this.vert(_v.x, _v.y, _v.z);
-    }
+    if (n === 0) return;
+    const e = m.elements;
+    const o = this.ops;
+    for (let i = 0; i < 16; i++) o.push(e[i]);
+    o.push(this.r, this.g, this.b, (this.dark ? this.k + 10 : this.k) + this.grain, this.rough, this.salt, this.pos.length / 3);
+    this.srcs.push(p);
+    this.idxs.push(idx);
+    this.count += n;
   }
 
+  /**
+   * Writes the mesh out a slice at a time, yielding between slices, and returns it (null when
+   * there is nothing): positions, tints and kinds in the order they were added, then faceted
+   * normals (non-indexed: the weathered look) and the bounds.
+   */
+  *steps(): Generator<void, THREE.BufferGeometry | null> {
+    const n = this.count;
+    if (n === 0) return null;
+    const P = new Float32Array(n * 3);
+    const T = new Float32Array(n * 3);
+    const K = new Float32Array(n);
+    const rp = this.pos;
+    const rt = this.tint;
+    const rk = this.kind;
+    let w = 0; // vertices written
+    let raw = 0; // plain vertices written
+    let since = 0;
+    const plain = (to: number): void => {
+      for (; raw < to; raw++, w++) {
+        P[w * 3] = rp[raw * 3];
+        P[w * 3 + 1] = rp[raw * 3 + 1];
+        P[w * 3 + 2] = rp[raw * 3 + 2];
+        T[w * 3] = rt[raw * 3];
+        T[w * 3 + 1] = rt[raw * 3 + 1];
+        T[w * 3 + 2] = rt[raw * 3 + 2];
+        K[w] = rk[raw];
+      }
+    };
+    const ops = this.ops;
+    for (let q = 0; q < this.srcs.length; q++) {
+      const b = q * OP;
+      plain(ops[b + 22]);
+      _om.fromArray(ops, b);
+      const r = ops[b + 16];
+      const g = ops[b + 17];
+      const bl = ops[b + 18];
+      const kind = ops[b + 19];
+      const rough = ops[b + 20];
+      const salt = ops[b + 21];
+      const p = this.srcs[q];
+      const idx = this.idxs[q];
+      const m = idx ? idx.count : p.count;
+      for (let i = 0; i < m; i++, w++) {
+        _v.fromBufferAttribute(p, idx ? idx.getX(i) : i).applyMatrix4(_om);
+        let x = _v.x;
+        let y = _v.y;
+        let z = _v.z;
+        if (rough > 0) {
+          // (the same as vert)
+          const dx = jit(x, y, z, salt) * rough;
+          const dy = jit(x, y, z, salt + 1) * rough;
+          const dz = jit(x, y, z, salt + 2) * rough;
+          x += dx;
+          y += dy;
+          z += dz;
+        }
+        P[w * 3] = x;
+        P[w * 3 + 1] = y;
+        P[w * 3 + 2] = z;
+        T[w * 3] = r;
+        T[w * 3 + 1] = g;
+        T[w * 3 + 2] = bl;
+        K[w] = kind;
+      }
+      since += m;
+      if (since >= SOUP_STEP) {
+        since = 0;
+        yield;
+      }
+    }
+    plain(rp.length / 3);
+    yield;
+    const N = new Float32Array(n * 3);
+    yield* soupNormals(P, N);
+    const sphere = yield* soupSphere(P);
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(P, 3));
+    geo.setAttribute('aTint', new THREE.Float32BufferAttribute(T, 3));
+    geo.setAttribute('aKind', new THREE.Float32BufferAttribute(K, 1));
+    geo.setAttribute('normal', new THREE.BufferAttribute(N, 3));
+    geo.boundingSphere = sphere;
+    return geo;
+  }
+
+  /** The mesh, written out at once. */
   build(): THREE.BufferGeometry | null {
-    if (this.pos.length === 0) return null;
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.Float32BufferAttribute(this.pos, 3));
-    g.setAttribute('aTint', new THREE.Float32BufferAttribute(this.tint, 3));
-    g.setAttribute('aKind', new THREE.Float32BufferAttribute(this.kind, 1));
-    g.computeVertexNormals(); // non-indexed: faceted, weathered look
-    g.computeBoundingSphere();
-    return g;
+    return finish(this.steps());
   }
 }
 
@@ -625,6 +743,8 @@ class Ctx {
   solid = true;
   /** On while a modelled piece is drawn in place of what prim() is given: its solid is still added, nothing is drawn. */
   ghost = false;
+  /** For a settlement built of plain boxes while the modelled pieces load: how to build its stone again with them (see Site). */
+  remake?: () => Job<THREE.BufferGeometry | null>;
   foot = 20;
   cy = 1;
   sy = 0;
@@ -903,7 +1023,7 @@ function buildRuins(c: Ctx): void {
   }
 }
 
-function buildOasis(c: Ctx): void {
+function* buildOasis(c: Ctx): Generator<void, void> {
   const st = c.stone;
   const R = c.r(10, 20);
   c.foot = R * 1.9;
@@ -915,7 +1035,9 @@ function buildOasis(c: Ctx): void {
       const ang = (a / 8) * Math.PI * 2;
       minH = Math.min(minH, c.g(Math.cos(ang) * rr, Math.sin(ang) * rr));
     }
+    yield;
   }
+  yield;
   const level = minH + 0.35;
   c.pools.push({ y: level, r: R * 1.2 });
 
@@ -934,7 +1056,9 @@ function buildOasis(c: Ctx): void {
       const y = c.g(u, v) + (i === NR ? -0.4 : 0.07);
       grid.push(c.lx, y, c.lz);
     }
+    yield;
   }
+  yield;
   st.set(1, 1, 1, 2, 0);
   const shadeAt = (i: number) => {
     const t = i / NR;
@@ -957,6 +1081,7 @@ function buildOasis(c: Ctx): void {
       G(i, s + 1);
       G(i + 1, s + 1);
     }
+    yield;
   }
 
   // shrubs
@@ -971,6 +1096,7 @@ function buildOasis(c: Ctx): void {
     c.solid = false; // scrub: you brush through it
     c.prim(UNIT_BLOB, u, c.g(u, v) + s * 0.25, v, s * 1.3, s * 0.7, s * 1.2, c.rng() * 6);
     c.solid = true;
+    yield;
   }
 
   // palms
@@ -979,6 +1105,7 @@ function buildOasis(c: Ctx): void {
     const a = (p / np) * Math.PI * 2 + c.r(-0.5, 0.5);
     const d = R * c.r(0.95, 1.5);
     addPalm(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI + c.r(-0.9, 0.9)); // leaning mostly toward the water
+    yield;
   }
 }
 
@@ -1053,7 +1180,7 @@ function addPalm(c: Ctx, bu: number, bv: number, la: number, k = 1): void {
  * A stand of palms and scrub on a riverbank. The site sits on the bank; onBank says whether a
  * frame point is on the damp ground beside the water, and toWater is the bearing to the river.
  */
-function buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: number): void {
+function* buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: number): Generator<void, void> {
   const st = c.stone;
   c.foot = 34;
   const np = 3 + Math.floor(c.rng() * 6);
@@ -1065,7 +1192,9 @@ function buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: 
     if (!onBank(u, v)) continue;
     addPalm(c, u, v, toWater + c.r(-0.9, 0.9));
     p++;
+    yield;
   }
+  yield;
   const nsh = 8 + Math.floor(c.rng() * 10);
   for (let i = 0, tries = 0; i < nsh && tries < 80; tries++) {
     const a = c.rng() * Math.PI * 2;
@@ -1080,6 +1209,7 @@ function buildGrove(c: Ctx, onBank: (u: number, v: number) => boolean, toWater: 
     c.prim(UNIT_BLOB, u, c.g(u, v) + s * 0.25, v, s * 1.3, s * 0.7, s * 1.2, c.rng() * 6);
     c.solid = true;
     i++;
+    yield;
   }
 }
 
@@ -1191,7 +1321,7 @@ interface RoofDims {
  * gives the rock as it would be uncut, and floor the hollow's floor (relative to the site's base).
  * It is drawn with the ground's shader, so the cliff carries on across it.
  */
-function buildRoof(c: Ctx, face: (u: number, v: number, out: Face) => Face, floor: (u: number) => number, dm: RoofDims): void {
+function* buildRoof(c: Ctx, face: (u: number, v: number, out: Face) => Face, floor: (u: number) => number, dm: RoofDims): Generator<void, void> {
   const rk = c.rock;
   const HALF = dm.half + 1.4;
   const NV = 10;
@@ -1241,6 +1371,8 @@ function buildRoof(c: Ctx, face: (u: number, v: number, out: Face) => Face, floo
         brow(ua, va, lowY(ua, va)); brow(ua, vb, lowY(ua, vb)); brow(ua, va, ya);
         brow(ua, va, ya); brow(ua, vb, lowY(ua, vb)); brow(ua, vb, yb);
       }
+      // (a job: a cell at a time, each a dozen or so samples of the rock)
+      yield;
     }
   }
 }
@@ -1380,7 +1512,7 @@ function buildStones(c: Ctx, onSalt: boolean): void {
   }
 }
 
-function buildBones(c: Ctx): void {
+function* buildBones(c: Ctx): Generator<void, void> {
   const st = c.stone;
   const tk = c.r(0.92, 1.05);
   const L = c.r(60, 110);
@@ -1401,7 +1533,9 @@ function buildBones(c: Ctx): void {
     spine.push(new THREE.Vector3(u, y, v));
     vy.push(y);
     sr.push(THREE.MathUtils.lerp(1.4, 0.7, t));
+    yield;
   }
+  yield;
   const spineLocal = c.toLocal(spine.map((p) => p.clone()));
   st.set(1.0 * tk, 0.95 * tk, 0.84 * tk, 1, 0.12);
   // The back is somewhere to land and to walk the length of, so what you stand on is one
@@ -1417,6 +1551,7 @@ function buildBones(c: Ctx): void {
     st.set(1.0 * tk, 0.95 * tk, 0.84 * tk, 1, 0.15);
     c.prim(UNIT_BLOB, p.x, p.y, p.z, s * 0.8, s, s * 1.2, 0);
     c.prim(UNIT_BOX, p.x - 0.4, p.y + s * 1.6, p.z, s * 0.35, s * 2.4, s * 0.6, 0, 0, 0.3);
+    yield;
   }
   // ribs sweeping down to the sand on both sides
   for (let i = 0; i <= nV; i++) {
@@ -1449,6 +1584,7 @@ function buildBones(c: Ctx): void {
         c.prim(UNIT_CYL, fu, c.g(fu, fv) + 0.25, fv, 0.6, rr * c.r(0.4, 0.7), 0.6, c.rng() * 6, Math.PI / 2 + c.r(-0.2, 0.2));
       }
     }
+    yield;
   }
   // skull at the low end, mostly buried
   st.set(1.0 * tk, 0.95 * tk, 0.84 * tk, 1, 0.35);
@@ -1900,7 +2036,7 @@ function mudTower(c: Ctx, u: number, v: number, ang: number, H: number, wt: numb
 }
 
 /** A handful of mud-brick houses round a well, with pens, palms and a lamp post: a hamlet nobody is home in. */
-function buildHamlet(c: Ctx): void {
+function* buildHamlet(c: Ctx): Generator<void, void> {
   const n = 4 + Math.floor(c.rng() * 4);
   const R = c.r(15, 22);
   c.foot = R + 16;
@@ -1917,8 +2053,11 @@ function buildHamlet(c: Ctx): void {
     const depth = c.r(4.2, 5.8);
     mudHouse(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, 1, w, depth, c.r(2.8, 3.6), wall * c.r(0.95, 1.05));
     houses.push({ a, d, w, depth });
+    yield;
   }
+  yield;
   mudWell(c, 0, 0);
+  yield;
   frostTorch(c, 3.6, 0.6, 1.5);
   // palms in the gaps between the houses, and beyond them a pen or two, straw and a cart
   const palms = 1 + Math.floor(c.rng() * 3);
@@ -1926,19 +2065,25 @@ function buildHamlet(c: Ctx): void {
     const a = a0 + ((Math.floor(c.rng() * n) + 0.5) / n) * Math.PI * 2;
     const d = R + c.r(8, 13); // behind the houses, clear of their walls
     addPalm(c, Math.cos(a) * d, Math.sin(a) * d, c.rng() * 6.28);
+    yield;
   }
+  yield;
   const pens = 1 + Math.floor(c.rng() * 2);
   const pa = a0 + c.rng() * Math.PI * 2;
   for (let k = 0; k < pens; k++) {
     const a = pa + k * c.r(1.6, 2.6);
     const d = R + c.r(11, 14);
     mudPen(c, Math.cos(a) * d, Math.sin(a) * d, a, c.r(5.5, 8));
+    yield;
   }
+  yield;
   for (let k = 0; k < 2; k++) {
     const a = pa + Math.PI + c.r(-1, 1);
     const d = R + c.r(8, 12);
     hayStack(c, Math.cos(a) * d, Math.sin(a) * d, c.r(0.9, 1.4));
+    yield;
   }
+  yield;
   if (c.rng() < 0.7) {
     const a = a0 + c.rng() * 6.28;
     handCart(c, Math.cos(a) * 6.5, Math.sin(a) * 6.5, a + c.r(0.8, 2.2));
@@ -1967,6 +2112,7 @@ function buildHamlet(c: Ctx): void {
     c.prim(UNIT_CYL, -1.5, g + 1.39, 0.9, 0.21, 0.04, 0.21);
     c.solid = true;
   }
+  yield;
   if (c.stage < 2) return;
   // lived in: flags from roof to roof across the ring, a fire ring by the well, rows of green
   const span = (i: number, j: number): void => {
@@ -1989,11 +2135,13 @@ function buildHamlet(c: Ctx): void {
     c.prim(UNIT_CONE, fu, g + 0.75, fv, 0.4, 1.0, 0.4, 0.5);
     c.glow(fu, g + 0.8, fv, 4);
   }
+  yield;
   {
     const a = pa - Math.PI / 2 + c.r(-0.3, 0.3);
     const d = R + c.r(11, 14);
     terracePlot(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, c.r(9, 13), c.r(4, 6));
   }
+  yield;
   if (c.stage < 3) return;
   // the caravans call: a second line of flags, another plot, young palms set out past the houses
   span(Math.floor(n / 2), Math.floor(n / 2) + 1);
@@ -2002,10 +2150,12 @@ function buildHamlet(c: Ctx): void {
     const d = R + c.r(16, 19);
     terracePlot(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, c.r(10, 15), c.r(4, 6));
   }
+  yield;
   for (let k = 0; k < 4; k++) {
     const a = a0 + ((k + 0.5) / 4) * Math.PI * 2 + c.r(-0.3, 0.3);
     const d = R + c.r(15, 21);
     addPalm(c, Math.cos(a) * d, Math.sin(a) * d, c.rng() * 6.28, c.r(0.4, 0.6));
+    yield;
   }
 }
 
@@ -2014,7 +2164,7 @@ function buildHamlet(c: Ctx): void {
  * above it, a square with a well, a watchtower at one end, garden plots stepping down toward
  * the sand, bunting over the street and palms round about. The frame is the world's own (yaw 0).
  */
-function buildMountainVillage(c: Ctx, vil: FootVillage): void {
+function* buildMountainVillage(c: Ctx, vil: FootVillage): Generator<void, void> {
   const st = c.stone;
   const Tx = Math.cos(vil.yaw);
   const Tz = Math.sin(vil.yaw);
@@ -2043,6 +2193,7 @@ function buildMountainVillage(c: Ctx, vil: FootVillage): void {
         frostTorch(c, tu, tv, 1.2);
       }
     }
+    yield;
   }
   // the terrace above: a shorter row further up, looking out over the roofs
   const upper = 2 + Math.floor(c.rng() * 3);
@@ -2051,6 +2202,7 @@ function buildMountainVillage(c: Ctx, vil: FootVillage): void {
     const d = c.r(4.6, 5.6);
     const [u, v] = P((i - (upper - 1) / 2) * 12.5 + c.r(-2, 2), -(19.5 + c.r(0, 3)));
     mudHouse(c, u, v, ang + c.r(-0.12, 0.12), 1, w, d, c.r(2.7, 3.2), wall * c.r(0.95, 1.06));
+    yield;
   }
   // the square: the well, a fire ring, a cart, a lamp
   {
@@ -2077,7 +2229,9 @@ function buildMountainVillage(c: Ctx, vil: FootVillage): void {
   for (let a = x0 - gap * 0.7; a <= -x0 + gap * 0.7; a += 1.9) {
     const [u, v] = P(a, c.r(-0.5, 0.5));
     c.prim(UNIT_BIT, u, c.g(u, v) + 0.02, v, c.r(1.0, 1.4), 0.16, c.r(0.9, 1.3), -ang + c.r(-0.3, 0.3));
+    yield;
   }
+  yield;
   c.solid = true;
   // bunting across the street
   for (const i of [1, slots - 2]) {
@@ -2085,6 +2239,7 @@ function buildMountainVillage(c: Ctx, vil: FootVillage): void {
     const [u0, v0] = P(a + c.r(-0.6, 0.6), -2.5);
     const [u1, v1] = P(a + c.r(-0.6, 0.6), 2.5);
     bunting(c, u0, v0, u1, v1, 4.3);
+    yield;
   }
   // the watchtower past one end of the rows, a little up the slope, its door down toward the street
   const endSign = c.rng() < 0.5 ? -1 : 1;
@@ -2098,6 +2253,7 @@ function buildMountainVillage(c: Ctx, vil: FootVillage): void {
   for (let k = 0; k < plots; k++) {
     const [u, v] = P(c.r(-0.5, 0.5) * gap * (slots - 2) * 0.6, 17 + k * 7.5);
     terracePlot(c, u, v, ang, c.r(13, 24), -c.r(3.5, 5.5));
+    yield;
   }
   // the pen and the straw at the other end from the tower
   {
@@ -2111,13 +2267,16 @@ function buildMountainVillage(c: Ctx, vil: FootVillage): void {
     // below the lower row, or above the upper terrace: never among the roofs
     const [u, v] = P(c.r(-1, 1) * (-x0 + gap), c.rng() < 0.65 ? c.r(15, 42) : -c.r(30, 44));
     addPalm(c, u, v, c.rng() * 6.28);
+    yield;
   }
+  yield;
   for (let k = 0; k < 5; k++) {
     const [u, v] = P(c.r(-1, 1) * (-x0 + gap * 1.2), -c.r(30, 48));
     const g = c.g(u, v);
     const s = c.r(1.0, 2.6);
     st.set(c.r(0.9, 1.05), c.r(0.88, 1.0), 0.92, 0, 0.2);
     c.prim(UNIT_BLOB, u, g + s * 0.3, v, s, s * c.r(0.55, 0.85), s * c.r(0.8, 1.1), c.rng() * 3);
+    yield;
   }
 }
 
@@ -2331,7 +2490,7 @@ function frostGate(c: Ctx, p: FrostPoint, ang: number): void {
  * side or the other (as the waymarkers stand along the routes between the towns), the gate,
  * and pines and boulders along it where the snow lies (more of them the deeper it is).
  */
-function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): void {
+function* buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): Generator<void, void> {
   const st = c.stone;
   const { way, region } = layout;
   const w = c.world;
@@ -2376,6 +2535,7 @@ function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): voi
       }
       r0 = r1;
     }
+    yield;
   }
   // the gate, and the cairns; a point shared with the next stretch belongs to that one
   if (layout.gateAt >= i0 && layout.gateAt < i1) frostGate(c, way[layout.gateAt], dirAt(layout.gateAt));
@@ -2384,6 +2544,7 @@ function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): voi
     const ang = dirAt(m.i);
     const off = (m.i >= layout.climbAt ? CLIMB_W : WAY_W) / 2 + 2.6;
     buildCairn(c, px(p) - Math.sin(ang) * off * m.side, pz(p) + Math.cos(ang) * off * m.side, 3, frostCover(region, p.x, p.z));
+    yield;
   }
   // pines and boulders in the snow, a few frosted ones further out
   const s: SurfaceSample = { h: 0, rock: 0, salt: 0 };
@@ -2410,11 +2571,12 @@ function buildFrostWay(c: Ctx, layout: FrostLayout, i0: number, i1: number): voi
       if (c.rng() < 0.82) frostPine(c, x - c.x, z - c.z, c.r(0.8, 1.5) * (0.8 + 0.4 * cover));
       else frostBoulder(c, x - c.x, z - c.z, c.r(1.2, 3));
     }
+    yield;
   }
 }
 
 /** One village: houses either side of the road, a fire pit, a lamp at a door here and there, and for the high one a hold. */
-function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
+function* buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): Generator<void, void> {
   const village = layout.villages[vi];
   const st = c.stone;
   const { way } = layout;
@@ -2540,6 +2702,7 @@ function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
       st.set(1.22, 1.24, 1.28, 1, 0.08);
       c.prim(UNIT_BLOB, u, gl + 0.95, v, 1.3, 0.3, 0.6, ry);
     }
+    yield;
   }
   // a fire pit beside the road, ringed with stone
   {
@@ -2561,6 +2724,7 @@ function buildSnowVillage(c: Ctx, layout: FrostLayout, vi: number): void {
     const side = c.rng() < 0.5 ? -1 : 1;
     const off = side * c.r(19, 34);
     frostPine(c, ox + Tx * a + Nx * off, oz + Tz * a + Nz * off, c.r(0.9, 1.5));
+    yield;
   }
   // the hold at the head of the road: a mud-brick watchtower like the towns', with a great brazier
   const end = way[way.length - 1];
@@ -3248,7 +3412,7 @@ const cavHalf = (cv: Cavern, u: number): number => {
  * slot, as it does for a cave), and daylight falling in under the brow. What the place holds
  * is all below, in the deep.
  */
-function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: Face) => Face): void {
+function* buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: Face) => Face): Generator<void, void> {
   const cv = cs.cav;
   const rk = c.rock;
   const st = c.stone;
@@ -3311,6 +3475,8 @@ function buildCavern(c: Ctx, cs: CavernSite, face: (u: number, v: number, out: F
         brow(j, lowY(0, j)); brow(j + 1, lowY(0, j + 1)); brow(j, ya);
         brow(j, ya); brow(j + 1, lowY(0, j + 1)); brow(j + 1, yb);
       }
+      // (a job: a cell at a time)
+      yield;
     }
   }
 
@@ -3354,6 +3520,15 @@ interface Spring {
   half: number; // half-width of the rock over it (m)
 }
 
+/** A site whose builder has run, being turned into meshes a slice at a time. */
+interface SiteJob {
+  key: number;
+  kind: string;
+  x: number;
+  z: number;
+  it: Job<void>;
+}
+
 interface Site {
   key: number;
   x: number;
@@ -3378,8 +3553,8 @@ interface Site {
   offer?: { kind: Offering; obj: THREE.Group };
   /** The stage it was built at, for a place that can be brought back (0 untouched). */
   stage: number;
-  /** For a settlement built before its modelled pieces had loaded: its stone drawn again with them. */
-  remake?: () => THREE.BufferGeometry | null;
+  /** For a settlement built before its modelled pieces had loaded: its stone drawn again with them, as a job. */
+  remake?: () => Job<THREE.BufferGeometry | null>;
 }
 
 /** Where people go at a temple, in world coordinates. */
@@ -3487,6 +3662,16 @@ export class Discoveries {
   private beaconMesh: THREE.Mesh | null = null;
   private beaconKey = '';
   private readonly sites: Site[] = [];
+  /** Sites whose builders have run and whose meshes are still being written out, oldest first (see finishSite). */
+  private readonly jobs: SiteJob[] = [];
+  /**
+   * While set, a site is finished as soon as it is built: always, except while update's own scan
+   * builds on the budget (not the first scan, nor one after a jump).
+   */
+  private syncBuild = true;
+  /** Where the wanderer was last frame, to tell a jump (a teleport, a restore) from a walk. */
+  private lastX = NaN;
+  private lastZ = NaN;
   private readonly reached = new Set<number>();
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private readonly cellPos = { x: 0, z: 0 };
@@ -3662,9 +3847,23 @@ export class Discoveries {
     const key = cellKey(cx, cz);
     let site = this.cavernCache.get(key);
     if (site === undefined) {
-      site = this.findCavern(cx, cz, key);
+      site = finish(this.findCavern(cx, cz, key));
       this.cavernCache.set(key, site);
     }
+    return site;
+  }
+
+  /** cavernAt as a job, for working a cell out ahead of need on the frame budget. */
+  private *cavernJob(cx: number, cz: number): Generator<void, CavernSite | null> {
+    const key = cellKey(cx, cz);
+    let site = this.cavernCache.get(key);
+    if (site !== undefined) return site;
+    yield* this.innJob(cx, cz);
+    site = yield* this.findCavern(cx, cz, key);
+    // (unless the cell was worked out meanwhile, when the one already handed out stands)
+    const had = this.cavernCache.get(key);
+    if (had !== undefined) return had;
+    this.cavernCache.set(key, site);
     return site;
   }
 
@@ -3673,9 +3872,10 @@ export class Discoveries {
    * the surface included (the entrance then keeps well clear of it). The entrance needs open
    * sand level enough to leave a roof over the whole of it; its floor is set from the lowest
    * ground above, so the roof is nowhere thinner than cavernCover. The deep under it needs only
-   * room: a rectangle inside the cell, clear of rivers and cities.
+   * room: a rectangle inside the cell, clear of rivers and cities. A job: it yields between the
+   * places it tries (and while measuring a room's lid), never holding a scratch value over a yield.
    */
-  private findCavern(cx: number, cz: number, key: number): CavernSite | null {
+  private *findCavern(cx: number, cz: number, key: number): Generator<void, CavernSite | null> {
     const w = this.world;
     const s = w.seed | 0;
     if (hash4(cx, cz, s, 9) >= CAVERN_P) return null;
@@ -3726,6 +3926,7 @@ export class Discoveries {
     // level (the ring and the light over it show where the cracks alone would not). Each pass
     // only ever adds: a cavern found by an earlier one is never moved by a later.
     let rooms = 0;
+    let work = 0;
     for (let pass = 0; pass < 3; pass++) {
       const ways = pass === 0 ? 6 : 12;
       const siteClear = pass === 2 ? SITE_CLEAR_NEAR : SITE_CLEAR;
@@ -3734,10 +3935,16 @@ export class Discoveries {
       const W = pass === 0 ? wasW : half + bulge + 5;
       const spots = pass === 0 ? 8 : SPOTS;
       for (let k = 0; k < spots * ways; k++) {
+        // (a yield after every hundred or so samples of the ground: most tries end after one or two)
+        if (work >= 100) {
+          work = 0;
+          yield;
+        }
         const spot = Math.floor(k / ways);
         // (the first eight spots lie round the cell's own; the rest are anywhere in it)
         const x = Math.fround(spot < 8 ? x0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 40 + spot) - 0.5) * 240) : (cx + 0.12 + 0.76 * hash4(cx, cz, s, (spot < 24 ? 60 : 120) + spot)) * CELL);
         const z = Math.fround(spot < 8 ? z0 + (spot === 0 ? 0 : (hash4(cx, cz, s, 50 + spot) - 0.5) * 240) : (cz + 0.12 + 0.76 * hash4(cx, cz, s, (spot < 24 ? 90 : 190) + spot)) * CELL);
+        work += 5;
         if (k % ways === 0) {
           w.sample(x, z, q);
           if (q.rock > 0.08 || q.salt > 0.25 || this.riverAt(x, z) < RIVER_CLEAR || cityNear(x, z) || (shared && Math.hypot(x - sx, z - sz) < siteClear)) {
@@ -3759,7 +3966,12 @@ export class Discoveries {
         let hi = -Infinity;
         let ok = true;
         for (let u = -10; u <= uMax && ok; u += 4) {
+          if (work >= 100) {
+            work = 0;
+            yield;
+          }
           for (let v = -W; v <= W; v += 4) {
+            work++;
             w.sample(x + dx * u - dz * v, z + dz * u + dx * v, q);
             if (q.rock > 0.12) {
               ok = false;
@@ -3782,7 +3994,9 @@ export class Discoveries {
         if (!room) continue;
         // (measuring the ground over a room is the dear part, so only a few are measured)
         if (++rooms > ROOMS_MAX) return null;
-        const lid = this.roomLid(hx, hz, dx, dz, room, floor);
+        // (room is the shared scratch fitRoom fills: it is read before anything else can refill it)
+        const { u1: ru1, v0: rv0, v1: rv1 } = room;
+        const lid = yield* this.roomLid(hx, hz, dx, dz, room, floor);
         if (lid === null) continue;
         // the roof starts where the ramp has sunk a brow's height below the ceiling
         const want = 1 - (T.cavernHeight - T.cavernBrow) / drop;
@@ -3799,9 +4013,9 @@ export class Discoveries {
           // (the spot to dig is 40% of the way down the ramp: well inside the open sinkhole, short of the roof)
           cav: { x, z, spot: 2 + ramp * 0.4, dx, dz, top, floor, half, bend: 0, bulge, len, ramp, roof: 2 + ramp * a, hole, open, dimple: DIMPLE },
           kind,
-          u1: room.u1,
-          v0: room.v0,
-          v1: room.v1,
+          u1: ru1,
+          v0: rv0,
+          v1: rv1,
           lid,
           vein,
           carvings,
@@ -3864,7 +4078,8 @@ export class Discoveries {
    * room, a city stands near it, or the ground over it falls so far that the deep would have
    * to start a long way down.
    */
-  private roomLid(hx: number, hz: number, dx: number, dz: number, room: { u1: number; v0: number; v1: number }, y: number): number | null {
+  private *roomLid(hx: number, hz: number, dx: number, dz: number, room: { u1: number; v0: number; v1: number }, y: number): Generator<void, number | null> {
+    room = { u1: room.u1, v0: room.v0, v1: room.v1 };
     const w = this.world as World & Partial<{ uncarved(x: number, z: number): number; cities: { at(x: number, z: number): { cx: number; cz: number; radius: number } } }>;
     const ground = w.uncarved ? w.uncarved.bind(w) : w.height.bind(w);
     const STEP = 10;
@@ -3872,6 +4087,7 @@ export class Discoveries {
     const nv = Math.ceil((room.v1 - room.v0 + 2 * STEP) / STEP);
     // rivers and cities first: they are cheap to ask after, on a coarse grid
     for (let i = 0; i <= nu; i += 3) {
+      yield;
       for (let j = 0; j <= nv; j += 3) {
         const u = -STEP + (i / nu) * (room.u1 + 2 * STEP);
         const v = room.v0 - STEP + (j / nv) * (room.v1 - room.v0 + 2 * STEP);
@@ -3886,6 +4102,7 @@ export class Discoveries {
     }
     let lo = Infinity;
     for (let i = 0; i <= nu; i++) {
+      yield;
       for (let j = 0; j <= nv; j++) {
         const u = -STEP + (i / nu) * (room.u1 + 2 * STEP);
         const v = room.v0 - STEP + (j / nv) * (room.v1 - room.v0 + 2 * STEP);
@@ -3949,10 +4166,8 @@ export class Discoveries {
     // the frame's u axis runs down the ramp
     const ctx = new Ctx(this.world, cv.x, cv.z, cv.top, mulberry32(cs.seed ^ 0x51ab), Math.atan2(-cv.dz, cv.dx));
     ctx.stone.salt = cs.key & 1023;
-    buildCavern(ctx, cs, this.faceOf(ctx));
-    this.finishSite(roofKey(cs), 'cavern', cv.x + cv.dx * cv.spot, cv.z + cv.dz * cv.spot, cv.top, ctx);
     // (it counts as reached far below, at the heart of its deep: see update)
-    this.sites[this.sites.length - 1].reachR = 0;
+    this.finishSite(roofKey(cs), 'cavern', cv.x + cv.dx * cv.spot, cv.z + cv.dz * cv.spot, cv.top, ctx, 0, buildCavern(ctx, cs, this.faceOf(ctx)));
   }
 
   // ---------------------------------------------------------------- the deeps
@@ -4303,6 +4518,7 @@ export class Discoveries {
       if (!next.some((b) => b.key === key)) next.push({ x: a.x, z: a.z, rot: a.rot, key });
     }
     this.wreckAt = next;
+    this.dropJobs((j) => j.kind === 'wreck');
     for (let i = this.sites.length - 1; i >= 0; i--) {
       const s = this.sites[i];
       if (s.kind !== 'wreck') continue;
@@ -4354,6 +4570,7 @@ export class Discoveries {
       if (!next.some((b) => b.key === key)) next.push({ x: a.x, z: a.z, key });
     }
     this.fallenAt = next;
+    this.dropJobs((j) => j.kind === 'fallen-star');
     for (let i = this.sites.length - 1; i >= 0; i--) {
       const s = this.sites[i];
       if (s.kind !== 'fallen-star') continue;
@@ -4427,7 +4644,20 @@ export class Discoveries {
   private springsOf(gi: number, gj: number, m: Massif): Spring[] {
     const id = (gi + 32768) * 65536 + (gj + 32768);
     let springs = this.springCache.get(id);
-    if (!springs) this.springCache.set(id, (springs = this.findSprings(m)));
+    if (!springs) this.springCache.set(id, (springs = finish(this.findSprings(m))));
+    return springs;
+  }
+
+  /** springsOf as a job, for working a massif's springs out ahead of need on the frame budget. */
+  private *springsJob(gi: number, gj: number, m: Massif): Generator<void, Spring[]> {
+    const id = (gi + 32768) * 65536 + (gj + 32768);
+    const had = this.springCache.get(id);
+    if (had) return had;
+    const springs = yield* this.findSprings(m);
+    // (unless they were worked out meanwhile, when those stand: the lamps are keyed by them)
+    const now = this.springCache.get(id);
+    if (now) return now;
+    this.springCache.set(id, springs);
     return springs;
   }
 
@@ -4505,6 +4735,7 @@ export class Discoveries {
       if (key === undefined) this.lampKeys.set(id, (key = LAMP_KEY - this.lampKeys.size));
       return { x: a.x, z: a.z, key };
     });
+    this.dropJobs((j) => j.kind === 'lamp' && !this.lampAt.some((a) => a.key === j.key));
     for (let i = this.sites.length - 1; i >= 0; i--) {
       const s = this.sites[i];
       if (s.kind !== 'lamp' || this.lampAt.some((a) => a.key === s.key)) continue;
@@ -4537,7 +4768,7 @@ export class Discoveries {
       const rng = mulberry32(Math.floor(hash4(cx, cz, w.seed | 0, 7) * 4294967296));
       const at = this.placeSite(cx, cz, rng);
       const ctx = new Ctx(w, at.x, at.z, w.height(at.x, at.z), rng, rng() * Math.PI * 2);
-      buildBones(ctx);
+      finish(buildBones(ctx));
       so = ctx.solids.count > 0 ? ctx.solids : null;
       this.boneSolids.set(key, so);
     }
@@ -4845,8 +5076,7 @@ export class Discoveries {
     c.prim(UNIT_BOX, 0.03, 0.25, 0, 0.2, 0.34, 0.2, 0.4, 0, 0.12);
     c.glow(0.03, 0.25, 0, 0.9);
     c.glow(0.03, 0.25, 0, 4.5);
-    this.finishSite(at.key, 'lamp', at.x, at.z, baseY, c);
-    this.sites[this.sites.length - 1].reachR = 0; // found by picking it up, not by coming near
+    this.finishSite(at.key, 'lamp', at.x, at.z, baseY, c, 0); // found by picking it up, not by coming near
   }
 
   /** The key of a relic lying within reach of (x, y, z), or -1. Relics lie in the deeps. */
@@ -4913,19 +5143,28 @@ export class Discoveries {
    * Worked out from the routes and the seed alone, once for each cell.
    */
   private innAt(cx: number, cz: number): Inn | null {
+    const inn = this.innCache.get(cellKey(cx, cz));
+    return inn !== undefined ? inn : finish(this.innSteps(cx, cz));
+  }
+
+  /**
+   * innAt as a job: it yields before each place along a route it tries. (Nothing it holds over a
+   * yield is shared: the routes are copied out of routeOut, and innP and innQ are filled after.)
+   */
+  private *innSteps(cx: number, cz: number): Generator<void, Inn | null> {
     const key = cellKey(cx, cz);
-    let inn = this.innCache.get(key);
-    if (inn !== undefined) return inn;
-    inn = null;
+    let inn: Inn | null = null;
     const w = this.world as Partial<DesertWorld>;
     if (w.cities && w.river && w.massif) {
       this.routes ??= new RouteNet(this.world as DesertWorld);
       const s = this.world.seed | 0;
       const P = this.innP;
       const Q = this.innQ;
-      search: for (const r of this.routes.near((cx + 0.5) * CELL, (cz + 0.5) * CELL, this.routeOut, 4)) {
+      const near = this.routes.near((cx + 0.5) * CELL, (cz + 0.5) * CELL, this.routeOut, 4).slice();
+      search: for (const r of near) {
         const side = hash4(r.a.id, r.b.id, s, 71) < 0.5 ? -1 : 1;
         for (const f of INN_AT) {
+          yield;
           routePos(r, r.len * f, 0, P);
           routePos(r, r.len * f + 6, 0, Q);
           const tl = Math.hypot(Q.x - P.x, Q.z - P.z) || 1;
@@ -4943,6 +5182,9 @@ export class Discoveries {
         }
       }
     }
+    // (unless it was worked out meanwhile, when that one stands)
+    const had = this.innCache.get(key);
+    if (had !== undefined) return had;
     this.innCache.set(key, inn);
     return inn;
   }
@@ -4982,6 +5224,7 @@ export class Discoveries {
 
   private isBuilt(key: number): boolean {
     for (let i = 0; i < this.sites.length; i++) if (this.sites[i].key === key) return true;
+    for (let i = 0; i < this.jobs.length; i++) if (this.jobs[i].key === key) return true;
     return false;
   }
 
@@ -4996,11 +5239,26 @@ export class Discoveries {
       fe.position.y = 0.3 + 0.08 * Math.sin(f.time * 1.3);
     }
     this.scanT -= f.dt;
-    if (this.scanT <= 0) {
+    // the first time round, and after a jump (a teleport, a restore), what is near is built at
+    // once; otherwise on the frame budget
+    const first = !(Math.hypot(px - this.lastX, pz - this.lastZ) < JUMP);
+    this.lastX = px;
+    this.lastZ = pz;
+    if (first) this.scanT = 0;
+    this.pumpJobs(px, pz);
+    // (a new site is started only once the last is finished, and only with budget left to start it)
+    if (this.scanT <= 0 && (first || (this.jobs.length === 0 && frameBudget.open))) {
       const lead = leadPoint(px, pz, f.player.vel.x, f.player.vel.z, LEAD_S, LEAD_MAX, this.lead);
+      this.syncBuild = first;
+      const t0 = now();
       // while there is still something to build, look again on the very next frame
-      this.scanT = this.scan(px, pz, lead.x, lead.z, this.sites.length === 0 ? 60 : SCAN_MS) ? 0 : SCAN_EVERY;
+      this.scanT = this.scan(px, pz, lead.x, lead.z, first ? 60 : Math.min(SCAN_MS, frameBudget.remaining)) ? 0 : SCAN_EVERY;
+      this.syncBuild = true;
+      if (!first) frameBudget.spend(now() - t0);
+      this.pumpJobs(px, pz);
     }
+    this.pumpRemakes();
+    if (this.jobs.length === 0) this.warmTick(px, pz, this.lead.x, this.lead.z);
     // sand running out of a cavern that has just been broken into
     const dr = this.draining;
     if (dr && !dr.deep) {
@@ -5121,7 +5379,8 @@ export class Discoveries {
     do {
       const c = want.pop()!;
       this.buildSite(c.cx, c.cz);
-    } while (want.length > 0 && now() - t0 < ms);
+      // (on the budget, one at a time: the next is started once this one is finished)
+    } while (this.syncBuild && want.length > 0 && now() - t0 < ms);
     return true;
   }
 
@@ -5159,14 +5418,12 @@ export class Discoveries {
           // the frame's u axis runs into the mountain
           const ctx = new Ctx(this.world, cv.x, cv.z, this.world.height(cv.x, cv.z), mulberry32(seed ^ 0x5f3a), Math.atan2(-cv.dz, cv.dx));
           ctx.stone.salt = (id * 7) & 1023;
-          buildRoof(
-            ctx,
-            this.faceOf(ctx),
-            (u) => ctx.g(u, 0),
-            { half: TERRAIN.caveHalf, from: TERRAIN.caveRoofFrom - 2, len: TERRAIN.caveLen, height: TERRAIN.caveHeight },
-          );
-          buildCairn(ctx, TERRAIN.caveLen - 7, 0);
-          this.finishSite(caveKey, 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6, ctx.baseY, ctx);
+          const face = this.faceOf(ctx);
+          const build = function* (): Generator<void, void> {
+            yield* buildRoof(ctx, face, (u) => ctx.g(u, 0), { half: TERRAIN.caveHalf, from: TERRAIN.caveRoofFrom - 2, len: TERRAIN.caveLen, height: TERRAIN.caveHeight });
+            buildCairn(ctx, TERRAIN.caveLen - 7, 0);
+          };
+          this.finishSite(caveKey, 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6, ctx.baseY, ctx, undefined, build());
           return true;
         }
         // the villages at its foot (worked out only once the massif is near enough for one to be in reach)
@@ -5177,12 +5434,13 @@ export class Discoveries {
           if (this.isBuilt(key) || Math.hypot(v.x - px, v.z - pz) >= BUILD_R) continue;
           const ctx = new Ctx(this.world, v.x, v.z, this.world.height(v.x, v.z), mulberry32(seed ^ (0x51c7 + k * 7919)), 0);
           ctx.stone.salt = (id * 5 + k * 37) & 1023;
-          buildMountainVillage(ctx, v);
-          this.finishSite(key, 'mountain-village', v.x, v.z, ctx.baseY, ctx);
+          this.finishSite(key, 'mountain-village', v.x, v.z, ctx.baseY, ctx, undefined, buildMountainVillage(ctx, v));
           return true;
         }
-        // the rock over each spring: the notch a river pours from becomes a cave mouth
-        const springs = this.springsOf(gi, gj, m);
+        // the rock over each spring: the notch a river pours from becomes a cave mouth (no spring
+        // lies further than SPRING_REACH radii from the middle, so until the wanderer is near
+        // enough for one to be in reach they are left for the warm-up to work out)
+        const springs = this.springCache.get(id) ?? (Math.hypot(m.x - px, m.z - pz) < BUILD_R + m.r * SPRING_REACH + 200 ? this.springsOf(gi, gj, m) : NO_SPRINGS);
         for (let k = 0; k < springs.length && k < 12; k++) {
           const sp = springs[k];
           const key = -(id * 16 + 3 + k);
@@ -5190,20 +5448,17 @@ export class Discoveries {
           const ctx = new Ctx(this.world, sp.x, sp.z, this.world.height(sp.x, sp.z), mulberry32(seed ^ (0x9a1 + k)), Math.atan2(-sp.dz, sp.dx));
           ctx.stone.salt = (id * 13 + k) & 1023;
           ctx.stage = this.staged.get(key) ?? 0;
-          buildRoof(
-            ctx,
-            this.faceOf(ctx),
-            (u) => ctx.g(u, 0),
-            { half: sp.half, from: 0, len: sp.len, height: TERRAIN.springHeight },
-          );
-          if (ctx.stage > 0) {
-            plantSpring(ctx, (u, v) => {
-              ctx.at(u, v);
-              return this.riverAt(sp.x + ctx.lx, sp.z + ctx.lz);
-            });
-          }
+          const face = this.faceOf(ctx);
+          const river = (u: number, v: number): number => {
+            ctx.at(u, v);
+            return this.riverAt(sp.x + ctx.lx, sp.z + ctx.lz);
+          };
+          const build = function* (): Generator<void, void> {
+            yield* buildRoof(ctx, face, (u) => ctx.g(u, 0), { half: sp.half, from: 0, len: sp.len, height: TERRAIN.springHeight });
+            if (ctx.stage > 0) plantSpring(ctx, river);
+          };
           this.caps.set(key, sp);
-          this.finishSite(key, 'spring', sp.x, sp.z, ctx.baseY, ctx);
+          this.finishSite(key, 'spring', sp.x, sp.z, ctx.baseY, ctx, undefined, build());
           return true;
         }
       }
@@ -5235,6 +5490,11 @@ export class Discoveries {
    * which has its snow villages, and each kept clear of the cities, the finds and the massif's cave.
    */
   private villagesOf(gi: number, gj: number, m: Massif): FootVillage[] {
+    return finish(this.villagesSteps(gi, gj, m));
+  }
+
+  /** villagesOf as a job. */
+  private *villagesSteps(gi: number, gj: number, m: Massif): Generator<void, FootVillage[]> {
     const id = (gi + 32768) * 65536 + (gj + 32768);
     let vils = this.villageCache.get(id);
     if (vils) return vils;
@@ -5249,8 +5509,11 @@ export class Discoveries {
         if (city && Math.hypot(city.cx - x, city.cz - z) < city.radius + VILLAGE_CITY_CLEAR) return false;
         return !this.cellClaimed(x, z, 70);
       };
-      vils = footVillages(this.world as DesertWorld, m, hash4(gi, gj, this.world.seed | 0, 53), free);
+      vils = yield* footVillagesJob(this.world as DesertWorld, m, hash4(gi, gj, this.world.seed | 0, 53), free);
     }
+    // (unless they were worked out meanwhile, when those stand)
+    const had = this.villageCache.get(id);
+    if (had) return had;
     this.villageCache.set(id, vils);
     return vils;
   }
@@ -5292,8 +5555,8 @@ export class Discoveries {
       const v = lay.villages[vi];
       const ctx = new Ctx(this.world, v.x, v.z, this.world.height(v.x, v.z), mulberry32(seed ^ (0x77 + vi * 131)), 0);
       ctx.stone.salt = (vi * 53 + 9) & 1023;
-      buildSnowVillage(ctx, lay, vi);
-      this.finishSite(FROST_KEY - pick, 'snow-village', v.x, v.z, ctx.baseY, ctx);
+      const build = buildSnowVillage(ctx, lay, vi);
+      this.finishSite(FROST_KEY - pick, 'snow-village', v.x, v.z, ctx.baseY, ctx, undefined, build);
       return true;
     }
     const i0 = pick * FROST_CHUNK;
@@ -5301,8 +5564,8 @@ export class Discoveries {
     const mid = lay.way[Math.min(lay.way.length - 1, i0 + (FROST_CHUNK >> 1))];
     const ctx = new Ctx(this.world, mid.x, mid.z, this.world.height(mid.x, mid.z), mulberry32(seed ^ (0x1f3 + pick * 977)), 0);
     ctx.stone.salt = (pick * 29 + 3) & 1023;
-    buildFrostWay(ctx, lay, i0, i1);
-    this.finishSite(FROST_KEY - pick, 'frostway', mid.x, mid.z, ctx.baseY, ctx);
+    const build = buildFrostWay(ctx, lay, i0, i1);
+    this.finishSite(FROST_KEY - pick, 'frostway', mid.x, mid.z, ctx.baseY, ctx, undefined, build);
     this.reached.add(FROST_KEY - pick); // a stretch of road is not a find: it never chimes
     return true;
   }
@@ -5335,9 +5598,10 @@ export class Discoveries {
    * The springs at a massif's foot: for each place a river runs into the mountain, the middle
    * of the lip its water pours from, the direction the notch runs back into the rock, and how
    * far back the notch goes. The terrain makes these from noise, so they are found by sweeping
-   * the mountain's foot for river water that is giving out. Done once per massif.
+   * the mountain's foot for river water that is giving out. Done once per massif. A job: it
+   * yields between columns of the sweep and between the springs it settles.
    */
-  private findSprings(m: Massif): Spring[] {
+  private *findSprings(m: Massif): Generator<void, Spring[]> {
     const out: Spring[] = [];
     const w = this.world;
     const s = this.bankSample;
@@ -5348,11 +5612,13 @@ export class Discoveries {
 
     // 1. Sweep the foot of the mountain for river water that is giving out.
     const R0 = m.r * 0.7;
-    const R1 = m.r * 1.15;
+    const R1 = m.r * SPRING_REACH;
     const G = 8;
     const hits: { x: number; z: number; n: number }[] = [];
+    let tried = 0;
     for (let x = m.x - R1; x <= m.x + R1; x += G) {
       for (let z = m.z - R1; z <= m.z + R1; z += G) {
+        if (++tried % 64 === 0) yield;
         const r = Math.hypot(x - m.x, z - m.z);
         if (r < R0 || r > R1 || this.riverAt(x, z) > 7) continue;
         const g = present(x, z);
@@ -5367,6 +5633,7 @@ export class Discoveries {
     }
 
     for (const h of hits) {
+      yield;
       // 2. Settle on the middle of the lip: on the river's centre line, where the river is
       // just at the strength the lip is cut at.
       let x = h.x / h.n;
@@ -5376,6 +5643,7 @@ export class Discoveries {
         let bx = x;
         let bz = z;
         for (let ox = -span; ox <= span; ox += step) {
+          yield;
           for (let oz = -span; oz <= span; oz += step) {
             const rd = this.riverAt(x + ox, z + oz);
             if (rd > 10) continue;
@@ -5591,6 +5859,12 @@ export class Discoveries {
 
   /** Let go of a built site that is not at `stage`, so the next scan builds it again as it is now. */
   private rebuild(key: number, stage: number): void {
+    // (one still being built was started at the stage it had then)
+    this.dropJobs((j) => {
+      if (j.key !== key) return false;
+      this.scanT = 0;
+      return true;
+    });
     for (let i = this.sites.length - 1; i >= 0; i--) {
       const s = this.sites[i];
       if (s.key !== key || s.stage === stage) continue;
@@ -5791,6 +6065,58 @@ export class Discoveries {
   }
 
   /**
+   * Works out, a little at a time, what eachMassifSite with the same arguments would otherwise
+   * work out at once: the springs and the villages of the massifs it would visit.
+   */
+  private *warmMassifSites(x: number, z: number, r: number, want: (kind: string) => boolean): Generator<void, void> {
+    const w = this.world as Partial<{ massif(gi: number, gj: number): Massif | null; cave(gi: number, gj: number): Cave | null }>;
+    if (!w.massif || !w.cave) return;
+    const gi0 = Math.floor((x - r) / CITY_CELL) - 1;
+    const gi1 = Math.floor((x + r) / CITY_CELL) + 1;
+    const gj0 = Math.floor((z - r) / CITY_CELL) - 1;
+    const gj1 = Math.floor((z + r) / CITY_CELL) + 1;
+    for (let gj = gj0; gj <= gj1; gj++) {
+      for (let gi = gi0; gi <= gi1; gi++) {
+        const m = w.massif(gi, gj);
+        if (!m) continue;
+        if (want('mountain-village') && Math.hypot(m.x - x, m.z - z) < r + m.r * VILLAGE_REACH) yield* this.villagesJob(gi, gj, m);
+        if (want('spring')) yield* this.springsJob(gi, gj, m);
+      }
+    }
+  }
+
+  /**
+   * villagesOf as a job: the dear part of placing a massif's villages is keeping them clear of
+   * the finds and caverns of the cells round the spots it tries (see cellClaimed), so those are
+   * worked out first, a step at a time.
+   */
+  private *villagesJob(gi: number, gj: number, m: Massif): Generator<void, FootVillage[]> {
+    const id = (gi + 32768) * 65536 + (gj + 32768);
+    const had = this.villageCache.get(id);
+    if (had) return had;
+    const spots = footSpots(m, hash4(gi, gj, this.world.seed | 0, 53));
+    const cells = new Set<number>();
+    for (let i = 0; i < spots.length; i += 2) {
+      const pcx = Math.floor(spots[i] / CELL);
+      const pcz = Math.floor(spots[i + 1] / CELL);
+      for (let dz = -1; dz <= 1; dz++) for (let dx = -1; dx <= 1; dx++) cells.add(cellKey(pcx + dx, pcz + dz));
+    }
+    for (const key of cells) {
+      const cx = Math.floor(key / 65536) - 32768;
+      const cz = (key % 65536) - 32768;
+      yield* this.innJob(cx, cz);
+      if (!this.cavernCache.has(key)) yield* this.cavernJob(cx, cz);
+    }
+    return yield* this.villagesSteps(gi, gj, m);
+  }
+
+  /** Works out the caravanserai of a cell with no find of its own (see innAt), as a job of one step. */
+  private *innJob(cx: number, cz: number): Generator<void, void> {
+    if (this.innCache.has(cellKey(cx, cz)) || hash4(cx, cz, this.world.seed | 0, 1) < SITE_P) return;
+    yield* this.innSteps(cx, cz);
+  }
+
+  /**
    * Calls `each` for every massif site (summit, cave mouth, villages, springs) of the massifs whose grid
    * cells could reach within r of (x, z), with the key it is built under. `want` leaves out
    * kinds the caller has no use for, so springs (the dear ones to work out) are only found when asked for.
@@ -5817,11 +6143,7 @@ export class Discoveries {
           if (cv) each(-(id * 16 + 2), 'cave', cv.x + cv.dx * TERRAIN.caveLen * 0.6, cv.z + cv.dz * TERRAIN.caveLen * 0.6);
         }
         if (want('spring')) {
-          let springs = this.springCache.get(id);
-          if (!springs) {
-            springs = this.findSprings(m);
-            this.springCache.set(id, springs);
-          }
+          const springs = this.springsOf(gi, gj, m);
           for (let k = 0; k < springs.length && k < 12; k++) each(-(id * 16 + 3 + k), 'spring', springs[k].x, springs[k].z);
         }
       }
@@ -5879,6 +6201,18 @@ export class Discoveries {
    * further ring can beat what is in hand.
    */
   nearestUnfound(x: number, z: number, found: ReadonlySet<string>, maxR: number): SiteRef | null {
+    return finish(this.unfoundJob(x, z, found, maxR, false));
+  }
+
+  /**
+   * nearestUnfound as a job, to be worked through on the frame budget (see Task in budget.ts):
+   * it yields before each piece of the world it has not worked out yet (a cell's find or cavern,
+   * a massif's springs or villages), so only new ground costs anything, a little at a time.
+   * `found` is read as it is when the job finishes; pass a copy if it may change meanwhile.
+   * (`warm` false skips working the massifs' villages out beforehand, a step at a time: only
+   * worth it when the job is spread over frames.)
+   */
+  *unfoundJob(x: number, z: number, found: ReadonlySet<string>, maxR: number, warm = true): Generator<void, SiteRef | null> {
     let bd = maxR;
     let bk = 0;
     let bkind = '';
@@ -5898,6 +6232,7 @@ export class Discoveries {
       have = true;
     };
     const want = (kind: string): boolean => isFindKind(kind) && !found.has(kind);
+    if (warm) yield* this.warmMassifSites(x, z, maxR, want);
     this.eachMassifSite(x, z, maxR, want, (key, kind, sx, sz) => take(key, kind, sx, sz, key));
     if (want('snow-village')) this.eachFrostVillage(x, z, (key, vx, vz) => take(key, 'snow-village', vx, vz, key));
     const pcx = Math.floor(x / CELL);
@@ -5912,10 +6247,11 @@ export class Discoveries {
           if (Math.max(Math.abs(dx), Math.abs(dz)) !== r) continue;
           const cx = pcx + dx;
           const cz = pcz + dz;
+          if (!this.placeCache.has(cellKey(cx, cz))) yield;
           const p = this.surfaceSite(cx, cz);
           if (p && want(p.kind)) take(p.key, p.kind, p.x, p.z, p.key);
           if (!wantCavern) continue;
-          const cs = this.cavernAt(cx, cz);
+          const cs = yield* this.cavernJob(cx, cz);
           if (cs) take(CAVERN_REF - cs.key, 'cavern', cs.cav.x + cs.cav.dx * cs.cav.spot, cs.cav.z + cs.cav.dz * cs.cav.spot, roofKey(cs));
         }
       }
@@ -6034,10 +6370,17 @@ export class Discoveries {
     const ctx = new Ctx(w, x, z, baseY, rng, dx === undefined || dz === undefined ? turn : Math.atan2(-dz, dx));
     ctx.stone.salt = (cx * 31 + cz * 17) & 1023;
     ctx.stage = this.staged.get(cellKey(cx, cz)) ?? 0;
-    let remake: (() => THREE.BufferGeometry | null) | undefined;
+    // the builder itself runs in the site's job, the dear ones a part at a time (see finishSite)
+    this.finishSite(cellKey(cx, cz), kind, x, z, baseY, ctx, undefined, this.siteBuilder(kind, ctx, onSalt));
+  }
+
+  /** The builder of a cell's find of `kind`, as a job. */
+  private *siteBuilder(kind: string, ctx: Ctx, onSalt: boolean): Generator<void, void> {
+    const x = ctx.x;
+    const z = ctx.z;
     switch (kind) {
       case 'ruins': buildRuins(ctx); break;
-      case 'oasis': buildOasis(ctx); break;
+      case 'oasis': yield* buildOasis(ctx); break;
       case 'grove': {
         // bearing to the water, and a test for the damp bank, both in the site's own frame
         let toWater = 0;
@@ -6056,56 +6399,179 @@ export class Discoveries {
           const rd = this.riverAt(x + ctx.lx, z + ctx.lz);
           return rd > TERRAIN.riverHalf + 2 && rd < TERRAIN.riverFloor + 6;
         };
-        buildGrove(ctx, onBank, toWater);
+        yield* buildGrove(ctx, onBank, toWater);
         break;
       }
       case 'arch': buildArch(ctx); break;
       case 'balancing-stones': buildBalancing(ctx); break;
       case 'standing-stones': buildStones(ctx, onSalt); break;
-      case 'bones': buildBones(ctx); break;
+      case 'bones': yield* buildBones(ctx); break;
       case 'lantern': buildLantern(ctx); break;
-      case 'hamlet': buildHamlet(ctx); break;
+      case 'hamlet': yield* buildHamlet(ctx); break;
       case 'watchtower': buildWatchtower(ctx); break;
       case 'sundial': buildSundial(ctx, onSalt); break;
       case 'temple': buildTemple(ctx); break;
       default:
         if (isSettlement(kind)) {
-          if (settlementModelsReady()) buildSettlement(kind, ctx, KIT);
+          if (settlementModelsReady()) yield* buildSettlementJob(kind, ctx, KIT);
           else {
             // Built of plain boxes while the modelled pieces load: keep the random numbers it drew,
             // so it can be built again, the same, once they have (watchSettlementModels).
+            const rng = ctx.rng;
             const draws: number[] = [];
             ctx.rng = () => {
               const r = rng();
               draws.push(r);
               return r;
             };
-            buildSettlement(kind, ctx, KIT);
+            yield* buildSettlementJob(kind, ctx, KIT);
             ctx.rng = rng;
-            const { yaw, stage } = ctx;
+            const { world: w, baseY, yaw, stage } = ctx;
             const salt = ctx.stone.salt;
-            remake = () => {
+            ctx.remake = function* (): Generator<void, THREE.BufferGeometry | null> {
               let i = 0;
               const again = new Ctx(w, x, z, baseY, () => draws[i++] ?? 0.5, yaw);
               again.stone.salt = salt;
               again.stage = stage;
-              buildSettlement(kind, again, KIT);
-              return again.stone.build();
+              yield* buildSettlementJob(kind, again, KIT);
+              return yield* again.stone.steps();
             };
           }
         } else buildShell(ctx);
         break;
     }
-    this.finishSite(cellKey(cx, cz), kind, x, z, baseY, ctx, remake);
   }
 
-  /** Turns what a builder made into meshes and records the site. */
-  private finishSite(key: number, kind: string, x: number, z: number, baseY: number, ctx: Ctx, remake?: () => THREE.BufferGeometry | null): void {
+  /**
+   * Turns what a builder made into meshes and records the site: at once while syncBuild is set,
+   * otherwise as a job that update() works through on the frame budget (until then the site
+   * counts as built, so it is not started again). reachR overrides how near counts as reaching it.
+   * `build`, if given, is the rest of the builder, as a job, to run first (the dear builders: roofs).
+   */
+  private finishSite(key: number, kind: string, x: number, z: number, baseY: number, ctx: Ctx, reachR?: number, build?: Job<void>): void {
+    const it = this.finishSteps(key, kind, x, z, baseY, ctx, reachR, build);
+    if (this.syncBuild) finish(it);
+    else this.jobs.push({ key, kind, x, z, it });
+  }
 
+  /** Drops the jobs `drop` picks, before they become sites (what they were building has changed). */
+  private dropJobs(drop: (j: SiteJob) => boolean): void {
+    for (let i = this.jobs.length - 1; i >= 0; i--) if (drop(this.jobs[i])) this.jobs.splice(i, 1);
+  }
+
+  /**
+   * Works through the jobs: any whose site the wanderer at (px, pz) is near enough to reach soon
+   * is finished now, whatever the budget; the rest, oldest first, for as long as the budget lasts.
+   */
+  private pumpJobs(px: number, pz: number): void {
+    for (let i = 0; i < this.jobs.length; i++) {
+      const j = this.jobs[i];
+      if (Math.hypot(j.x - px, j.z - pz) < MUST_R) {
+        finish(j.it);
+        this.jobs.splice(i--, 1);
+      }
+    }
+    while (this.jobs.length > 0 && frameBudget.run(this.jobs[0].it)) this.jobs.shift();
+  }
+
+  private warm: Job | null = null;
+  /** The cells (player's, lead's) the warm-up last found nothing left to do around. */
+  private warmIdle = '';
+
+  /**
+   * With what budget is left, works out ahead of need what the scans would otherwise work out
+   * all at once when they first want it: caverns, springs, villages. Deterministic and cached
+   * either way, so this only moves the work earlier; whoever needs a thing first still gets it at once.
+   */
+  private warmTick(px: number, pz: number, bx: number, bz: number): void {
+    if (!frameBudget.framed) return;
+    while (frameBudget.open) {
+      if (!this.warm) {
+        this.warm = this.nextWarm(px, pz, bx, bz);
+        if (!this.warm) return;
+      }
+      if (!frameBudget.run(this.warm)) return;
+      this.warm = null;
+    }
+  }
+
+  /** The nearest thing still to work out, as a job, or null. */
+  private nextWarm(px: number, pz: number, bx: number, bz: number): Job | null {
+    const pcx = Math.floor(px / CELL);
+    const pcz = Math.floor(pz / CELL);
+    const gi0 = Math.round(bx / CITY_CELL);
+    const gj0 = Math.round(bz / CITY_CELL);
+    const at = `${pcx},${pcz},${gi0},${gj0},${Math.floor(bx / CELL)},${Math.floor(bz / CELL)}`;
+    if (at === this.warmIdle) return null;
+    let bd = Infinity;
+    let job: Job | null = null;
+    // the inns of the cells the scan looks through round the lead, and a ring further
+    const lcx = Math.floor(bx / CELL);
+    const lcz = Math.floor(bz / CELL);
+    const span = Math.ceil(BUILD_R / CELL) + 1;
+    for (let dz = -span; dz <= span; dz++) {
+      for (let dx = -span; dx <= span; dx++) {
+        const cx = lcx + dx;
+        const cz = lcz + dz;
+        if (this.innCache.has(cellKey(cx, cz)) || hash4(cx, cz, this.world.seed | 0, 1) < SITE_P) continue;
+        const d = Math.hypot((cx + 0.5) * CELL - bx, (cz + 0.5) * CELL - bz);
+        if (d < bd) {
+          bd = d;
+          job = this.innJob(cx, cz);
+        }
+      }
+    }
+    if (job) return job;
+    for (let dz = -WARM_CELLS; dz <= WARM_CELLS; dz++) {
+      for (let dx = -WARM_CELLS; dx <= WARM_CELLS; dx++) {
+        const cx = pcx + dx;
+        const cz = pcz + dz;
+        if (this.cavernCache.has(cellKey(cx, cz))) continue;
+        const d = Math.hypot((cx + 0.5) * CELL - px, (cz + 0.5) * CELL - pz);
+        if (d < bd) {
+          bd = d;
+          job = this.cavernJob(cx, cz);
+        }
+      }
+    }
+    if (job) return job;
+    const w = this.world as Partial<{ massif(gi: number, gj: number): Massif | null }>;
+    if (w.massif) {
+      // (scanMassifs looks at the three by three round the lead; one further each way)
+      for (let gj = gj0 - 2; gj <= gj0 + 2; gj++) {
+        for (let gi = gi0 - 2; gi <= gi0 + 2; gi++) {
+          const m = w.massif(gi, gj);
+          if (!m) continue;
+          const id = (gi + 32768) * 65536 + (gj + 32768);
+          const d = Math.hypot(m.x - bx, m.z - bz);
+          if (!this.villageCache.has(id) && d < BUILD_R + m.r * VILLAGE_REACH + WARM_AHEAD && d < bd) {
+            bd = d;
+            job = this.villagesJob(gi, gj, m);
+          } else if (!this.springCache.has(id) && d < bd) {
+            bd = d;
+            job = this.springsJob(gi, gj, m);
+          }
+        }
+      }
+    }
+    if (!job) this.warmIdle = at;
+    return job;
+  }
+
+  /** Finishes every job now. */
+  finishAll(): void {
+    for (let j = this.jobs.shift(); j; j = this.jobs.shift()) finish(j.it);
+  }
+
+  /** The steps of finishSite: the stone written out a slice at a time, then everything else at once. */
+  private *finishSteps(key: number, kind: string, x: number, z: number, baseY: number, ctx: Ctx, reachR?: number, build?: Job<void>): Generator<void, void> {
+    if (build) {
+      while (!build.next().done) yield;
+    }
+    const sg = yield* ctx.stone.steps();
     const group = new THREE.Group();
     group.name = `site:${kind}`;
     group.position.set(ctx.x, baseY, ctx.z); // (x, z) is where the site counts as reached, which a cave puts inside it
-    const sg = ctx.stone.build();
     if (sg) group.add(new THREE.Mesh(sg, this.stoneMat));
     const rg = ctx.rock.build();
     if (rg) group.add(new THREE.Mesh(rg, this.rockMat));
@@ -6156,7 +6622,7 @@ export class Discoveries {
       z,
       kind,
       group,
-      reachR: Math.max(25, ctx.foot * 0.6 + 15),
+      reachR: reachR ?? Math.max(25, ctx.foot * 0.6 + 15),
       ox: ctx.x,
       oy: baseY,
       oz: ctx.z,
@@ -6165,10 +6631,12 @@ export class Discoveries {
       light: ctx.light ? new THREE.Vector4(ctx.x + ctx.light[0], baseY + ctx.light[1], ctx.z + ctx.light[2], ctx.light[3]) : undefined,
       relic,
       temple: ctx.temple ? templeMarks(ctx, baseY) : undefined,
-      remake,
+      remake: ctx.remake,
       folk: ctx.folk?.map((f) => ({ x: ctx.x + f.u, z: ctx.z + f.v, yaw: Math.atan2(f.fu - f.u, f.fv - f.v), sit: f.sit, role: f.role, small: f.small, coat: f.coat, y: f.y === undefined ? undefined : baseY + f.y })),
       stage: ctx.stage,
     });
+    // (the modelled pieces may have come while it was being built of boxes)
+    if (ctx.remake && settlementModelsReady()) this.remakeSite(this.sites[this.sites.length - 1]);
   }
 
   /** Soft additive discs that always face the camera, one per (x, y, z, size) in `list`. */
@@ -6212,17 +6680,37 @@ export class Discoveries {
     if (settlementModelsReady()) return;
     void loadSettlementModels().then((ok) => {
       if (!ok) return;
-      for (const s of this.sites) {
-        const remake = s.remake;
-        if (!remake) continue;
-        s.remake = undefined;
-        const mesh = s.group.children.find((o): o is THREE.Mesh => o instanceof THREE.Mesh && o.material === this.stoneMat);
-        const g = remake();
-        if (!mesh || !g) continue;
-        mesh.geometry.dispose();
-        mesh.geometry = g;
-      }
+      for (const s of this.sites) this.remakeSite(s);
     });
+  }
+
+  /** Settlements being drawn again with the modelled pieces, a step at a time on the frame budget. */
+  private readonly remakes: { site: Site; task: Task<THREE.BufferGeometry | null> }[] = [];
+
+  /** Has a settlement built of boxes drawn again with the modelled pieces (see watchSettlementModels). */
+  private remakeSite(s: Site): void {
+    const remake = s.remake;
+    if (!remake) return;
+    s.remake = undefined;
+    this.remakes.push({ site: s, task: new Task(remake()) });
+  }
+
+  /** Works through the remakes on what is left of the frame budget (they change only how a place looks). */
+  private pumpRemakes(): void {
+    while (this.remakes.length > 0) {
+      const r = this.remakes[0];
+      // (one let go of meanwhile is not finished)
+      if (this.sites.includes(r.site)) {
+        if (!r.task.run(frameBudget)) return;
+        const g = r.task.value;
+        const mesh = r.site.group.children.find((o): o is THREE.Mesh => o instanceof THREE.Mesh && o.material === this.stoneMat);
+        if (mesh && g) {
+          mesh.geometry.dispose();
+          mesh.geometry = g;
+        }
+      }
+      this.remakes.shift();
+    }
   }
 
   private disposeSite(s: Site): void {
@@ -6242,6 +6730,9 @@ export class Discoveries {
   dispose(): void {
     for (const s of this.sites) this.disposeSite(s);
     this.sites.length = 0;
+    this.jobs.length = 0;
+    this.remakes.length = 0;
+    this.warm = null;
     while (this.deeps.length > 0) this.dropDeep(this.deeps[0]);
     this.stoneMat.dispose();
     this.rockMat.dispose();

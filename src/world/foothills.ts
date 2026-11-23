@@ -2,6 +2,7 @@
 // sand begins to climb. Where they stand is decided from the world seed alone, so a village is
 // always where it was; what they look like is built by the discoveries (buildMountainVillage).
 import type { Massif } from './surface';
+import { finish } from './budget';
 
 export interface FootVillage {
   x: number;
@@ -41,6 +42,26 @@ const TAU = Math.PI * 2;
  * world (cities, finds, caves). A sector with no ground gentle enough is left empty.
  */
 export function footVillages(world: FootWorld, m: Massif, roll: number, free: (x: number, z: number) => boolean): FootVillage[] {
+  return finish(footVillagesJob(world, m, roll, free));
+}
+
+/** Every spot footVillages may try for a massif's villages (before it asks the ground): x, z pairs. */
+export function footSpots(m: Massif, roll: number): number[] {
+  const out: number[] = [];
+  for (let k = 0; k < FOOT_VILLAGES; k++) {
+    const a0 = (roll + k / FOOT_VILLAGES) * TAU;
+    for (const da of SWING) {
+      for (const fr of RING) {
+        const a = a0 + da;
+        out.push(m.x + Math.cos(a) * m.r * fr, m.z + Math.sin(a) * m.r * fr);
+      }
+    }
+  }
+  return out;
+}
+
+/** footVillages as a job (see world/budget.ts): it yields between the bearings it tries. */
+export function* footVillagesJob(world: FootWorld, m: Massif, roll: number, free: (x: number, z: number) => boolean): Generator<void, FootVillage[]> {
   const out: FootVillage[] = [];
   const H = (x: number, z: number): number => world.height(x, z);
   for (let k = 0; k < FOOT_VILLAGES; k++) {
@@ -48,6 +69,7 @@ export function footVillages(world: FootWorld, m: Massif, roll: number, free: (x
     let best = Infinity;
     let pick: FootVillage | null = null;
     for (const da of SWING) {
+      yield;
       for (const fr of RING) {
         const a = a0 + da;
         const x = m.x + Math.cos(a) * m.r * fr;
