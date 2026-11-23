@@ -28,6 +28,7 @@ import { UI } from '../ui/ui';
 import { TouchControls, type TouchMode } from './touch';
 import { installTouchGuards } from './guards';
 import { AutoQuality, QUALITY, applyQuality, defaultTier } from './quality';
+import { createPerfHud } from './perfHud';
 import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
 import { DEFAULTS, type Params } from '../render/types';
@@ -284,6 +285,18 @@ function start() {
       cities.setFocus(at.x, at.z);
     }
   }
+  // (testing) ?cavern opens the nearest cavern, as ?deep= does, but starts you 1 km short of it facing it,
+  // so walking forward brings its roof into being. With ?x=&z= it is the nearest to that point.
+  if (import.meta.env.DEV && qs.has('cavern')) {
+    const at = discoveries.devDeep(player.state.pos.x, player.state.pos.z, 0);
+    if (at) {
+      const x = at.x - Math.sin(at.facing) * 1000;
+      const z = at.z - Math.cos(at.facing) * 1000;
+      player.place(x, z);
+      player.facing = Math.atan2(at.x - x, at.z - z);
+      cities.setFocus(x, z);
+    }
+  }
   const splash = new Splash(u);
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, cities.routes, u);
@@ -469,6 +482,7 @@ function start() {
     ui.setQuality(tier);
     applyTier();
   });
+  const perf = createPerfHud(renderer, auto);
   function applyTier() {
     applyQuality(QUALITY[auto.tier], { uniforms: u, clipmap, bake, dust });
     people.setDensity(auto.tier === 'mobile' ? 0.35 : auto.tier === 'low' ? 0.7 : 1);
@@ -582,7 +596,7 @@ function start() {
       resetting = true;
       clearProgress();
       const url = new URL(window.location.href);
-      for (const k of ['x', 'z', 'miner', 'reset', 'tools', 'deep']) url.searchParams.delete(k);
+      for (const k of ['x', 'z', 'miner', 'reset', 'tools', 'deep', 'cavern']) url.searchParams.delete(k);
       window.location.replace(url.toString());
     },
     },
@@ -3134,7 +3148,9 @@ function start() {
     if (still && stillDrawn && !frozen) return;
     stillDrawn = resting;
     update(still || ui.state === 'photo' ? 0 : dt);
+    perf?.begin();
     render();
+    perf?.end(now);
     if (ui.state === 'playing' && !mapOpen) auto.frame(real);
   }
   requestAnimationFrame(tick);
