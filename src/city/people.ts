@@ -19,6 +19,7 @@
 import * as THREE from 'three';
 import type { FrameState, Uniforms } from '../game/contract';
 import { CITY_SHADOW_GLSL } from './cityGlsl';
+import { detailTexture, loadModel, modelGeometry } from '../render/art';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import type { CityKind, CityPlan, CitySite, Spot, SpotKind } from './types';
 import { CHOSEN, heapGeometry, lampGeometry, pickGeometry, solidMaterial } from '../game/equipment';
@@ -793,6 +794,7 @@ varying float vMul;
 varying float vSun;
 varying vec3 vTint2;
 varying vec3 vInfo;    // material, height along the robe, banded
+varying vec3 vL;       // the figure's own rest-pose metres, for the weave
 ${CITY_SHADOW_GLSL}
 // The robe's outline for each silhouette: radius, height, forward offset.
 vec3 robe(float v, float shape) {
@@ -806,7 +808,7 @@ void main() {
   float shape = floor(iE.w + 0.01);
   bool mine = aKind.y < -1.5 ? abs(shape - 1.0) > 0.5 : (aKind.y < -0.5 || abs(aKind.y - shape) < 0.5);
   if (iD.x < 0.004 || !mine || (aPart.x > 3.5 && iB.z > 0.3)) {
-    vW = vec3(0.0); vTint = vec3(0.0); vMul = 0.0; vSun = 0.0; vTint2 = vec3(0.0); vInfo = vec3(0.0);
+    vW = vec3(0.0); vTint = vec3(0.0); vMul = 0.0; vSun = 0.0; vTint2 = vec3(0.0); vInfo = vec3(0.0); vL = vec3(0.0);
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
     return;
   }
@@ -816,6 +818,7 @@ void main() {
     vec3 o = robe(aKind.z, shape);
     p = vec3(position.x * o.x, o.y, position.z * o.x * 0.86 + o.z);
   }
+  vL = p;
   float t = uTime + iC.w * 61.0;
   float ph = iB.x * 6.2831853;
   float amp = clamp(iB.y / 1.3, 0.0, 1.4);
@@ -909,6 +912,7 @@ uniform vec3 uFigLit;
 uniform vec3 uFogCol;
 uniform float uFog;
 uniform float uNight;
+uniform sampler2D uDetail;
 varying vec3 vW;
 varying vec3 vTint;
 varying float vFade;
@@ -916,6 +920,7 @@ varying float vMul;
 varying float vSun;
 varying vec3 vTint2;
 varying vec3 vInfo;
+varying vec3 vL;
 ${STYLE_GLSL}
 void main() {
   if (vFade < 0.995) {
@@ -951,6 +956,16 @@ void main() {
   } else if (vInfo.x > 0.5) {
     // the face: flat white, tinted by the light and dimmed at night
     col = vec3(0.97, 0.95, 0.9) * mix(vec3(1.0), uSunCol, 0.3) * (1.0 - 0.42 * uNight) * mix(0.7, 1.0, l);
+  } else {
+    // a faint weave in the cloth (detail map R, mid-grey = none), projected from the figure's own
+    // front and side so it moves with them, gone by ten metres
+    float wNear = 1.0 - smoothstep(6.0, 10.0, dist);
+    if (wNear > 0.0) {
+      vec3 a = abs(cross(dFdx(vL), dFdy(vL)));
+      float wz = a.z / max(a.x + a.z, 1e-6);
+      float wv = mix(texture2D(uDetail, vL.zy * 1.5).r, texture2D(uDetail, vL.xy * 1.5).r, wz);
+      col *= 1.0 + (wv - 0.5) * 0.16 * wNear;
+    }
   }
   float rim = pow(1.0 - max(dot(n, V), 0.0), 3.0) * smoothstep(-0.2, 0.3, ndl) * vSun;
   col += uSunCol * rim * 0.1 * (1.0 - 0.5 * uNight);
@@ -1002,8 +1017,8 @@ void main() {
 /**
  * One figure that holds every silhouette. The robe is a unit tube that the vertex shader
  * shapes per person; hoods, headpiece, eye and cane are each tagged with the silhouette they
- * belong to and collapsed for everyone else. Feet at 0, facing +z. About 350 triangles are
- * drawn for any one person.
+ * belong to and collapsed for everyone else. Feet at 0, facing +z. It is drawn split by
+ * silhouette (shapeFigure), so each person runs only their own silhouette's triangles.
  */
 function figureGeometry(): THREE.InstancedBufferGeometry {
   const N = 10;
@@ -1149,6 +1164,72 @@ function figureGeometry(): THREE.InstancedBufferGeometry {
   return g;
 }
 
+/**
+ * The modelled figure (tools/blender/townsfolk.py writes public/art/townsfolk.glb), swapped into
+ * these geometries in place of figureGeometry()'s when it arrives. Same attributes, same meaning;
+ * the instanced attributes are left as they are. Without the file the built figure stays.
+ */
+function modelledFigure(targets: FigureTarget[]): void {
+  loadModel('townsfolk.glb').then((gltf) => {
+    const m = gltf ? modelGeometry(gltf, 'townsfolk') : null;
+    const index = m?.getIndex();
+    const pos = m?.getAttribute('position');
+    const part = m?.getAttribute('_apart');
+    const kind = m?.getAttribute('_akind');
+    if (!index || !pos || !part || !kind || part.itemSize !== 2 || kind.itemSize !== 3) return;
+    shapeFigure(targets, pos, part, kind, index);
+  });
+}
+
+/** A geometry that draws one silhouette (0..SHAPES-1) of the figure. */
+type FigureTarget = [shape: number, geo: THREE.InstancedBufferGeometry];
+type AnyAttr = THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
+
+/**
+ * Points each target at the figure's vertices with an index of only the triangles its silhouette
+ * draws: those with any vertex the vertex shader keeps for that silhouette (aKind.y: -1 every
+ * silhouette, -2 all but 1, otherwise that one). Vertices no triangle of the index uses are never
+ * run, so a person costs their own silhouette's triangles rather than every silhouette's. The
+ * shader still collapses what isn't theirs, so what is drawn is the same as from the whole figure.
+ */
+function shapeFigure(targets: FigureTarget[], pos: AnyAttr, part: AnyAttr, kind: AnyAttr, index: THREE.BufferAttribute): void {
+  const all = (1 << SHAPES) - 1;
+  const mask = new Uint8Array(kind.count);
+  for (let v = 0; v < kind.count; v++) {
+    const y = kind.getY(v);
+    mask[v] = y < -1.5 ? all & ~2 : y < -0.5 ? all : 1 << Math.max(0, Math.round(y));
+  }
+  const lists: number[][] = Array.from({ length: SHAPES }, () => []);
+  for (let k = 0; k + 2 < index.count; k += 3) {
+    const a = index.getX(k);
+    const b = index.getX(k + 1);
+    const c = index.getX(k + 2);
+    const m = mask[a] | mask[b] | mask[c];
+    for (let s = 0; s < SHAPES; s++) if (m & (1 << s)) lists[s].push(a, b, c);
+  }
+  const big = pos.count > 65535;
+  for (const [s, g] of targets) {
+    g.setAttribute('position', pos);
+    g.setAttribute('aPart', part);
+    g.setAttribute('aKind', kind);
+    g.setIndex(new THREE.BufferAttribute(big ? new Uint32Array(lists[s]) : new Uint16Array(lists[s]), 1));
+  }
+}
+
+/** Per-silhouette geometries of the figure: the built one now, the modelled one when it arrives. */
+function figureTargets(shapes: number[]): THREE.InstancedBufferGeometry[] {
+  const base = figureGeometry();
+  const targets: FigureTarget[] = shapes.map((s) => [s, new THREE.InstancedBufferGeometry()]);
+  shapeFigure(targets, base.getAttribute('position'), base.getAttribute('aPart'), base.getAttribute('aKind'), base.getIndex() as THREE.BufferAttribute);
+  modelledFigure(targets);
+  return targets.map((t) => t[1]);
+}
+
+/** Floats per instance in a silhouette's own buffer: iA, iB, iD (as DYN), then iC and iE. */
+const FIG = DYN + 8;
+/** Every miner wears the same silhouette (MINER_HEM's w). */
+const MINER_SHAPE = Math.floor(MINER_HEM[3] + 0.01);
+
 /** One person on the dev review sheet. */
 /** A townsperson, as the talking needs them (see People.nearestPerson). */
 export interface FolkOut {
@@ -1173,7 +1254,7 @@ export interface SheetPerson {
 }
 
 /** Dev only: a static row of townsfolk dressed for one kind of city, drawn with the crowd's own shader. */
-export function townsfolkSheet(uniforms: Uniforms, kind: CityKind, list: SheetPerson[]): THREE.Mesh {
+export function townsfolkSheet(uniforms: Uniforms, kind: CityKind, list: SheetPerson[]): THREE.Group {
   const n = list.length;
   const dyn = new Float32Array(n * DYN);
   const a = new Float32Array(n * 4);
@@ -1193,26 +1274,52 @@ export function townsfolkSheet(uniforms: Uniforms, kind: CityKind, list: SheetPe
     b[i * 4 + 3] = (p.child ? 0 : p.shape) + (banded ? 0.5 : 0);
     dyn.set([p.x, p.z, p.facing, p.child ? 0.6 : 1, p.walk ? 0.2 : 0, p.walk ? 1.2 : 0, 0, 0, 1, 0, 0, 0], i * DYN);
   });
-  const buf = new THREE.InstancedInterleavedBuffer(dyn, DYN, 1);
-  const g = figureGeometry();
-  g.setAttribute('iA', new THREE.InterleavedBufferAttribute(buf, 4, 0));
-  g.setAttribute('iB', new THREE.InterleavedBufferAttribute(buf, 4, 4));
-  g.setAttribute('iD', new THREE.InterleavedBufferAttribute(buf, 4, 8));
-  g.setAttribute('iC', new THREE.InstancedBufferAttribute(a, 4));
-  g.setAttribute('iE', new THREE.InstancedBufferAttribute(b, 4));
-  g.instanceCount = n;
+  // one draw per silhouette in use, each with only its own people
+  const used: number[] = [];
+  const members: number[][] = Array.from({ length: SHAPES }, () => []);
+  for (let i = 0; i < n; i++) members[Math.floor(b[i * 4 + 3] + 0.01)]?.push(i);
+  for (let s = 0; s < SHAPES; s++) if (members[s].length) used.push(s);
+  const geos = figureTargets(used);
+  used.forEach((s, j) => {
+    const ids = members[s];
+    const d = new Float32Array(ids.length * DYN);
+    const ca = new Float32Array(ids.length * 4);
+    const cb = new Float32Array(ids.length * 4);
+    ids.forEach((i, k) => {
+      d.set(dyn.subarray(i * DYN, (i + 1) * DYN), k * DYN);
+      ca.set(a.subarray(i * 4, i * 4 + 4), k * 4);
+      cb.set(b.subarray(i * 4, i * 4 + 4), k * 4);
+    });
+    const buf = new THREE.InstancedInterleavedBuffer(d, DYN, 1);
+    const g = geos[j];
+    g.setAttribute('iA', new THREE.InterleavedBufferAttribute(buf, 4, 0));
+    g.setAttribute('iB', new THREE.InterleavedBufferAttribute(buf, 4, 4));
+    g.setAttribute('iD', new THREE.InterleavedBufferAttribute(buf, 4, 8));
+    g.setAttribute('iC', new THREE.InstancedBufferAttribute(ca, 4));
+    g.setAttribute('iE', new THREE.InstancedBufferAttribute(cb, 4));
+    g.instanceCount = ids.length;
+  });
   const blank = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
   blank.needsUpdate = true;
-  const mesh = new THREE.Mesh(
-    g,
-    new THREE.ShaderMaterial({
-      uniforms: { uCityMap: { value: blank }, uCityRect: { value: new THREE.Vector4() }, uCityGround: { value: 0 }, uWindL: { value: new THREE.Vector2() }, ...uniforms },
-      vertexShader: figureVert,
-      fragmentShader: figureFrag,
-    }),
-  );
-  mesh.frustumCulled = false;
-  return mesh;
+  const group = new THREE.Group();
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uCityMap: { value: blank },
+      uCityRect: { value: new THREE.Vector4() },
+      uCityGround: { value: 0 },
+      uWindL: { value: new THREE.Vector2() },
+      uDetail: { value: detailTexture() },
+      ...uniforms,
+    },
+    vertexShader: figureVert,
+    fragmentShader: figureFrag,
+  });
+  for (const g of geos) {
+    const mesh = new THREE.Mesh(g, mat);
+    mesh.frustumCulled = false;
+    group.add(mesh);
+  }
+  return group;
 }
 
 // ------------------------------------------------------------------ the crowd
@@ -1223,14 +1330,18 @@ export class People {
   private readonly u: Uniforms;
   private readonly figMat: THREE.ShaderMaterial;
   private readonly blobMat: THREE.ShaderMaterial;
-  private readonly figGeo: THREE.InstancedBufferGeometry;
+  /**
+   * One draw per silhouette, each with its own instance buffer (FIG floats a person: iA, iB, iD,
+   * iC, iE), packed every frame from the pool's own arrays (dynA, statA, statB) with only the
+   * people wearing it. The pool's slots stay as they are; only the drawing is split.
+   */
+  private readonly figs: { arr: Float32Array; buf: THREE.InstancedInterleavedBuffer; geo: THREE.InstancedBufferGeometry; mesh: THREE.Mesh }[] = [];
+  private readonly figN = new Int32Array(SHAPES);
   private readonly blobGeo: THREE.InstancedBufferGeometry;
   private readonly dyn: THREE.InstancedInterleavedBuffer;
   private readonly dynA: Float32Array;
-  private readonly stat: THREE.InstancedBufferAttribute;
   private readonly statA: Float32Array;
   private readonly statB: Float32Array;
-  private readonly stat2: THREE.InstancedBufferAttribute;
   private readonly blank: THREE.DataTexture;
   private readonly fallback: Uniforms;
   private readonly windL = new THREE.Vector2();
@@ -1274,8 +1385,6 @@ export class People {
   private shelter = 0; // 0..1 how far the town has gone indoors for a storm
   private target = 0;
   private activeN = 0;
-  private dirtyLo = MAXP;
-  private dirtyHi = -1;
 
   // frame state
   private plx = 0;
@@ -1375,31 +1484,36 @@ export class People {
       ...this.fallback,
       ...uniforms,
       uWindL: { value: this.windL },
+      uDetail: { value: detailTexture() },
     });
 
     this.dynA = new Float32Array(MAXP * DYN);
     this.dyn = new THREE.InstancedInterleavedBuffer(this.dynA, DYN, 1);
     this.dyn.setUsage(THREE.DynamicDrawUsage);
     this.statA = new Float32Array(MAXP * 4);
-    this.stat = new THREE.InstancedBufferAttribute(this.statA, 4);
-    this.stat.setUsage(THREE.DynamicDrawUsage);
     this.statB = new Float32Array(MAXP * 4);
-    this.stat2 = new THREE.InstancedBufferAttribute(this.statB, 4);
-    this.stat2.setUsage(THREE.DynamicDrawUsage);
     const iA = new THREE.InterleavedBufferAttribute(this.dyn, 4, 0);
     const iB = new THREE.InterleavedBufferAttribute(this.dyn, 4, 4);
     const iD = new THREE.InterleavedBufferAttribute(this.dyn, 4, 8);
 
-    this.figGeo = figureGeometry();
-    this.figGeo.setAttribute('iA', iA);
-    this.figGeo.setAttribute('iB', iB);
-    this.figGeo.setAttribute('iC', this.stat);
-    this.figGeo.setAttribute('iE', this.stat2);
-    this.figGeo.setAttribute('iD', iD);
-    this.figGeo.instanceCount = 0;
     this.figMat = new THREE.ShaderMaterial({ uniforms: own(), vertexShader: figureVert, fragmentShader: figureFrag });
-    const fig = new THREE.Mesh(this.figGeo, this.figMat);
-    fig.frustumCulled = false;
+    const crowdGeos = figureTargets(Array.from({ length: SHAPES }, (_, s) => s));
+    for (const geo of crowdGeos) {
+      const arr = new Float32Array(MAXP * FIG);
+      const buf = new THREE.InstancedInterleavedBuffer(arr, FIG, 1);
+      buf.setUsage(THREE.DynamicDrawUsage);
+      geo.setAttribute('iA', new THREE.InterleavedBufferAttribute(buf, 4, 0));
+      geo.setAttribute('iB', new THREE.InterleavedBufferAttribute(buf, 4, 4));
+      geo.setAttribute('iD', new THREE.InterleavedBufferAttribute(buf, 4, 8));
+      geo.setAttribute('iC', new THREE.InterleavedBufferAttribute(buf, 4, DYN));
+      geo.setAttribute('iE', new THREE.InterleavedBufferAttribute(buf, 4, DYN + 4));
+      geo.instanceCount = 0;
+      const mesh = new THREE.Mesh(geo, this.figMat);
+      mesh.frustumCulled = false;
+      mesh.visible = false;
+      this.figs.push({ arr, buf, geo, mesh });
+      this.group.add(mesh);
+    }
 
     this.blobGeo = new THREE.InstancedBufferGeometry();
     this.blobGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, 0, -1, 1, 0, -1, 1, 0, 1, -1, 0, 1], 3));
@@ -1426,7 +1540,7 @@ export class People {
     const blob = new THREE.Mesh(this.blobGeo, this.blobMat);
     blob.frustumCulled = false;
     blob.renderOrder = 1;
-    this.group.add(fig, blob);
+    this.group.add(blob);
     this.group.visible = false;
 
     // the miners: the same figure and shadow, one instance each, with buffers of their own
@@ -1435,7 +1549,7 @@ export class People {
     const mA = new THREE.InterleavedBufferAttribute(this.minerDyn, 4, 0);
     const mB = new THREE.InterleavedBufferAttribute(this.minerDyn, 4, 4);
     const mD = new THREE.InterleavedBufferAttribute(this.minerDyn, 4, 8);
-    this.minerGeo = figureGeometry();
+    this.minerGeo = figureTargets([MINER_SHAPE])[0];
     this.minerGeo.setAttribute('iA', mA);
     this.minerGeo.setAttribute('iB', mB);
     this.minerGeo.setAttribute('iD', mD);
@@ -1651,6 +1765,11 @@ export class People {
     for (let i = 0; i < this.hi; i++) this.alive[i] = 0;
     this.dynA.fill(0);
     this.hi = 0;
+    // the silhouettes' buffers still hold the last town's people until the next update packs them
+    for (const fg of this.figs) {
+      fg.geo.instanceCount = 0;
+      fg.mesh.visible = false;
+    }
     this.activeN = 0;
     this.spawnAcc = 0;
     this.leaveAcc = 0;
@@ -1687,7 +1806,8 @@ export class People {
   }
 
   dispose() {
-    this.figGeo.dispose();
+    for (const fg of this.figs) fg.geo.dispose();
+    this.minerGeo.dispose();
     this.blobGeo.dispose();
     this.figMat.dispose();
     this.blobMat.dispose();
@@ -2305,8 +2425,6 @@ export class People {
     if (shape === 2) this.pref[i] *= 0.7;
     this.statB[o + 3] = shape + (banded ? 0.5 : 0);
     this.statA[o + 3] = this.seed[i];
-    if (i < this.dirtyLo) this.dirtyLo = i;
-    if (i > this.dirtyHi) this.dirtyHi = i;
     if (i >= this.hi) this.hi = i + 1;
 
     const dsel = this.chooseDest(i, c);
@@ -2543,18 +2661,43 @@ export class People {
     this.dyn.clearUpdateRanges();
     if (this.hi > 0) this.dyn.addUpdateRange(0, this.hi * DYN);
     this.dyn.needsUpdate = true;
-    if (this.dirtyHi >= this.dirtyLo) {
-      this.stat.clearUpdateRanges();
-      this.stat.addUpdateRange(this.dirtyLo * 4, (this.dirtyHi - this.dirtyLo + 1) * 4);
-      this.stat.needsUpdate = true;
-      this.stat2.clearUpdateRanges();
-      this.stat2.addUpdateRange(this.dirtyLo * 4, (this.dirtyHi - this.dirtyLo + 1) * 4);
-      this.stat2.needsUpdate = true;
-      this.dirtyLo = MAXP;
-      this.dirtyHi = -1;
-    }
-    this.figGeo.instanceCount = this.hi;
+    this.packFigures();
     this.blobGeo.instanceCount = this.hi;
+  }
+
+  /**
+   * Each silhouette's draw gets the people wearing it, in slot order: everyone below hi that
+   * the figure shader would not collapse whole (faded out: iD.x under 0.004).
+   */
+  private packFigures() {
+    const n = this.figN;
+    n.fill(0);
+    const d = this.dynA;
+    for (let i = 0; i < this.hi; i++) {
+      const o = i * DYN;
+      if (d[o + 8] < 0.004) continue;
+      const s4 = i * 4;
+      const s = Math.floor(this.statB[s4 + 3] + 0.01);
+      const fg = this.figs[s];
+      if (!fg) continue;
+      const arr = fg.arr;
+      const q = n[s]++ * FIG;
+      for (let k = 0; k < DYN; k++) arr[q + k] = d[o + k];
+      for (let k = 0; k < 4; k++) {
+        arr[q + DYN + k] = this.statA[s4 + k];
+        arr[q + DYN + 4 + k] = this.statB[s4 + k];
+      }
+    }
+    for (let s = 0; s < this.figs.length; s++) {
+      const fg = this.figs[s];
+      fg.geo.instanceCount = n[s];
+      fg.mesh.visible = n[s] > 0;
+      if (n[s] > 0) {
+        fg.buf.clearUpdateRanges();
+        fg.buf.addUpdateRange(0, n[s] * FIG);
+        fg.buf.needsUpdate = true;
+      }
+    }
   }
 
   private step(i: number, c: CityData, dt: number) {

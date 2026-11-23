@@ -9,6 +9,7 @@ import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms } from '../game/contract';
 import type { DesertWorld } from './surface';
 import { STYLE_GLSL } from '../render/styleGlsl';
+import { loadModel, modelGeometry } from '../render/art';
 import { Solids, type SolidKind } from './solids';
 import { type Lead, leadPoint } from './lead';
 import { STEP } from '../game/player';
@@ -234,6 +235,46 @@ function triangles(g: THREE.BufferGeometry): Float32Array {
 }
 /** Unit rock bodies to weather: coarse for the small, finer for the big. */
 const ICO = [triangles(new THREE.IcosahedronGeometry(1, 1)), triangles(new THREE.IcosahedronGeometry(1, 2))];
+
+/**
+ * The modelled rocks (tools/blender/props.py writes public/art/props.glb): bedded, weathered
+ * bodies in the same unit space as the icospheres, packed (x, y, z, shade) per vertex, three to a
+ * triangle. Null until they have loaded, and for good without the file; rock() then weathers the
+ * icospheres itself.
+ */
+let MODEL_ROCKS: { small: Float32Array[]; big: Float32Array[] } | null = null;
+let rockLoad: Promise<boolean> | null = null;
+
+function loadRocks(): Promise<boolean> {
+  if (!rockLoad) {
+    rockLoad = loadModel('props.glb').then((gltf) => {
+      if (!gltf) return false;
+      const get = (name: string): Float32Array | null => {
+        const g = modelGeometry(gltf, name);
+        const shade = g?.getAttribute('_shade');
+        if (!g || !shade) return null;
+        const pos = g.getAttribute('position');
+        const idx = g.getIndex();
+        const n = idx ? idx.count : pos.count;
+        const out = new Float32Array(n * 4);
+        for (let i = 0; i < n; i++) {
+          const v = idx ? idx.getX(i) : i;
+          out[i * 4] = pos.getX(v);
+          out[i * 4 + 1] = pos.getY(v);
+          out[i * 4 + 2] = pos.getZ(v);
+          out[i * 4 + 3] = shade.getX(v);
+        }
+        return out;
+      };
+      const big = [0, 1, 2, 3].map((i) => get(`Boulder${i}`)).filter((a): a is Float32Array => !!a);
+      const small = [0, 1, 2].map((i) => get(`Stone${i}`)).filter((a): a is Float32Array => !!a);
+      if (big.length === 0 || small.length === 0) return false;
+      MODEL_ROCKS = { small, big };
+      return true;
+    });
+  }
+  return rockLoad;
+}
 
 const _m = new THREE.Matrix4();
 const _mi = new THREE.Matrix4();
@@ -499,7 +540,7 @@ class Build {
 
 // ------------------------------------------------------------------ rock
 
-const _rock = new Float64Array(ICO[1].length / 3 * 4);
+const _rock = new Float64Array(Math.max(ICO[1].length / 3, 1024) * 4);
 const _ext = [0, 0, 0];
 
 /**
@@ -508,8 +549,13 @@ const _ext = [0, 0, 0];
  * its own unit space (x, top, z) in _ext.
  */
 function rock(b: Build, x: number, y: number, z: number, sx: number, sy: number, sz: number, yaw: number, pitch: number, roll: number, rng: () => number, slab = false): void {
-  const src = ICO[Math.max(sx, sy, sz) > 1.6 ? 1 : 0];
+  const large = Math.max(sx, sy, sz) > 1.6;
   const salt = Math.floor(rng() * 65536);
+  // the modelled bodies come weathered and bedded already; the cuts below still face them
+  const set = MODEL_ROCKS ? (large ? MODEL_ROCKS.big : MODEL_ROCKS.small) : null;
+  const model = set ? set[salt % set.length] : null;
+  const src = model ?? ICO[large ? 1 : 0];
+  const stride = model ? 4 : 3;
   const planes: number[] = [];
   const nside = 2 + Math.floor(rng() * 3);
   for (let k = 0; k < nside; k++) {
@@ -524,7 +570,7 @@ function rock(b: Build, x: number, y: number, z: number, sx: number, sy: number,
     planes.push(tx / l, 1 / l, tz / l, 0.62 + rng() * 0.2);
   }
   if (slab) planes.push(0, 0, 1, 0.68, 0, 0, -1, 0.68);
-  const n = src.length / 3;
+  const n = src.length / stride;
   const p = _rock;
   let ex = 0;
   let ey = 0;
@@ -532,10 +578,10 @@ function rock(b: Build, x: number, y: number, z: number, sx: number, sy: number,
   _q.setFromEuler(_e.set(pitch, yaw, roll, 'YXZ'));
   _m.compose(_p.set(x, y, z), _q, _s.set(sx, sy, sz));
   for (let i = 0; i < n; i++) {
-    const vx = src[i * 3];
-    const vy = src[i * 3 + 1];
-    const vz = src[i * 3 + 2];
-    const k = 1 + 0.34 * (noise3(vx * 1.6, vy * 1.6, vz * 1.6, salt) - 0.5) + 0.12 * (noise3(vx * 4.1, vy * 4.1, vz * 4.1, salt + 1) - 0.5);
+    const vx = src[i * stride];
+    const vy = src[i * stride + 1];
+    const vz = src[i * stride + 2];
+    const k = model ? 1 : 1 + 0.34 * (noise3(vx * 1.6, vy * 1.6, vz * 1.6, salt) - 0.5) + 0.12 * (noise3(vx * 4.1, vy * 4.1, vz * 4.1, salt + 1) - 0.5);
     let px = vx * k;
     let py = vy * k;
     let pz = vz * k;
@@ -555,7 +601,7 @@ function rock(b: Build, x: number, y: number, z: number, sx: number, sy: number,
     p[i * 4] = _v.x;
     p[i * 4 + 1] = _v.y;
     p[i * 4 + 2] = _v.z;
-    p[i * 4 + 3] = 1;
+    p[i * 4 + 3] = model ? model[i * 4 + 3] : 1;
   }
   for (let i = 0; i < n; i += 3) b.face(p, i, i + 1, i + 2, x, y, z);
   _ext[0] = ex;
@@ -1173,6 +1219,9 @@ export class Props {
   private readonly chunks = new Map<number, Chunk>();
   private readonly clearings: number[] = []; // x, z, r
   private readonly pending: number[] = []; // chunk keys, nearest last
+  /** Chunks built before the modelled rocks arrived, to be built again (a few a frame). */
+  private readonly redo: number[] = [];
+  private disposed = false;
   private readonly far = { value: FAR.high };
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
   private readonly nrm = new THREE.Vector3();
@@ -1207,6 +1256,17 @@ export class Props {
       polygonOffset: true,
       polygonOffsetFactor: -2,
       polygonOffsetUnits: -2,
+    });
+    this.watchModels();
+  }
+
+  /** Starts loading the modelled rocks; once they arrive, what is already built is built again. */
+  private watchModels(): void {
+    if (MODEL_ROCKS) return;
+    void loadRocks().then((ok) => {
+      if (!ok || this.disposed) return;
+      this.redo.length = 0;
+      for (const k of this.chunks.keys()) this.redo.push(k);
     });
   }
 
@@ -1267,6 +1327,15 @@ export class Props {
       const cix = Math.floor(k / 65536) - 32768;
       const ciz = (k % 65536) - 32768;
       this.chunks.set(k, this.build(cix, ciz));
+      built++;
+    }
+    // then, a chunk or so a frame, those built before the modelled rocks came, in place
+    while (this.redo.length > 0 && this.pending.length === 0 && (built === 0 || performance.now() - t0 < budget)) {
+      const k = this.redo.pop();
+      const old = k === undefined ? undefined : this.chunks.get(k);
+      if (k === undefined || !old) continue;
+      this.chunks.set(k, this.build(old.ix, old.iz));
+      this.drop(old);
       built++;
     }
   }
@@ -1524,6 +1593,7 @@ export class Props {
   }
 
   dispose(): void {
+    this.disposed = true;
     for (const c of this.chunks.values()) this.drop(c);
     this.chunks.clear();
     this.mat.dispose();

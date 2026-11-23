@@ -8,6 +8,7 @@ import type { FrameState, SaddleSway, SurfaceSample, Uniforms, World } from '../
 import { CAMEL_GALLOP } from '../game/speeds';
 import type { CitySite } from './types';
 import type { Landmark, Village } from '../world/discoveries';
+import { detailTexture, loadModel, modelGeometry } from '../render/art';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import { blockedAt, clearAt, CREATURE_STEP, steer, steered, type SolidQuery } from '../world/avoid';
 import { routePos, routeSAtU, routeSlope, routeUAtS, type RouteCamp, type RouteNet, type TravelRoute } from './routes';
@@ -372,6 +373,58 @@ function animalGeometry(): { geo: THREE.InstancedBufferGeometry; tris: number } 
   return { geo: b.geometry(), tris: b.tris };
 }
 
+/**
+ * The modelled camel (tools/blender/camel.py writes public/art/camel.glb), swapped into this
+ * geometry in place of animalGeometry()'s when it arrives. Same attributes, same meaning: the file
+ * carries aRig as two pairs (_arig, _arigzw), aPivot and aMP (material, load part). The instanced
+ * attributes are left as they are. Without the file, or with any attribute missing, the built
+ * camel stays.
+ */
+function modelledCamel(geo: THREE.InstancedBufferGeometry): void {
+  loadModel('camel.glb').then((gltf) => {
+    const m = gltf ? modelGeometry(gltf, 'camel') : null;
+    const I = m?.getIndex();
+    if (
+      !m ||
+      !I ||
+      !m.getAttribute('position') ||
+      !m.getAttribute('normal') ||
+      m.getAttribute('_arig')?.itemSize !== 2 ||
+      m.getAttribute('_arigzw')?.itemSize !== 2 ||
+      m.getAttribute('_apivot')?.itemSize !== 3 ||
+      m.getAttribute('_amp')?.itemSize !== 2
+    )
+      return;
+    const P = m.getAttribute('position');
+    const N = m.getAttribute('normal');
+    const R = m.getAttribute('_arig');
+    const W = m.getAttribute('_arigzw');
+    const V = m.getAttribute('_apivot');
+    const M = m.getAttribute('_amp');
+    const n = P.count;
+    const pos = new Float32Array(n * 3);
+    const nrm = new Float32Array(n * 3);
+    const rig = new Float32Array(n * 4);
+    const piv = new Float32Array(n * 3);
+    const mp = new Float32Array(n * 2);
+    for (let i = 0; i < n; i++) {
+      pos.set([P.getX(i), P.getY(i), P.getZ(i)], i * 3);
+      nrm.set([N.getX(i), N.getY(i), N.getZ(i)], i * 3);
+      rig.set([R.getX(i), R.getY(i), W.getX(i), W.getY(i)], i * 4);
+      piv.set([V.getX(i), V.getY(i), V.getZ(i)], i * 3);
+      mp.set([M.getX(i), M.getY(i)], i * 2);
+    }
+    const idx = n > 65535 ? new Uint32Array(I.count) : new Uint16Array(I.count);
+    for (let k = 0; k < I.count; k++) idx[k] = I.getX(k);
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+    geo.setAttribute('aRig', new THREE.BufferAttribute(rig, 4));
+    geo.setAttribute('aPivot', new THREE.BufferAttribute(piv, 3));
+    geo.setAttribute('aMP', new THREE.BufferAttribute(mp, 2));
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  });
+}
+
 function personGeometry(): { geo: THREE.InstancedBufferGeometry; tris: number } {
   const b = new GB();
   for (const [hx, ph] of [
@@ -635,13 +688,15 @@ varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
 varying float vEm;
+varying vec3 vL;
+varying float vG;
 ${common}
 void main() {
   float vis = 1.0;
   if (aMP.y > 0.5) vis = mod(floor(iLoad.w / aMP.y + 0.01), 2.0);
   if (vis < 0.5 || iMot.w < 0.01) {
     gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
-    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0; vEm = 0.0;
+    vW = vec3(0.0); vN = vec3(0.0, 1.0, 0.0); vCol = vec3(0.0); vY = 0.0; vEm = 0.0; vL = vec3(0.0); vG = 0.0;
     return;
   }
   float TAU = 6.2831853;
@@ -718,6 +773,9 @@ void main() {
   vW = wp;
   vN = normalize(r * n.x + up * n.y + f * n.z);
   vY = localY;
+  // the rest pose, in metres: the hide's grain stays put on the animal as it moves (hide only)
+  vL = position * sc;
+  vG = step(aMP.x, 3.5);
   vCol = matColor(aMP.x, iCoat.rgb, iLoad.rgb);
   vEm = step(11.5, aMP.x);
   if (fringe) vCol *= 1.0 - 0.22 * aRig.z;
@@ -844,7 +902,8 @@ void main() {
 }
 `;
 
-const bodyFrag = /* glsl */ `
+/** The lit body; with `grain`, the animals' hide takes a faint grain from the detail map. */
+const bodyFragment = (grain: boolean) => /* glsl */ `
 precision highp float;
 uniform vec3 uSunDir;
 uniform vec3 uSunCol;
@@ -858,6 +917,7 @@ varying vec3 vN;
 varying vec3 vCol;
 varying float vY;
 varying float vEm;
+${grain ? 'varying vec3 vL;\nvarying float vG;\nuniform sampler2D uDetail;' : ''}
 ${STYLE_GLSL}
 void main() {
   vec3 toCam = cameraPosition - vW;
@@ -877,6 +937,16 @@ void main() {
   float bright = clamp(uLit.g * 1.25, 0.12, 1.0);
   vec3 tint = mix(vec3(1.0), uLit / max(uLit.g, 0.02), 0.35);
   vec3 lit = vCol * tint * bright;
+${
+  grain
+    ? `  // a faint grain in the hide (detail map B, mid-grey = none), projected from the animal's own
+  // side, front and top so it moves with it; about 8% either way, gone by twelve metres
+  vec3 fa = abs(cross(dFdx(vL), dFdy(vL)));
+  fa /= max(fa.x + fa.y + fa.z, 1e-6);
+  float grain = texture2D(uDetail, vL.zy * 2.5).b * fa.x + texture2D(uDetail, vL.xy * 2.5).b * fa.z + texture2D(uDetail, vL.xz * 2.5).b * fa.y;
+  lit *= 1.0 + (grain - 0.5) * 0.16 * (1.0 - smoothstep(7.0, 12.0, dist)) * vG;`
+    : ''
+}
   vec3 ratio = clamp(uShade / max(uLit, vec3(0.03)), 0.3, 0.85);
   vec3 col = mix(lit * ratio, lit, l);
   col += vCol * vec3(0.10, 0.13, 0.19) * uNight;
@@ -888,6 +958,8 @@ void main() {
   gl_FragColor = vec4(col, 1.0);
 }
 `;
+const bodyFrag = bodyFragment(false);
+const animalFrag = bodyFragment(true);
 
 const fireVert = /* glsl */ `
 attribute vec4 iBase;
@@ -1534,6 +1606,7 @@ export class Caravans {
     const animal = animalGeometry();
     const person = personGeometry();
     this.animalGeo = animal.geo;
+    modelledCamel(this.animalGeo);
     this.personGeo = person.geo;
     this.propGeo = propGeometry();
 
@@ -1565,7 +1638,7 @@ export class Caravans {
       this.materials.push(mat);
       this.meshes.push(mesh);
     };
-    mk(this.animalGeo, animalVert, bodyFrag);
+    mk(this.animalGeo, animalVert, animalFrag, { uniforms: { ...uniforms, uDetail: { value: detailTexture() } } });
     mk(this.personGeo, personVert, bodyFrag);
     mk(this.propGeo, propVert, bodyFrag);
     mk(this.fireGeo, fireVert, fireFrag, {

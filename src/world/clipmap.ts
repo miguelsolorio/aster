@@ -5,6 +5,7 @@
 import * as THREE from 'three';
 import type { Uniforms } from '../game/contract';
 import { terrainFrag, terrainVert } from '../render/terrainShaders';
+import { detailTexture, detailTexture2 } from '../render/art';
 
 const LEVELS = 8;
 const CELLS = 128;
@@ -27,6 +28,9 @@ const SHARED_DEFAULTS: Array<[string, () => unknown]> = [
   // run-time quality knobs (game/quality.ts); these defaults are full quality
   ['uShadowSteps', () => 30],
   ['uDetail', () => 1],
+  // baked close-up grain (render/art.ts)
+  ['uDetailMap', () => detailTexture()],
+  ['uDetailMap2', () => detailTexture2()],
 ];
 
 function gridGeometry(): THREE.BufferGeometry {

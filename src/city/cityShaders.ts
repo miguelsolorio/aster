@@ -1,7 +1,8 @@
 import * as THREE from 'three';
 import type { Uniforms } from '../game/contract';
 import { CITY_SHADOW_GLSL } from './cityGlsl';
-import { STYLE_GLSL } from '../render/styleGlsl';
+import { DETAIL_GLSL, SAND_WALL_GLSL, STYLE_GLSL } from '../render/styleGlsl';
+import { detailTexture, detailTexture2 } from '../render/art';
 
 // Shaders for the cities: masonry (walls, roofs, domes, wood, cloth, plants), the pool,
 // and the warm glows (lamps, lit windows, lanterns) that make a city read at night.
@@ -137,6 +138,8 @@ uniform vec3 uSunCol;
 uniform vec3 uFogCol;
 uniform float uFog;
 uniform float uNight;
+uniform sampler2D uDetail; // baked grain: R cloth weave, G limewash, B stone (mid-grey = no change)
+uniform sampler2D uDetail2; // baked grain: R sand (soil), B wood fibres
 varying vec3 vW;
 varying vec3 vN;
 varying float vH;
@@ -147,6 +150,8 @@ ${CITY_SHADOW_GLSL}
 #endif
 ${NOISE}
 ${STYLE_GLSL}
+${DETAIL_GLSL}
+${SAND_WALL_GLSL}
 float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 vec3 paler(vec3 c, float k) { return mix(c, vec3(lum(c)), k); }
 #ifdef CUT
@@ -199,6 +204,11 @@ void main() {
   vec3 toCam = cameraPosition - vW;
   float dist = length(toCam);
   vec3 V = toCam / max(dist, 1e-4);
+  // screen derivatives for the wood grain's direction, taken here in uniform control flow
+  vec3 dWx = dFdx(vW);
+  vec3 dWy = dFdy(vW);
+  vec2 dUx = dFdx(vUv);
+  vec2 dUy = dFdy(vUv);
   vec3 ng = normalize(vN);
 #ifdef TWO_SIDED
   if (!gl_FrontFacing) ng = -ng;
@@ -269,6 +279,53 @@ void main() {
     masonry = 0.6;
   }
 
+  // baked surface grain on the albedo (not on glow, windows, openings or plants)
+  {
+    float chan = (mat < 1.5 || mat > 8.5) ? 1.0 : mat < 2.5 ? 2.0 : (mat > 4.5 && mat < 5.5) ? 0.0 : -1.0;
+    float fadeD = 1.0 - smoothstep(25.0, 70.0, dist);
+    if (chan >= 0.0 && fadeD > 0.0) {
+      vec3 an = abs(ng);
+      vec2 puv = an.y >= an.x && an.y >= an.z ? vW.xz : an.x >= an.z ? vW.zy : vW.xy;
+      vec3 dt = texture2D(uDetail, puv * (chan < 0.5 ? 2.0 : 0.625)).rgb - 0.5;
+      float t = chan < 0.5 ? dt.r : chan < 1.5 ? dt.g : dt.b;
+      float gain = 0.22;
+      if (chan > 0.5 && chan < 1.5) {
+        // sand-built: packed sand grain over a little of the trowel, with clumps and, on walls,
+        // the level courses of rammed earth
+        t = sandWall(puv, ng) + dt.g * 0.25;
+        gain = 0.4;
+      }
+      float k = 1.0 + t * gain * fadeD;
+      sh *= k;
+      li *= k;
+    }
+    // wood: fibres along the member. The face's uv runs 0..1 across each side, so the side's long
+    // axis is the uv direction that changes slowest across the world (a cotangent frame from the
+    // derivatives above); faces without a usable uv fall back to a world-space plane.
+    if (mat > 2.5 && mat < 3.5 && fadeD > 0.0) {
+      vec3 p1 = cross(dWy, ng);
+      vec3 p2 = cross(ng, dWx);
+      vec3 tu = p1 * dUx.x + p2 * dUy.x; // world gradient of u (scaled)
+      vec3 tv = p1 * dUx.y + p2 * dUy.y; // and of v
+      float lu = dot(tu, tu);
+      float lv = dot(tv, tv);
+      vec2 wuv = detailPlane(vW, ng);
+      if (max(lu, lv) > 1e-20) {
+        vec3 ax = normalize(lu < lv ? tu : tv);
+        wuv = vec2(dot(vW, ax), dot(vW, cross(ng, ax)));
+      }
+      float t = texture2D(uDetail2, wuv * 0.83).b - 0.5;
+      float k = 1.0 + t * 0.26 * fadeD;
+      sh *= k;
+      li *= k;
+    } else if (mat > 7.5 && mat < 8.5 && fadeD > 0.0) {
+      // soil: the sand grain, one tile per 0.9 m
+      float t = texture2D(uDetail2, detailPlane(vW, ng) * 1.11).r - 0.5;
+      float k = 1.0 + t * 0.16 * fadeD;
+      sh *= k;
+      li *= k;
+    }
+  }
   vec3 col = mix(sh, li, l);
   col *= 1.0 + (0.12 * m - 0.07) * masonry;
 
@@ -482,7 +539,7 @@ export function createMasonryMaterial(shared: Uniforms, o: MasonryOptions): THRE
   if (o.sway) defines.SWAY = 1;
   if (o.cut) defines.CUT = 1;
   return new THREE.ShaderMaterial({
-    uniforms: withShared(shared, o.cut ? { uCutBox: o.cut.uCutBox, uCutY: o.cut.uCutY } : {}),
+    uniforms: withShared(shared, { uDetail: { value: detailTexture() }, uDetail2: { value: detailTexture2() }, ...(o.cut ? { uCutBox: o.cut.uCutBox, uCutY: o.cut.uCutY } : {}) }),
     vertexShader: masonryVert,
     fragmentShader: masonryFrag,
     defines,

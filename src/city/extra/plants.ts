@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { loadModel, modelGeometry } from '../../render/art';
 import { BED_SOIL, POOL_LEVEL, Writer } from '../build';
 import { MAT, createMasonryMaterial } from '../cityShaders';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
@@ -52,6 +53,169 @@ const TUNE: Record<CityKind, Tune> = {
 const key = (i: number, j: number): number => (i + 4096) * 8192 + (j + 4096);
 const clamp = (x: number, a: number, b: number): number => (x < a ? a : x > b ? b : x);
 const byte = (s: number): number => clamp(Math.round(s * 255), 0, 255);
+
+// ------------------------------------------------------------------ modelled plants
+//
+// tools/blender/props.py writes public/art/props.glb: a date palm (a ringed trunk, crowns of
+// arching fronds with their leaflets cut in, drooping dead fronds, date clusters) and layered
+// shrubs. Until it has loaded, and wherever it cannot be had, the procedural plants below are
+// drawn. A city built before it arrives has its trees rebuilt from the model once it does; its
+// shrubs stay as they were built. Every vertex carries _info: material id, tint 0..1 and sway
+// 0..1 (see props.py), which the writers below turn into this file's own aInfo ranges.
+
+interface Model {
+  pos: Float32Array;
+  nrm: Float32Array;
+  info: Float32Array;
+  index: ArrayLike<number>;
+}
+
+interface Modelled {
+  trunk: Model;
+  crowns: Model[];
+  dead: Model;
+  dates: Model;
+  thorny: Model[];
+  leafy: Model[];
+}
+
+let MODELLED: Modelled | null = null;
+let modelLoad: Promise<Modelled | null> | null = null;
+
+/** The reference palm the model was drawn for: trunk top (boot base) and frond origin. */
+const REF_TOP = 9.5;
+const REF_FROND = REF_TOP + 0.55;
+const REF_R0 = 0.12 + 0.011 * 10;
+const REF_RB = 0.95 + 0.11 * 10;
+
+function modelOf(gltf: Parameters<typeof modelGeometry>[0], name: string): Model | null {
+  const g = modelGeometry(gltf, name);
+  const info = g?.getAttribute('_info');
+  if (!g || !info || info.itemSize !== 3) return null;
+  g.computeVertexNormals();
+  const n = g.getAttribute('position').count;
+  const index = g.getIndex()?.array ?? Array.from({ length: n }, (_, i) => i);
+  return {
+    pos: Float32Array.from(g.getAttribute('position').array),
+    nrm: Float32Array.from(g.getAttribute('normal').array),
+    info: Float32Array.from(info.array),
+    index,
+  };
+}
+
+/** Starts loading the modelled plants (once); resolves to them, or null without the file. */
+function loadPlants(): Promise<Modelled | null> {
+  if (!modelLoad) {
+    modelLoad = loadModel('props.glb').then((gltf) => {
+      if (!gltf) return null;
+      const get = (n: string) => modelOf(gltf, n);
+      const trunk = get('PalmTrunk');
+      const dead = get('PalmDead');
+      const dates = get('PalmDates');
+      const crowns = [0, 1, 2].map((i) => get(`PalmCrown${i}`)).filter((m): m is Model => !!m);
+      const thorny = [0, 1, 2].map((i) => get(`Shrub${i}`)).filter((m): m is Model => !!m);
+      const leafy = [0, 1].map((i) => get(`Bush${i}`)).filter((m): m is Model => !!m);
+      if (!trunk || !dead || !dates || crowns.length === 0 || thorny.length === 0 || leafy.length === 0) return null;
+      MODELLED = { trunk, crowns, dead, dates, thorny, leafy };
+      return MODELLED;
+    });
+  }
+  return modelLoad;
+}
+
+/** Where the procedural plants are drawn when only their draws from the shared rng are wanted. */
+const scratch = new Writer(1024, 2048);
+function rewind(w: Writer): void {
+  w.nv = 0;
+  w.ni = 0;
+}
+
+/**
+ * Writes a model's triangles into w, each vertex placed by `put` (which writes the world
+ * position to out[0..2] and returns nothing) and its normal turned by yaw (c, s). `look` sets
+ * w.mat, w.tint and w.extra for a vertex from its _info.
+ */
+function stamp(
+  w: Writer, m: Model, c: number, s: number,
+  put: (x: number, y: number, z: number, out: number[]) => void,
+  look: (mat: number, tint: number, sway: number) => void,
+): void {
+  const nv = m.pos.length / 3;
+  w.reserve(nv, m.index.length);
+  const base = w.nv;
+  const o = [0, 0, 0];
+  for (let i = 0; i < nv; i++) {
+    const p = i * 3;
+    put(m.pos[p], m.pos[p + 1], m.pos[p + 2], o);
+    look(m.info[p], m.info[p + 1], m.info[p + 2]);
+    const nx = m.nrm[p], nz = m.nrm[p + 2];
+    w.vert(o[0], o[1], o[2], nx * c - nz * s, m.nrm[p + 1], nx * s + nz * c, 0.5, m.info[p + 2]);
+  }
+  const I = m.index;
+  for (let t = 0; t < I.length; t += 3) w.index3(base + I[t], base + I[t + 1], base + I[t + 2]);
+}
+
+/** A small hash of a position, 0..1, so a modelled tree is the same whenever it is built. */
+function hashXZ(x: number, z: number, salt: number): number {
+  let h = Math.imul(Math.round(x * 16) | 0, 0x27d4eb2d) ^ Math.imul(Math.round(z * 16) | 0, 0x165667b1) ^ Math.imul(salt, 0x9e3779b1);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+/**
+ * The modelled date palm of height h at (x, y, z), the same size as tree() draws and bending the
+ * same way: the trunk stretched to its height, its radius and crown scaled by it. Returns the
+ * height of the trunk top above y.
+ */
+function modelledTree(w: Writer, M: Modelled, x: number, y: number, z: number, h: number): number {
+  let k = 0;
+  const r = () => hashXZ(x, z, ++k);
+  const sTop = 0.22 + 0.012 * h;
+  const rim = 0.62 + 0.02 * h;
+  const la = r() * TAU;
+  const lx = Math.cos(la), lz = Math.sin(la);
+  const lean = (0.03 + r() * 0.06) * h;
+  const bend = (r() - 0.5) * 0.1 * h;
+  const top = h - 0.5;
+  const kr = (0.12 + 0.011 * h) / REF_R0;
+  const yaw = r() * TAU;
+  const c = Math.cos(yaw), s = Math.sin(yaw);
+  const bark = 70 + Math.floor(r() * 70);
+  const ox = (t: number) => lx * lean * t * t - lz * bend * Math.sin(Math.PI * t);
+  const oz = (t: number) => lz * lean * t * t + lx * bend * Math.sin(Math.PI * t);
+  w.seed = 0;
+  stamp(w, M.trunk, c, s, (px, py, pz, o) => {
+    const t = Math.min(1, Math.max(0, py / REF_TOP));
+    const qy = py < 0 ? py : py <= REF_TOP ? py * (top / REF_TOP) : top + (py - REF_TOP);
+    const qx = (px * c - pz * s) * kr, qz = (px * s + pz * c) * kr;
+    o[0] = x + qx + ox(t);
+    o[1] = y + qy;
+    o[2] = z + qz + oz(t);
+  }, (mat, tint, sway) => {
+    w.mat = mat;
+    w.tint = clamp(Math.round(bark + (tint - 0.38) * 200), 0, 255);
+    w.extra = byte(sTop * sway);
+  });
+  const hx = x + ox(1), hz = z + oz(1), fy = y + top + (REF_FROND - REF_TOP);
+  const cs = (0.95 + 0.11 * h) / REF_RB;
+  const green = Math.round((r() - 0.5) * 50);
+  const crownAt = (px: number, py: number, pz: number, o: number[]) => {
+    o[0] = hx + (px * c - pz * s) * cs;
+    o[1] = fy + py * cs;
+    o[2] = hz + (px * s + pz * c) * cs;
+  };
+  const look = (mat: number, tint: number, sway: number) => {
+    w.mat = mat;
+    w.tint = clamp(Math.round(tint * 255 + (mat === MAT.plant ? green : 0)), 0, 255);
+    w.extra = mat === MAT.cloth ? 0 : byte(sTop + (rim - sTop) * sway); // cloth reads aInfo.w as stripes
+  };
+  if (r() < 0.25 + 0.03 * h) stamp(w, M.dead, c, s, crownAt, look);
+  if (h > 8 && r() < 0.6) stamp(w, M.dates, c, s, crownAt, look);
+  stamp(w, M.crowns[Math.floor(r() * M.crowns.length)], c, s, crownAt, look);
+  w.extra = 0;
+  return top + 0.85;
+}
 
 // ------------------------------------------------------------------ geometry
 
@@ -242,12 +406,17 @@ export function tree(w: Writer, x: number, y: number, z: number, h: number, r: (
 }
 
 /** A low thorny shrub (or, when thorns is false, a round leafy bush). */
-export function shrub(w: Writer, x: number, y: number, z: number, r: number, thorns: boolean, blossom: boolean, rng: () => number): void {
+export function shrub(out: Writer, x: number, y: number, z: number, r: number, thorns: boolean, blossom: boolean, rng: () => number): void {
   const n = 5;
   const rot = rng() * TAU;
   const top = y + r * (thorns ? 0.75 + rng() * 0.3 : 1.0 + rng() * 0.4);
+  // with the model, the body and twigs below only take their draws from rng (into scratch), so
+  // whatever follows in the city is placed the same with or without it
+  const M = MODELLED;
+  const w = M ? scratch : out;
   w.mat = MAT.plant;
   w.tint = thorns ? 50 + Math.floor(rng() * 90) : 90 + Math.floor(rng() * 130);
+  const tint0 = w.tint;
   w.reserve(n * 2 + 1, n * 9);
   const st = ring(w, x, y - 0.05, z, r * 0.6, n, rot, 0, -0.3);
   const mid = w.nv;
@@ -292,8 +461,25 @@ export function shrub(w: Writer, x: number, y: number, z: number, r: number, tho
       w.index3(v2, v3, e1);
     }
   }
+  if (M) {
+    rewind(scratch);
+    const set = thorns ? M.thorny : M.leafy;
+    const m = set[Math.floor(((rot / TAU) * 977) % set.length)];
+    const c = Math.cos(rot), s = Math.sin(rot);
+    const hy = top - y;
+    stamp(out, m, c, s, (px, py, pz, o) => {
+      o[0] = x + (px * c - pz * s) * r;
+      o[1] = y - 0.05 + py * hy;
+      o[2] = z + (px * s + pz * c) * r;
+    }, (mat, tint, sway) => {
+      out.mat = mat;
+      out.tint = mat === MAT.plant ? clamp(Math.round(tint0 + (tint - 0.45) * 160), 0, 255) : clamp(Math.round(tint * 200), 0, 255);
+      out.extra = byte((mat === MAT.plant ? 0.3 : 0.34) * sway);
+    });
+  }
   if (blossom) {
     // a few tiny blossoms on top, in the cloth dye ramp (ochre, rust or cream)
+    const w = out;
     w.mat = MAT.cloth;
     const pick = rng();
     w.tint = pick < 0.45 ? 20 : pick < 0.75 ? 160 : 230;
@@ -313,7 +499,7 @@ export function shrub(w: Writer, x: number, y: number, z: number, r: number, tho
       );
     }
   }
-  w.extra = 0;
+  out.extra = 0;
 }
 
 /** A clump of reeds or spiky grass: n tapering blades bending out from (x, z). */
@@ -799,10 +985,19 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const treeW = new Writer(1 << 15, 1 << 16);
   const solids: Solid[] = [];
   potSink = solids;
+  const loading = loadPlants();
+  const ty: number[] = [];
+  const modelled = MODELLED;
   for (let i = 0; i < tx.length; i++) {
     const x = tx[i], z = tz[i];
     const y = bedAt(x, z) ? BED_SOIL : ctx.groundAt(x, z);
-    const top = tree(treeW, x, y, z, th[i], rng);
+    // the procedural tree takes its draws from rng either way, so what follows is placed the same
+    const top = tree(modelled ? scratch : treeW, x, y, z, th[i], rng);
+    if (modelled) {
+      rewind(scratch);
+      modelledTree(treeW, modelled, x, y, z, th[i]);
+    }
+    ty.push(y);
     solids.push({ x, z, hw: 0.25, hd: 0.25, y0: y - 1, y1: y + top });
   }
 
@@ -941,12 +1136,30 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   let tris = treeW.tris;
   treeW.orient();
   const tg = treeW.geometry();
+  let disposed = false;
   if (tg) {
     tg.boundingSphere!.radius += 1; // sway
     geos.push(tg);
     const m = new THREE.Mesh(tg, mat);
     m.name = 'city-trees';
     near.add(m);
+    // built before the modelled palms arrived: rebuild the trees from them once they do
+    if (!modelled) {
+      void loading.then((M) => {
+        if (!M || disposed) return;
+        const w = new Writer(1 << 17, 1 << 18);
+        for (let i = 0; i < tx.length; i++) modelledTree(w, M, tx[i], ty[i], tz[i], th[i]);
+        w.orient();
+        const g = w.geometry();
+        if (!g?.boundingSphere) return;
+        g.boundingSphere.radius += 1;
+        near.userData.triangles += w.tris - treeW.tris;
+        const old = m.geometry;
+        m.geometry = g;
+        geos[geos.indexOf(old)] = g;
+        old.dispose();
+      });
+    }
   }
   const cellMeshes: THREE.Mesh[] = [];
   const bounds: number[] = [];
@@ -1008,6 +1221,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       }
     },
     dispose() {
+      disposed = true;
       for (const g of geos) g.dispose();
       mat.dispose();
       geos.length = 0;
