@@ -3,7 +3,9 @@
 // The frame's +u is the way the place faces (see each builder), +v is to its side, and heights
 // are relative to the site's base. The discoveries lend their own kit of mud-brick pieces, so a
 // house here is the same house as in a hamlet.
-import type * as THREE from 'three';
+import * as THREE from 'three';
+import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { loadModel, modelGeometry } from '../render/art';
 import type { SettlementKind } from './settlementKinds';
 import type { FolkMark, FolkRole } from './villagers';
 
@@ -11,10 +13,12 @@ type RGB = [number, number, number];
 
 /** What a builder needs of the discoveries' site context. */
 export interface SiteCtx {
-  readonly stone: { set(r: number, g: number, b: number, k: number, rough: number): void };
+  readonly stone: { r: number; g: number; b: number; k: number; rough: number; set(r: number, g: number, b: number, k: number, rough: number): void };
   readonly pools: { y: number; r: number; u?: number; v?: number; under?: boolean }[];
   folk: FolkMark[] | null;
   solid: boolean;
+  /** While set, prim() still adds its solid (and draws its random numbers) but draws nothing: a modelled piece stands in for it. */
+  ghost: boolean;
   foot: number;
   lx: number;
   lz: number;
@@ -76,6 +80,176 @@ const STRAW: RGB = [0.76, 0.62, 0.34];
 const RUST: RGB = [0.62, 0.33, 0.16];
 const SAND_COAT: RGB = [0.74, 0.58, 0.36];
 
+// ------------------------------------------------------------------ the modelled pieces
+//
+// tools/blender/settlements.py writes public/art/settlements.glb: the tents, huts, wind towers,
+// awnings, kilns, wells and fires drawn properly. Until it has loaded (and for good without it)
+// everything below is built of the plain boxes it always was. Once it has, each builder still
+// lays its piece out as before, draws the same random numbers and adds the same solids, but with
+// c.ghost set, so the boxes are not drawn; the modelled piece is drawn in their place. Nothing
+// moves and nothing you walk into changes. Settlements built before the file arrived are built
+// again once (discoveries.ts watchSettlementModels).
+
+/** What each vertex of a modelled piece is (its _part), and so how it is coloured. */
+const PART = {
+  MUD: 0,
+  MUD_L: 1,
+  FOOT: 2,
+  WOOD: 3,
+  WOOD_D: 4,
+  DARK: 5,
+  CLOTH: 6,
+  CLOTH_B: 7,
+  FLAME: 8,
+  STONE: 9,
+  ROPE: 10,
+  HAIR: 11,
+  HAIR_P: 12,
+  HAIR_W: 13,
+  SOOT: 14,
+  BUCKET: 15,
+} as const;
+
+/** A modelled piece: its triangles (three corners each, x y z), split by part. */
+type Piece = { part: number; pos: Float32Array }[];
+
+const PIECES = ['TentA', 'TentB', 'TentC', 'HutBody0', 'HutBody1', 'HutBody2', 'HutRoom', 'HutDoor', 'HutWindow', 'HutBeam', 'WindTower0', 'WindTower1', 'Awning0', 'Awning1', 'Kiln0', 'Kiln1', 'Well0', 'Well1', 'Fire0', 'Fire1'] as const;
+type PieceName = (typeof PIECES)[number];
+
+let MODELS: Map<PieceName, Piece> | null = null;
+let modelLoad: Promise<boolean> | null = null;
+
+/** Takes the pieces out of a loaded settlements.glb; false (and nothing changes) if any is missing. */
+export function useSettlementModels(gltf: GLTF): boolean {
+  const out = new Map<PieceName, Piece>();
+  for (const name of PIECES) {
+    const g = modelGeometry(gltf, name);
+    const part = g?.getAttribute('_part');
+    if (!g || !part) return false;
+    const pos = g.getAttribute('position');
+    const idx = g.getIndex();
+    const n = idx ? idx.count : pos.count;
+    const by = new Map<number, number[]>();
+    for (let t = 0; t < n; t += 3) {
+      const corner = (i: number): number => (idx ? idx.getX(t + i) : t + i);
+      const p = Math.round(part.getX(corner(0)));
+      let list = by.get(p);
+      if (!list) {
+        list = [];
+        by.set(p, list);
+      }
+      for (let i = 0; i < 3; i++) {
+        const v = corner(i);
+        list.push(pos.getX(v), pos.getY(v), pos.getZ(v));
+      }
+    }
+    out.set(
+      name,
+      [...by].map(([p, list]) => ({ part: p, pos: Float32Array.from(list) })),
+    );
+  }
+  MODELS = out;
+  return true;
+}
+
+/** Starts loading settlements.glb (once); resolves true when the pieces are in use. */
+export function loadSettlementModels(): Promise<boolean> {
+  modelLoad ??= loadModel('settlements.glb').then((gltf) => (gltf ? useSettlementModels(gltf) : false));
+  return modelLoad;
+}
+
+/** Whether the modelled pieces are in use. */
+export function settlementModelsReady(): boolean {
+  return MODELS !== null;
+}
+
+/** Back to the plain boxes (tests). */
+export function dropSettlementModels(): void {
+  MODELS = null;
+}
+
+/**
+ * How a piece is stretched to the size it is built at, a coordinate at a time: the middle of
+ * the reference size stretches, the margins keep their shape and only move. For x and z,
+ * [half the reference size, margin, half the size wanted]; for y, [reference top, how much of
+ * the top keeps its shape, top wanted, and what y < 0 (the footing) is scaled by].
+ */
+interface Stretch {
+  x?: [number, number, number];
+  z?: [number, number, number];
+  y?: [number, number, number, number];
+}
+
+const across = (s: number, h0: number, m: number, h1: number): number => {
+  if (h1 <= m + 0.05) return (s * h1) / h0;
+  const a = Math.abs(s);
+  return a <= h0 - m ? (s * (h1 - m)) / (h0 - m) : s + Math.sign(s) * (h1 - h0);
+};
+
+const upward = (y: number, t0: number, keep: number, t1: number, foot: number): number => {
+  if (y < 0) return y * foot;
+  return y <= t0 - keep ? (y * Math.max(t1 - keep, 0.05)) / (t0 - keep) : y + (t1 - t0);
+};
+
+function stretched(src: Float32Array, st: Stretch): Float32Array {
+  const out = new Float32Array(src.length);
+  for (let i = 0; i < src.length; i += 3) {
+    out[i] = st.x ? across(src[i], st.x[0], st.x[1], st.x[2]) : src[i];
+    out[i + 1] = st.y ? upward(src[i + 1], st.y[0], st.y[1], st.y[2], st.y[3]) : src[i + 1];
+    out[i + 2] = st.z ? across(src[i + 2], st.z[0], st.z[1], st.z[2]) : src[i + 2];
+  }
+  return out;
+}
+
+const SCRATCH = new THREE.BufferGeometry();
+
+/** How a piece's parts are coloured: sets c.stone for the part, or returns false to leave it out. */
+type Paint = (c: SiteCtx, part: number) => boolean;
+
+/**
+ * Draws a modelled piece with its origin at frame (u, y, v), its x along bearing `ang`, scaled by
+ * (sx, sy, sz) after any stretch. It adds no solids, draws no random numbers, and leaves the
+ * stone material as it found it.
+ */
+function piece(c: SiteCtx, name: PieceName, u: number, y: number, v: number, ang: number, paint: Paint, st?: Stretch, sx = 1, sy = 1, sz = 1): void {
+  const m = MODELS?.get(name);
+  if (!m) return;
+  const s = c.stone;
+  const keep = [s.r, s.g, s.b, s.k, s.rough] as const;
+  const solid = c.solid;
+  const ghost = c.ghost;
+  c.solid = false;
+  c.ghost = false;
+  for (const p of m) {
+    if (paint(c, p.part) === false) continue;
+    SCRATCH.setAttribute('position', new THREE.BufferAttribute(st ? stretched(p.pos, st) : p.pos, 3));
+    c.prim(SCRATCH, u, y, v, sx, sy, sz, -ang);
+  }
+  SCRATCH.deleteAttribute('position');
+  c.solid = solid;
+  c.ghost = ghost;
+  s.set(keep[0], keep[1], keep[2], keep[3], keep[4]);
+}
+
+/** One of n variants for a piece standing at (u, v), without drawing a random number. */
+const variant = (u: number, v: number, n: number): number => {
+  const h = Math.sin(u * 12.9898 + v * 78.233) * 43758.5453;
+  return Math.floor((h - Math.floor(h)) * n) % n;
+};
+
+/** Runs `draw` with c.ghost set when the modelled pieces are in use (and returns whether they are). */
+function ghosted(c: SiteCtx, draw: () => void): boolean {
+  if (!MODELS) {
+    draw();
+    return false;
+  }
+  const keep = c.ghost;
+  c.ghost = true;
+  draw();
+  c.ghost = keep;
+  return true;
+}
+
 const mud = (c: SiteCtx, wt: number): void => c.stone.set(wt, wt * 0.96, wt * 0.87, 2, 0.06);
 const footing = (c: SiteCtx, wt: number): void => c.stone.set(wt * 0.86, wt * 0.82, wt * 0.74, 2, 0.08);
 const wood = (c: SiteCtx, k = 1): void => c.stone.set(0.46 * k, 0.33 * k, 0.23 * k, 2, 0.02);
@@ -83,6 +257,45 @@ const dark = (c: SiteCtx): void => c.stone.set(0.16, 0.12, 0.1, 2, 0);
 const cloth = (c: SiteCtx, t: RGB, k = 1): void => c.stone.set(t[0] * k, t[1] * k, t[2] * k, 1, 0.02);
 const flame = (c: SiteCtx): void => c.stone.set(1, 1, 1, 3, 0);
 const pickOf = <T>(c: SiteCtx, list: T[]): T => list[Math.floor(c.rng() * list.length) % list.length];
+
+/** The colours of a modelled piece's parts: its mud (by weathering `wt`), its cloth, its stone. */
+function tones(o: { wt?: number; tint?: RGB; stone?: [number, number, number, number]; rough?: number; skip?: number }): Paint {
+  const wt = o.wt ?? 1;
+  const rough = o.rough ?? 0.03;
+  const tint = o.tint ?? UNDYED;
+  return (c, p) => {
+    if (p === o.skip) return false;
+    switch (p) {
+      case PART.MUD: c.stone.set(wt, wt * 0.96, wt * 0.87, 2, rough); break;
+      case PART.MUD_L: c.stone.set(wt * 1.04, wt * 1.04 * 0.96, wt * 1.04 * 0.87, 2, rough); break;
+      case PART.FOOT: c.stone.set(wt * 0.86, wt * 0.82, wt * 0.74, 2, rough); break;
+      case PART.WOOD: wood(c); break;
+      case PART.WOOD_D: wood(c, 0.85); break;
+      case PART.DARK: dark(c); break;
+      case PART.CLOTH: cloth(c, tint); break;
+      case PART.CLOTH_B: cloth(c, tint, 0.78); break;
+      case PART.FLAME: flame(c); break;
+      case PART.STONE: {
+        const s = o.stone ?? [1.0, 0.97, 0.9, 0.04];
+        c.stone.set(s[0], s[1], s[2], 0, s[3]);
+        break;
+      }
+      case PART.ROPE: c.stone.set(0.78, 0.66, 0.48, 2, 0); break;
+      case PART.HAIR: c.stone.set(0.2, 0.16, 0.14, 2, 0.02); break;
+      case PART.HAIR_P: c.stone.set(0.62, 0.5, 0.36, 2, 0.01); break;
+      case PART.HAIR_W: c.stone.set(0.18, 0.145, 0.13, 2, 0.02); break;
+      case PART.SOOT: c.stone.set(0.3, 0.26, 0.24, 2, 0.02); break;
+      case PART.BUCKET: wood(c, 1.2); break;
+      default: return false;
+    }
+    return true;
+  };
+}
+
+/** A well: the discoveries' own (its ring of stones is what you walk into), drawn as the modelled one when there is one. */
+function well(c: SiteCtx, k: Kit, u: number, v: number): void {
+  if (ghosted(c, () => k.well(c, u, v))) piece(c, variant(u, v, 2) ? 'Well1' : 'Well0', u, c.g(u, v), v, 0, tones({ stone: [1.0, 0.97, 0.9, 0.04] }));
+}
 
 /** Something slight that nobody walks into. `ang` is the bearing its long (x) side runs along. */
 function bit(c: SiteCtx, k: Kit, u: number, y: number, v: number, sx: number, sy: number, sz: number, ang = 0, rx = 0, rz = 0): void {
@@ -127,6 +340,10 @@ function hut(c: SiteCtx, k: Kit, u: number, v: number, ang: number, face: number
     floor = Math.max(c.g(...at(0, face * (d / 2 + 0.8))) + 0.15, hi - 1.6);
     lo -= 1;
   }
+  // (with the modelled pieces in use, the boxes below are ghosts: their solids stay, the model is drawn)
+  const modelled = MODELS !== null;
+  const keepGhost = c.ghost;
+  c.ghost = modelled;
   mud(c, wt);
   c.prim(k.BOX, u, (lo + floor + h) / 2, v, w, floor + h - lo, d, -ang);
   mud(c, wt * 1.03);
@@ -138,6 +355,7 @@ function hut(c: SiteCtx, k: Kit, u: number, v: number, ang: number, face: number
   wood(c);
   bit(c, k, ...lift(at(doorX, face * (d / 2 + 0.1)), floor + 2.0), 1.6, 0.22, 0.26, ang);
   for (let i = 0; i < 3; i++) bit(c, k, ...lift(at(-w / 2 + 0.6 + (i * (w - 1.2)) / 2, face * (d / 2 + 0.2)), floor + h - 0.45), 0.18, 0.18, 0.5, ang);
+  const windows: [number, number][] = [];
   for (const s of [-1, 1]) {
     const wx = doorX + s * Math.max(1.5, w * 0.3);
     if (Math.abs(wx) > w / 2 - 0.5) continue;
@@ -145,7 +363,26 @@ function hut(c: SiteCtx, k: Kit, u: number, v: number, ang: number, face: number
       const p = at(wx, face * (d / 2 + 0.02));
       dark(c);
       bit(c, k, p[0], floor + wy, p[1], 0.5, 0.8, 0.26, ang);
+      windows.push([wx, wy]);
       if (c.rng() < 0.5) c.glow(p[0], floor + wy, p[1], 1.0);
+    }
+  }
+  c.ghost = keepGhost;
+  if (modelled) {
+    // the body stretched to the house's size, its footing down to the house's foot
+    const fa = face > 0 ? ang : ang + Math.PI;
+    piece(c, `HutBody${variant(u, v, 3)}` as PieceName, u, floor, v, fa, tones({ wt }), { x: [3, 1.2, w / 2], z: [2.5, 1.2, d / 2], y: [3.2, 0.9, h, floor - lo] });
+    const dress = tones({ wt: wt * 1.02, rough: 0 });
+    const door = at(doorX, face * (d / 2));
+    piece(c, 'HutDoor', door[0], floor, door[1], fa, dress);
+    for (const [wx, wy] of windows) {
+      const p = at(wx, face * (d / 2 + 0.03));
+      piece(c, 'HutWindow', p[0], floor + wy, p[1], fa, dress);
+    }
+    // the ends of the roof beams, where the boxes had them
+    for (let i = 0; i < 3; i++) {
+      const p = at(-w / 2 + 0.6 + (i * (w - 1.2)) / 2, face * (d / 2));
+      piece(c, 'HutBeam', p[0], floor + h - 0.45, p[1], fa, dress);
     }
   }
   const style = c.rng();
@@ -155,9 +392,12 @@ function hut(c: SiteCtx, k: Kit, u: number, v: number, ang: number, face: number
     c.prim(k.BLOB, u, top - 0.25, v, rd, rd * 0.8, rd, c.rng() * 6);
   } else if (style < 0.42) {
     const p = at((c.rng() < 0.5 ? -1 : 1) * w * 0.18, -face * d * 0.15);
+    c.ghost = modelled;
     mud(c, wt * 1.02);
     c.prim(k.BOX, p[0], top + 0.9, p[1], w * 0.55, 2.4, d * 0.6, -ang);
     bit(c, k, p[0], top + 2.15, p[1], w * 0.55 + 0.35, 0.4, d * 0.6 + 0.35, ang);
+    c.ghost = keepGhost;
+    if (modelled) piece(c, 'HutRoom', p[0], top - 0.3, p[1], face > 0 ? ang : ang + Math.PI, tones({ wt: wt * 1.02 }), { x: [3, 1.2, w * 0.275], z: [2.5, 1.2, d * 0.3], y: [3.2, 0.9, 2.4, 0] });
   } else if (style < 0.56) {
     const p = at(doorX, face * (d / 2 + 0.9));
     cloth(c, pickOf(c, CLOTHS));
@@ -171,18 +411,22 @@ const lift = (p: [number, number], y: number): [number, number, number] => [p[0]
 /** A wind tower: a tall shaft with slots near its top on every face, to catch whatever wind there is. */
 function windTower(c: SiteCtx, k: Kit, u: number, v: number, ang: number, H: number, wt: number, y0?: number): void {
   const g = y0 ?? c.g(u, v);
-  mud(c, wt * 0.98);
-  c.prim(k.BOX, u, g + H / 2 - 0.5, v, 2.3, H + 1, 2.3, -ang);
-  for (let f = 0; f < 4; f++) {
-    const a = ang + (f * Math.PI) / 2;
-    dark(c);
-    for (const s of [-0.62, 0, 0.62]) bit(c, k, u + Math.cos(a) * 1.16 - Math.sin(a) * s, g + H - 1.9, v + Math.sin(a) * 1.16 + Math.cos(a) * s, 0.14, 2.3, 0.36, a);
-  }
-  mud(c, wt * 1.05);
-  bit(c, k, u, g + H + 0.62, v, 2.8, 0.3, 2.8, ang);
-  wood(c);
-  bit(c, k, u, g + H - 3.5, v, 3.5, 0.14, 0.14, ang);
-  bit(c, k, u, g + H - 3.8, v, 0.14, 0.14, 3.5, ang);
+  const modelled = ghosted(c, () => {
+    mud(c, wt * 0.98);
+    c.prim(k.BOX, u, g + H / 2 - 0.5, v, 2.3, H + 1, 2.3, -ang);
+    for (let f = 0; f < 4; f++) {
+      const a = ang + (f * Math.PI) / 2;
+      dark(c);
+      for (const s of [-0.62, 0, 0.62]) bit(c, k, u + Math.cos(a) * 1.16 - Math.sin(a) * s, g + H - 1.9, v + Math.sin(a) * 1.16 + Math.cos(a) * s, 0.14, 2.3, 0.36, a);
+    }
+    mud(c, wt * 1.05);
+    bit(c, k, u, g + H + 0.62, v, 2.8, 0.3, 2.8, ang);
+    wood(c);
+    bit(c, k, u, g + H - 3.5, v, 3.5, 0.14, 0.14, ang);
+    bit(c, k, u, g + H - 3.8, v, 0.14, 0.14, 3.5, ang);
+  });
+  // the shaft stretched to the tower's height, the catchers on top as they are
+  if (modelled) piece(c, variant(u, v, 2) ? 'WindTower1' : 'WindTower0', u, g, v, ang, tones({ wt: wt * 0.98 }), { y: [10, 4, H, 1] });
 }
 
 /** A shade of dyed cloth on four poles, with whatever is sold or kept under it. */
@@ -190,14 +434,17 @@ function awning(c: SiteCtx, k: Kit, u: number, v: number, ang: number, w: number
   const Tx = Math.cos(ang);
   const Tz = Math.sin(ang);
   const g = c.g(u, v);
-  wood(c);
-  for (const [a, b] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
-    const pu = u + (Tx * a * w) / 2 - (Tz * b * d) / 2;
-    const pv = v + (Tz * a * w) / 2 + (Tx * b * d) / 2;
-    bit(c, k, pu, c.g(pu, pv) + 1.25, pv, 0.1, 2.5, 0.1, ang);
-  }
-  cloth(c, tint);
-  bit(c, k, u, g + 2.5, v, w + 0.5, 0.07, d + 0.5, ang, 0.1);
+  const modelled = ghosted(c, () => {
+    wood(c);
+    for (const [a, b] of [[-1, -1], [1, -1], [-1, 1], [1, 1]] as const) {
+      const pu = u + (Tx * a * w) / 2 - (Tz * b * d) / 2;
+      const pv = v + (Tz * a * w) / 2 + (Tx * b * d) / 2;
+      bit(c, k, pu, c.g(pu, pv) + 1.25, pv, 0.1, 2.5, 0.1, ang);
+    }
+    cloth(c, tint);
+    bit(c, k, u, g + 2.5, v, w + 0.5, 0.07, d + 0.5, ang, 0.1);
+  });
+  if (modelled) piece(c, variant(u, v, 2) ? 'Awning1' : 'Awning0', u, g, v, ang, tones({ tint, rough: 0 }), undefined, w / 4.4, 1, d / 3.2);
   if (!goods) return;
   wood(c, 1.15);
   c.prim(k.BOX, u, g + 0.45, v, w * 0.7, 0.9, d * 0.45, -ang);
@@ -255,13 +502,17 @@ function pennant(c: SiteCtx, k: Kit, u: number, y: number, v: number, h: number,
 /** A ring of fire stones with a flame in it. */
 function fire(c: SiteCtx, k: Kit, u: number, v: number, size = 1): void {
   const g = c.g(u, v);
-  c.stone.set(0.62, 0.58, 0.55, 0, 0.12);
-  for (let i = 0; i < 7; i++) {
-    const a = (i / 7) * TAU;
-    c.prim(k.BOX, u + Math.cos(a) * size, g + 0.2, v + Math.sin(a) * size, 0.7 * size, 0.5, 0.55 * size, -a);
-  }
-  flame(c);
-  c.prim(k.CONE, u, g + 0.75, v, 0.4 * size, 1.0, 0.4 * size, 0.5);
+  const modelled = ghosted(c, () => {
+    c.stone.set(0.62, 0.58, 0.55, 0, 0.12);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * TAU;
+      c.prim(k.BOX, u + Math.cos(a) * size, g + 0.2, v + Math.sin(a) * size, 0.7 * size, 0.5, 0.55 * size, -a);
+    }
+    flame(c);
+    c.prim(k.CONE, u, g + 0.75, v, 0.4 * size, 1.0, 0.4 * size, 0.5);
+  });
+  // (the modelled stones lie where the boxes do: seven, a seventh of a turn apart)
+  if (modelled) piece(c, variant(u, v, 2) ? 'Fire1' : 'Fire0', u, g, v, 0, tones({ stone: [0.62, 0.58, 0.55, 0.04] }), undefined, size, 1, size);
   c.glow(u, g + 0.8, v, 4 * size);
 }
 
@@ -307,24 +558,28 @@ function tent(c: SiteCtx, k: Kit, u: number, v: number, ang: number, face: numbe
   const slope = Math.hypot(half, ridge - eave) + 0.3;
   const keep = c.solid;
   c.solid = false;
-  // the two falls of the roof, a paler band woven along each
-  for (const s of [-1, 1]) {
-    c.stone.set(0.2, 0.16, 0.14, 2, 0.05);
-    c.prim(k.BOX, u + (Nx * s * half) / 2, g + (ridge + eave) / 2, v + (Nz * s * half) / 2, L, 0.1, slope, -ang, s * face * tilt);
-    c.stone.set(0.62, 0.5, 0.36, 2, 0.02);
-    c.prim(k.BIT, u + Nx * s * half * 0.62, g + ridge - (ridge - eave) * 0.62 + 0.07, v + Nz * s * half * 0.62, L + 0.05, 0.05, 0.42, -ang, s * face * tilt);
-  }
-  // the back and one end hang to the ground; the front stands open on its poles
-  c.stone.set(0.18, 0.145, 0.13, 2, 0.04);
-  c.prim(k.BOX, u - Nx * half, g + eave / 2, v - Nz * half, L, eave + 0.2, 0.1, -ang);
-  c.prim(k.BOX, u - (Tx * L) / 2, g + eave / 2 + 0.3, v - (Tz * L) / 2, 0.1, eave + 0.7, half * 2, -ang);
-  wood(c);
-  for (const t of [-L / 2 + 0.3, 0, L / 2 - 0.3]) {
-    c.prim(k.BIT, u + Tx * t, g + ridge / 2, v + Tz * t, 0.12, ridge, 0.12);
-    c.prim(k.BIT, u + Tx * t + Nx * half, g + eave / 2, v + Tz * t + Nz * half, 0.09, eave, 0.09);
-  }
-  // guy ropes pegged out in front
-  for (const t of [-L / 2 + 0.3, L / 2 - 0.3]) c.prim(k.BIT, u + Tx * t + Nx * (half + 0.9), g + eave / 2, v + Tz * t + Nz * (half + 0.9), 0.04, 0.04, 2.2, -ang, face * 0.55);
+  const modelled = ghosted(c, () => {
+    // the two falls of the roof, a paler band woven along each
+    for (const s of [-1, 1]) {
+      c.stone.set(0.2, 0.16, 0.14, 2, 0.05);
+      c.prim(k.BOX, u + (Nx * s * half) / 2, g + (ridge + eave) / 2, v + (Nz * s * half) / 2, L, 0.1, slope, -ang, s * face * tilt);
+      c.stone.set(0.62, 0.5, 0.36, 2, 0.02);
+      c.prim(k.BIT, u + Nx * s * half * 0.62, g + ridge - (ridge - eave) * 0.62 + 0.07, v + Nz * s * half * 0.62, L + 0.05, 0.05, 0.42, -ang, s * face * tilt);
+    }
+    // the back and one end hang to the ground; the front stands open on its poles
+    c.stone.set(0.18, 0.145, 0.13, 2, 0.04);
+    c.prim(k.BOX, u - Nx * half, g + eave / 2, v - Nz * half, L, eave + 0.2, 0.1, -ang);
+    c.prim(k.BOX, u - (Tx * L) / 2, g + eave / 2 + 0.3, v - (Tz * L) / 2, 0.1, eave + 0.7, half * 2, -ang);
+    wood(c);
+    for (const t of [-L / 2 + 0.3, 0, L / 2 - 0.3]) {
+      c.prim(k.BIT, u + Tx * t, g + ridge / 2, v + Tz * t, 0.12, ridge, 0.12);
+      c.prim(k.BIT, u + Tx * t + Nx * half, g + eave / 2, v + Tz * t + Nz * half, 0.09, eave, 0.09);
+    }
+    // guy ropes pegged out in front
+    for (const t of [-L / 2 + 0.3, L / 2 - 0.3]) c.prim(k.BIT, u + Tx * t + Nx * (half + 0.9), g + eave / 2, v + Tz * t + Nz * (half + 0.9), 0.04, 0.04, 2.2, -ang, face * 0.55);
+  });
+  // the modelled tent stretched to its length: the middle of it, between the end poles
+  if (modelled) piece(c, (['TentA', 'TentB', 'TentC'] as const)[variant(u, v, 3)], u, g, v, face > 0 ? ang : ang + Math.PI, tones({ rough: 0 }), { x: [4.5, 1.5, L / 2] });
   // a rug and cushions inside
   cloth(c, pickOf(c, [MADDER, INDIGO, SAFFRON]), 0.9);
   c.prim(k.BIT, u + Nx * 0.4, g + 0.06, v + Nz * 0.4, L * 0.6, 0.06, 3.4, -ang);
@@ -340,17 +595,20 @@ function kiln(c: SiteCtx, k: Kit, u: number, v: number, ang: number, R: number, 
   const g = c.g(u, v);
   const Fx = Math.cos(ang);
   const Fz = Math.sin(ang);
-  footing(c, wt);
-  c.prim(k.CYL, u, g + 0.25, v, R * 1.12, 0.9, R * 1.12);
-  mud(c, wt * 0.94);
-  c.prim(k.BLOB, u, g + R * 0.55, v, R, R * 1.42, R, c.rng() * 6);
-  c.stone.set(0.3, 0.26, 0.24, 2, 0.04);
-  c.prim(k.CYL, u, g + R * 1.95, v, R * 0.2, 0.7, R * 0.2);
-  // the mouth: an arch of darker brick, and the fire behind it
-  footing(c, wt * 0.9);
-  c.prim(k.BOX, u + Fx * R * 0.86, g + 0.95, v + Fz * R * 0.86, R * 0.5, 1.9, R * 0.62, -ang);
-  flame(c);
-  bit(c, k, u + Fx * (R * 1.1 + 0.02), g + 0.85, v + Fz * (R * 1.1 + 0.02), 0.12, 1.25, R * 0.36, ang);
+  const modelled = ghosted(c, () => {
+    footing(c, wt);
+    c.prim(k.CYL, u, g + 0.25, v, R * 1.12, 0.9, R * 1.12);
+    mud(c, wt * 0.94);
+    c.prim(k.BLOB, u, g + R * 0.55, v, R, R * 1.42, R, c.rng() * 6);
+    c.stone.set(0.3, 0.26, 0.24, 2, 0.04);
+    c.prim(k.CYL, u, g + R * 1.95, v, R * 0.2, 0.7, R * 0.2);
+    // the mouth: an arch of darker brick, and the fire behind it
+    footing(c, wt * 0.9);
+    c.prim(k.BOX, u + Fx * R * 0.86, g + 0.95, v + Fz * R * 0.86, R * 0.5, 1.9, R * 0.62, -ang);
+    flame(c);
+    bit(c, k, u + Fx * (R * 1.1 + 0.02), g + 0.85, v + Fz * (R * 1.1 + 0.02), 0.12, 1.25, R * 0.36, ang);
+  });
+  if (modelled) piece(c, variant(u, v, 2) ? 'Kiln1' : 'Kiln0', u, g, v, ang, tones({ wt: wt * 0.94 }), undefined, R / 3.1, R / 3.1, R / 3.1);
   c.glow(u + Fx * (R * 1.15), g + 0.9, v + Fz * (R * 1.15), 5.5);
   c.glow(u + Fx * (R * 1.15), g + 0.9, v + Fz * (R * 1.15), 2.2);
   // split wood stacked beside it
@@ -377,7 +635,7 @@ function ring(c: SiteCtx, k: Kit, u: number, y: number, v: number, r: number, b:
 /** Black tents round one deep well, on open sand. Six people, and nobody else for a day's walk. */
 function buildWellCamp(c: SiteCtx, k: Kit): void {
   c.foot = 26;
-  k.well(c, 0, 0);
+  well(c, k, 0, 0);
   k.torch(c, 3.4, -1.2, 1.3);
   const a0 = c.rng() * TAU;
   const n = 4;
@@ -644,7 +902,7 @@ function buildGlassKilns(c: SiteCtx, k: Kit): void {
     const d = (i % 2 ? 31 : 24.5) + c.r(-1, 1);
     k.house(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, 1, c.r(5.6, 7.2), c.r(4.4, 5.6), c.r(2.7, 3.3), wt * c.r(0.96, 1.05));
   }
-  k.well(c, 15, 0);
+  well(c, k, 15, 0);
   k.torch(c, 12, 5.5, 1.4);
   k.torch(c, -4, -17, 1.4);
   pennant(c, k, 0, c.g(0, -22), -22, 8, SAFFRON);
@@ -724,7 +982,7 @@ function buildLedge(c: SiteCtx, k: Kit): void {
   c.prim(k.BLOB, -9, c.g(-9, 21) - 0.1, 21, 2.6, 0.9, 2.2, 1);
   jars(c, k, -8, 11, 6, 2.2);
   k.tower(c, 3, -31, Math.PI / 2, c.r(9.5, 11.5), wt);
-  k.well(c, -11, -8);
+  well(c, k, -11, -8);
   awning(c, k, -9.5, 1.5, 0.2, 4, 3, pickOf(c, [MADDER, SAFFRON]));
   k.torch(c, -2.4, 3.6, 1.4);
   k.torch(c, -2.4, -3.6, 1.4);
@@ -949,7 +1207,7 @@ function buildCaravanserai(c: SiteCtx, k: Kit): void {
   mud(c, wt * 1.06);
   c.prim(k.BLOB, -R + 4.6, c.g(-R + 4.6, 0) + 6.1, 0, 3.4, 2.8, 3.4, 0.4);
   // the yard: the well, a trough, a fire, the day's loads set down
-  k.well(c, 2, -2);
+  well(c, k, 2, -2);
   wood(c);
   c.prim(k.BOX, 6.5, c.g(6.5, -9) + 0.3, -9, 4.2, 0.55, 0.9, -0.2);
   fire(c, k, -5, 6.5, 1.1);
@@ -1372,7 +1630,7 @@ function buildSteppedCity(c: SiteCtx, k: Kit): void {
   awning(c, k, W - 9, -16, Math.PI / 2, 4.4, 3, MADDER);
   bales(c, k, W - 5, -4.4, 1.5, 5);
   jars(c, k, W - 12, 13, 5, 1.6);
-  k.well(c, HALF[1] + 13.5, 16);
+  well(c, k, HALF[1] + 13.5, 16);
   // who is here: the scribe at the gate, guards, citizens up and down the tiers, pilgrims, the high families at the top
   const GUARD: RGB = [0.62, 0.1, 0.12];
   const PURPLE: RGB = [0.36, 0.16, 0.48];

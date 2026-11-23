@@ -25,7 +25,7 @@ import { DEEP_HOLE, type Deep, type DeepKind, type DeepSpec } from './deep/types
 import { type Lead, leadPoint } from './lead';
 import { isSettlement } from './settlementKinds';
 import { settle, type SettleWorld } from './settle';
-import { buildSettlement, type Kit } from './settlements';
+import { buildSettlement, loadSettlementModels, settlementModelsReady, type Kit } from './settlements';
 import { RouteNet, routePos, type TravelRoute } from '../city/routes';
 
 const CELL = 900 * WORLD_SCALE;
@@ -621,6 +621,8 @@ class Ctx {
   readonly solids = new Solids();
   /** Off while building things you pass straight through (scrub, paving flush with the ground). */
   solid = true;
+  /** On while a modelled piece is drawn in place of what prim() is given: its solid is still added, nothing is drawn. */
+  ghost = false;
   foot = 20;
   cy = 1;
   sy = 0;
@@ -632,7 +634,7 @@ class Ctx {
     readonly x: number,
     readonly z: number,
     readonly baseY: number,
-    readonly rng: () => number,
+    public rng: () => number,
     yaw: number,
   ) {
     this.cy = Math.cos(yaw);
@@ -664,7 +666,7 @@ class Ctx {
     _q.setFromEuler(_e.set(rx, this.yaw + ry, rz, 'YXZ'));
     _s.set(sx, sy, sz);
     _m.compose(_p, _q, _s);
-    this.stone.geo(geo, _m);
+    if (!this.ghost) this.stone.geo(geo, _m);
     // too slight to stand on or be stopped by: lantern posts, cross bars
     if (!this.solid || geo === UNIT_CONE || Math.min(sx, sy, sz) < 0.25) return;
     _mi.copy(_m).invert();
@@ -3374,6 +3376,8 @@ interface Site {
   offer?: { kind: Offering; obj: THREE.Group };
   /** The stage it was built at, for a place that can be brought back (0 untouched). */
   stage: number;
+  /** For a settlement built before its modelled pieces had loaded: its stone drawn again with them. */
+  remake?: () => THREE.BufferGeometry | null;
 }
 
 /** Where people go at a temple, in world coordinates. */
@@ -3540,6 +3544,7 @@ export class Discoveries {
       fragmentShader: stoneFrag,
       side: THREE.DoubleSide,
     });
+    this.watchSettlementModels();
     this.rockMat = new THREE.ShaderMaterial({
       // the ground's own shader; no clipmap level to cut out of it
       uniforms: {
@@ -6019,6 +6024,7 @@ export class Discoveries {
     const ctx = new Ctx(w, x, z, baseY, rng, dx === undefined || dz === undefined ? turn : Math.atan2(-dz, dx));
     ctx.stone.salt = (cx * 31 + cz * 17) & 1023;
     ctx.stage = this.staged.get(cellKey(cx, cz)) ?? 0;
+    let remake: (() => THREE.BufferGeometry | null) | undefined;
     switch (kind) {
       case 'ruins': buildRuins(ctx); break;
       case 'oasis': buildOasis(ctx); break;
@@ -6053,15 +6059,38 @@ export class Discoveries {
       case 'sundial': buildSundial(ctx, onSalt); break;
       case 'temple': buildTemple(ctx); break;
       default:
-        if (isSettlement(kind)) buildSettlement(kind, ctx, KIT);
-        else buildShell(ctx);
+        if (isSettlement(kind)) {
+          if (settlementModelsReady()) buildSettlement(kind, ctx, KIT);
+          else {
+            // Built of plain boxes while the modelled pieces load: keep the random numbers it drew,
+            // so it can be built again, the same, once they have (watchSettlementModels).
+            const draws: number[] = [];
+            ctx.rng = () => {
+              const r = rng();
+              draws.push(r);
+              return r;
+            };
+            buildSettlement(kind, ctx, KIT);
+            ctx.rng = rng;
+            const { yaw, stage } = ctx;
+            const salt = ctx.stone.salt;
+            remake = () => {
+              let i = 0;
+              const again = new Ctx(w, x, z, baseY, () => draws[i++] ?? 0.5, yaw);
+              again.stone.salt = salt;
+              again.stage = stage;
+              buildSettlement(kind, again, KIT);
+              return again.stone.build();
+            };
+          }
+        } else buildShell(ctx);
         break;
     }
-    this.finishSite(cellKey(cx, cz), kind, x, z, baseY, ctx);
+    this.finishSite(cellKey(cx, cz), kind, x, z, baseY, ctx, remake);
   }
 
   /** Turns what a builder made into meshes and records the site. */
-  private finishSite(key: number, kind: string, x: number, z: number, baseY: number, ctx: Ctx): void {
+  private finishSite(key: number, kind: string, x: number, z: number, baseY: number, ctx: Ctx, remake?: () => THREE.BufferGeometry | null): void {
 
     const group = new THREE.Group();
     group.name = `site:${kind}`;
@@ -6126,6 +6155,7 @@ export class Discoveries {
       light: ctx.light ? new THREE.Vector4(ctx.x + ctx.light[0], baseY + ctx.light[1], ctx.z + ctx.light[2], ctx.light[3]) : undefined,
       relic,
       temple: ctx.temple ? templeMarks(ctx, baseY) : undefined,
+      remake,
       folk: ctx.folk?.map((f) => ({ x: ctx.x + f.u, z: ctx.z + f.v, yaw: Math.atan2(f.fu - f.u, f.fv - f.v), sit: f.sit, role: f.role, small: f.small, coat: f.coat, y: f.y === undefined ? undefined : baseY + f.y })),
       stage: ctx.stage,
     });
@@ -6162,6 +6192,27 @@ export class Discoveries {
       gm.renderOrder = 10;
       return gm;
     }
+  }
+
+  /**
+   * Starts loading the settlements' modelled pieces; when they arrive, the settlements already
+   * built of plain boxes are drawn again with them, once (their solids and people do not change).
+   */
+  private watchSettlementModels(): void {
+    if (settlementModelsReady()) return;
+    void loadSettlementModels().then((ok) => {
+      if (!ok) return;
+      for (const s of this.sites) {
+        const remake = s.remake;
+        if (!remake) continue;
+        s.remake = undefined;
+        const mesh = s.group.children.find((o): o is THREE.Mesh => o instanceof THREE.Mesh && o.material === this.stoneMat);
+        const g = remake();
+        if (!mesh || !g) continue;
+        mesh.geometry.dispose();
+        mesh.geometry = g;
+      }
+    });
   }
 
   private disposeSite(s: Site): void {
