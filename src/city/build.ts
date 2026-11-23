@@ -20,6 +20,8 @@ export interface CityMeshes {
   near: THREE.Group;
   /** Simplified skyline for viewing from 1.5 to 9 km away, same local space. */
   far: THREE.Group;
+  /** The near masonry (city-local), for collision to follow the shapes that are drawn. */
+  masonry: THREE.BufferGeometry | null;
   /** Every door the near city cut into its walls (local, on the wall plane, outward normal). */
   doors: Array<{ x: number; z: number; nx: number; nz: number; w: number }>;
   dispose(): void;
@@ -2898,6 +2900,7 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
     cut,
     near,
     far,
+    masonry: mg,
     doors: nb.doors,
     dispose() {
       for (const g of geos) g.dispose();
