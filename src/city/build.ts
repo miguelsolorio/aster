@@ -4,6 +4,8 @@ import type { Building, CityPlan, Room } from './types';
 import { rectFaces, type Face } from './rooms';
 import { GLOW, MAT, createCutUniforms, type CutUniforms, createGlowMaterial, createMasonryMaterial, createWaterMaterial, trackViewport } from './cityShaders';
 import { bodyOf, isRound, loopFaces, roundedLoop, shapeOf, slumpRadius, tierRadius, towerRadius, type Body, type Loop } from './shape';
+import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { loadModel, modelGeometry } from '../render/art';
 
 // Turns a CityPlan into meshes. Everything is written straight into growable typed arrays
 // and merged per material family:
@@ -1121,6 +1123,143 @@ function occlusionGrid(plan: CityPlan): Float32Array {
   return occ;
 }
 
+// ------------------------------------------------------------------ modelled details (architecture.glb)
+//
+// Carved doors, door surrounds, window frames and lattices, spouts, beam ends, parapet caps and dome
+// lanterns made in Blender (tools/blender/architecture.py). They are stamped where the builder
+// already knows its openings and edges are, into a writer of their own drawn with the near masonry's
+// material, so the masonry (and the collision worked out from it) is the same with or without them.
+// Their placement draws nothing from the building's rng: variants and density come from hashes. A
+// city built before the file arrived gets them once it does (buildCity).
+
+interface ArchModel {
+  pos: Float32Array;
+  nrm: Float32Array;
+  /** Per vertex: material id (-1 the host's), tint (signed offset for the host, else 0..1), wood hue seed. */
+  info: Float32Array;
+  uv: Float32Array;
+  index: ArrayLike<number>;
+}
+
+/** @internal The kit; exported for tests. */
+export interface ArchKit {
+  leaf: ArchModel[];
+  frame: ArchModel[];
+  arch: ArchModel;
+  jamb: ArchModel;
+  win: ArchModel[];
+  spout: ArchModel[];
+  viga: ArchModel[];
+  merlonCap: ArchModel;
+  step: ArchModel;
+  tooth: ArchModel;
+  cornerCap: ArchModel;
+  ring: ArchModel;
+  lantern: ArchModel;
+  finial: ArchModel;
+}
+
+/** The sizes the doors and windows were modelled at (architecture.py DOOR_W.. WIN_H). */
+const KIT_DOOR_W = 1.0, KIT_DOOR_H = 2.3, KIT_WIN_W = 0.7, KIT_WIN_H = 1.1;
+
+let ARCH: ArchKit | null = null;
+let archLoad: Promise<ArchKit | null> | null = null;
+
+function archModel(gltf: GLTF, name: string): ArchModel | null {
+  const g = modelGeometry(gltf, name);
+  const info = g?.getAttribute('_info');
+  const uv = g?.getAttribute('_grain');
+  if (!g || !info || info.itemSize !== 3 || !uv || uv.itemSize !== 2) return null;
+  g.computeVertexNormals();
+  const n = g.getAttribute('position').count;
+  return {
+    pos: Float32Array.from(g.getAttribute('position').array),
+    nrm: Float32Array.from(g.getAttribute('normal').array),
+    info: Float32Array.from(info.array),
+    uv: Float32Array.from(uv.array),
+    index: g.getIndex()?.array ?? Array.from({ length: n }, (_, i) => i),
+  };
+}
+
+/** @internal The kit out of a loaded architecture.glb, or null if any piece is missing. */
+export function archKitFrom(gltf: GLTF): ArchKit | null {
+  const set = (base: string, n: number): ArchModel[] | null => {
+    const out: ArchModel[] = [];
+    for (let i = 0; i < n; i++) {
+      const m = archModel(gltf, `${base}${i}`);
+      if (!m) return null;
+      out.push(m);
+    }
+    return out;
+  };
+  const leaf = set('DoorLeaf', 3), frame = set('DoorFrame', 2), win = set('Win', 3), spout = set('Spout', 2), viga = set('Viga', 2);
+  const one = (name: string): ArchModel | null => archModel(gltf, name);
+  const arch = one('DoorArch0'), jamb = one('DoorJamb0'), merlonCap = one('MerlonCap0'), step = one('ParapetStep0');
+  const tooth = one('ParapetTooth0'), cornerCap = one('CornerCap0'), ring = one('DomeRing0'), lantern = one('DomeLantern0'), finial = one('DomeFinial0');
+  if (!leaf || !frame || !win || !spout || !viga || !arch || !jamb || !merlonCap || !step || !tooth || !cornerCap || !ring || !lantern || !finial) return null;
+  return { leaf, frame, arch, jamb, win, spout, viga, merlonCap, step, tooth, cornerCap, ring, lantern, finial };
+}
+
+/** Starts loading the modelled details (once); resolves to them, or null without the file. */
+function loadArchitecture(): Promise<ArchKit | null> {
+  archLoad ??= loadModel('architecture.glb').then((gltf) => {
+    ARCH = gltf ? archKitFrom(gltf) : null;
+    return ARCH;
+  });
+  return archLoad;
+}
+
+/** 0..1 from a position, so a detail picks the same variant whenever its building is built. */
+const hashAt = (x: number, z: number, salt: number): number => hashU(Math.round(x * 16), Math.round(z * 16), salt);
+
+/**
+ * Writes a model into w at (ox, oy, oz): its x along (tx, tz), y up, z along (nx, nz), scaled by
+ * su, sy, sn. Parts in the host's material (-1) take hostMat and the host's tint plus their offset;
+ * wood with a hue seed keeps it as the vertex's baked hue (the masonry shader's seed on wood).
+ */
+function stampKit(
+  w: Writer, m: ArchModel, ox: number, oy: number, oz: number, tx: number, tz: number, nx: number, nz: number,
+  su: number, sy: number, sn: number, hostMat: number, hostTint: number,
+): void {
+  const nv = m.pos.length / 3;
+  w.reserve(nv, m.index.length);
+  const base = w.nv;
+  const mat0 = w.mat, tint0 = w.tint, seed0 = w.seed;
+  for (let i = 0; i < nv; i++) {
+    const p = i * 3;
+    const x = m.pos[p] * su, y = m.pos[p + 1] * sy, z = m.pos[p + 2] * sn;
+    const ax = m.nrm[p] / su, ay = m.nrm[p + 1] / sy, az = m.nrm[p + 2] / sn;
+    const wx = tx * ax + nx * az, wz = tz * ax + nz * az;
+    const l = Math.hypot(wx, ay, wz) || 1;
+    const k = Math.round(m.info[p]);
+    if (k < 0) {
+      w.mat = hostMat;
+      w.tint = clamp(Math.round(hostTint + m.info[p + 1] * 255), 0, 255);
+      w.seed = 0;
+    } else {
+      w.mat = k;
+      w.tint = clamp(Math.round(m.info[p + 1] * 255), 0, 255);
+      w.seed = k === MAT.wood && m.info[p + 2] > 0 ? clamp(Math.round(m.info[p + 2] * 255), 1, 255) : 0;
+    }
+    w.vert(ox + tx * x + nx * z, oy + y, oz + tz * x + nz * z, wx / l, ay / l, wz / l, m.uv[i * 2], m.uv[i * 2 + 1]);
+  }
+  // (along, up, out) is a mirrored frame when out is the along direction turned clockwise
+  const flip = tx * nz - tz * nx < 0;
+  const I = m.index;
+  for (let t = 0; t < I.length; t += 3) {
+    if (flip) w.index3(base + I[t], base + I[t + 2], base + I[t + 1]);
+    else w.index3(base + I[t], base + I[t + 1], base + I[t + 2]);
+  }
+  w.mat = mat0;
+  w.tint = tint0;
+  w.seed = seed0;
+}
+
+/** A model on a wall face at (u, y), off metres out of it. */
+function stampOn(w: Writer, m: ArchModel, f: Face, u: number, y: number, off: number, su: number, sy: number, sn: number, hostMat: number, hostTint: number): void {
+  stampKit(w, m, px(f, u, off), y, pz(f, u, off), f.tx, f.tz, f.nx, f.nz, su, sy, sn, hostMat, hostTint);
+}
+
 // ------------------------------------------------------------------ the near city
 
 /** @internal Exported for tests; use buildCity. */
@@ -1128,6 +1267,8 @@ export class NearBuilder {
   readonly w = new Writer(1 << 16, 1 << 17);
   readonly cloth = new Writer(4096, 8192);
   readonly plants = new Writer(4096, 8192);
+  /** The modelled details (empty without the kit): drawn with the masonry, never collided with. */
+  readonly detail = new Writer(4096, 8192);
   readonly glows = new Glows();
   readonly doors: CityMeshes['doors'] = [];
   /** The room each enterable building holds, by building index. */
@@ -1143,7 +1284,11 @@ export class NearBuilder {
   /** Window spacing multiplier, raised for very dense plans to keep the triangle budget. */
   private readonly density: number;
 
-  constructor(private readonly plan: CityPlan) {
+  constructor(
+    private readonly plan: CityPlan,
+    /** The modelled details to set onto the buildings, or null for none. */
+    private readonly kit: ArchKit | null = null,
+  ) {
     this.grid = plan.grid;
     this.occ = occlusionGrid(plan);
     this.gs = plan.gridSize | 0;
@@ -1240,7 +1385,7 @@ export class NearBuilder {
     }
     const L = layoutOf(this.plan, b, i);
     this.self = { x0: L.x0, z0: L.z0, x1: L.x1, z1: L.z1 };
-    const v0 = w.nv, c0 = this.cloth.nv, g0 = this.glows.d.length;
+    const v0 = w.nv, c0 = this.cloth.nv, d0 = this.detail.nv, g0 = this.glows.d.length;
     if (b.role === 'wall') this.rampart(b, L, rng);
     else if (isRound(b)) this.roundBuilding(b, rng, i);
     else this.blockBuilding(b, L, rng, i);
@@ -1260,6 +1405,7 @@ export class NearBuilder {
       }
       leanRange(w, v0, B, lean, b.h);
       leanRange(this.cloth, c0, B, lean, b.h);
+      leanRange(this.detail, d0, B, lean, b.h);
       leanPoints(this.glows.d, g0, 7, B, lean, b.h);
     }
   }
@@ -1476,6 +1622,15 @@ export class NearBuilder {
       else capLoop(w, loop, b.h);
       w.mat = wallMat;
       if (L.pb > 0) loopParapet(w, loop, faces, b.h, yt, 0.3, 0.07);
+      if (this.kit && L.pb >= 0.4 && hashU(this.seed, i, 0x4b) < TOOTH_FIT) {
+        // soft adobe teeth along the straight sides of the parapet
+        for (let fi = 0; fi < nf; fi++) {
+          const f = faces[fi];
+          if (hid[fi] || !straight[fi] || f.len < 1.4) continue;
+          const n = Math.floor(f.len / 1.4);
+          for (let k = 0; k < n; k++) stampOn(this.detail, this.kit.tooth, f, ((k + 0.5) * f.len) / n, top, 0, 1, 1, 1, wallMat, w.tint);
+        }
+      }
       // plaster bands: under the roof line, and on the storey line of taller houses
       const bandR = hashU(this.seed, i, 0x3b);
       if (bandR < 0.16 && b.h >= 3) loopBand(w, loop, faces, hid, b.h - 0.42, b.h - 0.18, 0.06);
@@ -1495,6 +1650,10 @@ export class NearBuilder {
       w.mat = wallMat;
       if (L.pb > 0) this.parapet(L.x0, L.z0, L.x1, L.z1, b.h, L, faces);
     }
+    if (this.kit) {
+      const framed = new Set(frames.map((fr) => fr.h));
+      for (let fi = 0; fi < nf; fi++) if (!hid[fi]) this.fitHoles(faces[fi], holes[fi], 0, wallMat, this.tintByte(b.tint), framed);
+    }
 
     // roof-line details
     if (!gate && !landmark) {
@@ -1510,6 +1669,62 @@ export class NearBuilder {
     if (L.tower) this.windTower(b, L, loop !== null);
     if (L.spire) this.spireCrown(b, L);
     if (L.turrets) this.turrets(b, L);
+  }
+
+  /**
+   * The kit's fittings for the openings of one wall face: a carved leaf in the back of a closed
+   * door and its surround (none where the plaster archFrame already rings it), a frame with a
+   * lattice, shutters or a grille in some of the windows. base is the floor the wall stands on.
+   * The window fittings stay in the reveal or within 0.13 of the wall, behind the window glows.
+   */
+  private fitHoles(f: Face, hs: Hole[], base: number, host: number, tint: number, framed: ReadonlySet<Hole> | null): void {
+    const K = this.kit;
+    if (!K) return;
+    const d = this.detail;
+    for (const h of hs) {
+      const wd = h.u1 - h.u0, ht = h.y1 - h.y0;
+      const uc = (h.u0 + h.u1) / 2;
+      const x = px(f, uc, 0), z = pz(f, uc, 0);
+      // nothing else on the face within that span (u) and height
+      const clear = (u0: number, u1: number, y0: number, y1: number): boolean =>
+        u0 >= 0.03 && u1 <= f.len - 0.03 && !hs.some((o) => o !== h && u0 < o.u1 && u1 > o.u0 && y0 < o.y1 && y1 > o.y0);
+      if (h.y0 <= base + 0.01 && ht >= 1.8 && wd <= 1.7) {
+        const sx = wd / KIT_DOOR_W, sy = ht / KIT_DOOR_H;
+        if (!h.through && h.back === MAT.wood && hashAt(x, z, 0x1f) < DOOR_LEAF_FIT) {
+          const leaf = K.leaf[Math.floor(hashAt(x, z, 0x1d) * K.leaf.length)];
+          stampOn(d, leaf, f, uc, h.y0, 0.004 - h.d, sx, sy, 1, host, tint);
+        }
+        if (framed?.has(h) || hashAt(x, z, 0x20) >= DOOR_FRAME_FIT) continue;
+        if (h.arch <= 0) {
+          // a timber case reaches 0.45 past the jambs, the stepped surround 0.36
+          const v = hashAt(x, z, 0x1e) < 0.5 ? 1 : 0;
+          for (const k of [v, 1 - v]) {
+            const r = (k === 1 ? 0.45 : 0.36) * sx;
+            if (!clear(h.u0 - r, h.u1 + r, h.y0, h.y1 + 0.6 * sy)) continue;
+            stampOn(d, K.frame[k], f, uc, h.y0, 0, sx, sy, 1, host, tint);
+            break;
+          }
+        } else if (Math.abs(h.arch - wd / 2) < 0.08) {
+          // the ring is modelled for a round-headed arch: scaled by the width, it rises by half of it
+          const spring = h.y1 - h.arch;
+          if (spring - h.y0 > 0.5 && clear(h.u0 - 0.14 * wd, h.u1 + 0.14 * wd, h.y0, h.y1 + 0.2 * wd)) {
+            stampOn(d, K.arch, f, uc, spring, 0, wd, wd, 1, host, tint);
+            stampOn(d, K.jamb, f, uc, h.y0, 0, sx, spring - h.y0, 1, host, tint);
+          }
+        }
+        continue;
+      }
+      if (h.y0 > base + 0.3 && h.back === MAT.opening && wd >= 0.45 && wd <= 1.0 && ht >= 0.55) {
+        // the windows at eye height first: they are the ones seen close
+        if (hashAt(x, z + h.y0, 0x2b) >= (h.y0 < base + 2 ? WINDOW_FIT_LOW : WINDOW_FIT_HIGH)) continue;
+        const sx = wd / KIT_WIN_W, sy = ht / KIT_WIN_H;
+        let v = Math.floor(hashAt(x, z + h.y0, 0x2c) * K.win.length);
+        // shutters fold back a window's width to each side; the others reach 0.12 past it
+        if (v === 1 && !clear(uc - wd, uc + wd, h.y0, h.y1)) v = h.y0 > base + 2 ? 0 : 2;
+        if (!clear(h.u0 - 0.12 * sx, h.u1 + 0.12 * sx, h.y0 - 0.08, h.y1 + 0.18 * sy)) continue;
+        stampOn(d, K.win[v], f, uc, h.y0, 0, sx, sy, 1, host, tint);
+      }
+    }
   }
 
   /** A cloth hung in a doorway: a valance under the lintel and the two halves drawn back to the jambs. */
@@ -1575,6 +1790,8 @@ export class NearBuilder {
           // the face frame runs along the outer wall; merlons occupy off in [-t, 0]
           faceBox(w, f, Math.max(u0, 0), Math.min(u1, f.len), yb, ym, -t, 0, 1 | 2 | 8 | 16);
           faceQuad(w, { ...f, nx: -f.nx, nz: -f.nz }, Math.max(u0, 0), Math.min(u1, f.len), yb, ym, t);
+          const ua = Math.max(u0, 0), ub = Math.min(u1, f.len);
+          if (this.kit && ub - ua > 0.3) stampOn(this.detail, this.kit.merlonCap, f, (ua + ub) / 2, ym, 0, (ub - ua) / 0.9, 1, t / 0.3, w.mat, w.tint);
         }
       }
     } else if (L.style === 'corner') {
@@ -1583,6 +1800,18 @@ export class NearBuilder {
       w.box(x1 - s, yb, z0, x1, ym, z0 + s);
       w.box(x0, yb, z1 - s, x0 + s, ym, z1);
       w.box(x1 - s, yb, z1 - s, x1, ym, z1);
+      if (this.kit) {
+        for (const [cx, cz] of [[x0 + s / 2, z0 + s / 2], [x1 - s / 2, z0 + s / 2], [x0 + s / 2, z1 - s / 2], [x1 - s / 2, z1 - s / 2]]) {
+          stampKit(this.detail, this.kit.cornerCap, cx, ym, cz, 1, 0, 0, 1, s / 0.65, 1, s / 0.65, w.mat, w.tint);
+        }
+      }
+    } else if (this.kit && hashAt(x0, z0, 0x4a) < 0.45) {
+      // a plain parapet crowned with stepped crenels, on the sides that are seen
+      for (const f of faces) {
+        if (f.len < 2 || this.hidden(f, yb + 0.4)) continue;
+        const n = Math.floor((f.len - 0.4) / 1.6);
+        for (let k = 0; k < n; k++) stampOn(this.detail, this.kit.step, f, ((k + 0.5) * f.len) / n, yb, 0, 1, 1, t / 0.3, w.mat, w.tint);
+      }
     }
   }
 
@@ -1595,9 +1824,14 @@ export class NearBuilder {
       const f = faces[fi];
       if (!straight[fi]) continue;
       if (hid[fi] || rng() < 0.4) continue;
+      // some rows are hewn logs from the kit (the procedural box inside each)
+      const logs = hashAt(f.ox, f.oz, 0x5a) < VIGA_FIT;
       for (let u = 0.7; u < f.len - 0.5; u += 1.35) {
         if (this.nb(f, u) > y - 0.5 || overlaps(holes[fi], u - 0.12, u + 0.12, y, y + 0.22, 0.1)) continue;
-        faceBox(w, f, u - 0.11, u + 0.11, y, y + 0.22, 0, 0.45 + 0.15 * rng(), 31);
+        const len = 0.45 + 0.15 * rng();
+        faceBox(w, f, u - 0.11, u + 0.11, y, y + 0.22, 0, len, 31);
+        // a hewn log round the box, its variant one per row
+        if (this.kit && logs) stampOn(this.detail, this.kit.viga[hashAt(f.ox, f.oz, 0x5b) < 0.5 ? 0 : 1], f, u, y, 0, 1, 1, len + 0.04, MAT.wood, w.tint);
       }
       done++;
     }
@@ -1617,6 +1851,8 @@ export class NearBuilder {
       w.mat = rng() < 0.5 ? MAT.wood : MAT.stone;
       const y = b.h + Math.min(L.pb, 0.15) - 0.05;
       faceBox(w, f, u - 0.1, u + 0.1, y - 0.14, y, 0, 0.75, 31);
+      // an open trough round the box, which becomes its floor
+      if (this.kit) stampOn(this.detail, this.kit.spout[hashAt(px(f, u, 0), pz(f, u, 0), 0x5c) < 0.5 ? 0 : 1], f, u, y, 0, 1, 1, 1, w.mat, w.tint);
     }
     w.mat = MAT.plaster;
   }
@@ -1729,6 +1965,7 @@ export class NearBuilder {
         }
       }
       wallFace(w, f, y0, top, holes);
+      this.fitHoles(f, holes, b.h, MAT.plaster, w.tint, null);
     }
     w.mat = MAT.roof;
     if (loop) capLoop(w, loop, top);
@@ -1801,8 +2038,30 @@ export class NearBuilder {
         w.mat = MAT.wood;
         taper(w, D.cx, D.cz, 0.06, 0, y0 + D.drum + D.hgt * 0.97, y0 + D.drum + D.hgt + 0.5, 4, 0);
       }
+      if (this.kit) {
+        this.domeRing(D.cx, D.cz, D.r, y0 + D.drum, segs, w.tint);
+        if (D.point > 0) this.domeTop(this.kit.finial, D.cx, y0 + D.drum + D.hgt * 0.95, D.cz, 1, w.tint);
+        else this.domeTop(this.kit.lantern, D.cx, y0 + D.drum + D.hgt - 0.03, D.cz, clamp(D.r * 0.2, 0.45, 1.2), w.tint);
+      }
     }
     w.mat = MAT.plaster;
+  }
+
+  /** The kit's roll moulding round the top edge of a drum of radius r (segs flat pieces, as the cylinder's). */
+  private domeRing(cx: number, cz: number, r: number, y: number, segs: number, tint: number): void {
+    const K = this.kit;
+    if (!K) return;
+    const rr = r * Math.cos(Math.PI / segs), chord = 2 * r * Math.sin(Math.PI / segs) + 0.03;
+    for (let k = 0; k < segs; k++) {
+      const a = ((k + 0.5) / segs) * Math.PI * 2;
+      const c = Math.cos(a), s = Math.sin(a);
+      stampKit(this.detail, K.ring, cx + c * rr, y, cz + s * rr, -s, c, c, s, chord, 1, 1, MAT.plaster, tint);
+    }
+  }
+
+  /** A lantern or finial from the kit on the crown of a dome, scaled by s. */
+  private domeTop(m: ArchModel, x: number, y: number, z: number, s: number, tint: number): void {
+    stampKit(this.detail, m, x, y, z, 1, 0, 0, 1, s, s, s, MAT.plaster, tint);
   }
 
   private windTower(b: Building, L: Layout, soft: boolean): void {
@@ -2070,6 +2329,10 @@ export class NearBuilder {
     this.roundWindows(faces, holes, 0, b.h, 0.18, rng, lit);
     w.mat = MAT.plaster;
     loopWalls(w, loop, faces, open, FOOT, loop.x.map(() => b.h), holes);
+    if (this.kit) {
+      const framed = new Set(frames.map((fr) => fr.h));
+      for (let fi = 0; fi < faces.length; fi++) this.fitHoles(faces[fi], holes[fi], 0, MAT.plaster, w.tint, framed);
+    }
     if (hashU(this.seed, i, 0x3c) < 0.35) loopBand(w, loop, faces, open, b.h - 0.38, b.h - 0.12, 0.07);
     for (const fr of frames) this.archFrame(fr.f, fr.h);
     w.mat = MAT.roof;
@@ -2083,6 +2346,9 @@ export class NearBuilder {
     if (point > 0) {
       w.mat = MAT.wood;
       taper(w, B.cx, B.cz, 0.06, 0, top - 0.05, top + 0.5, 4, 0);
+      if (this.kit) this.domeTop(this.kit.finial, B.cx, top - 0.06, B.cz, 0.9, w.tint);
+    } else if (this.kit && hashU(this.seed, i, 0x3f) >= 0.5 && hashU(this.seed, i, 0x4c) < 0.5) {
+      this.domeTop(this.kit.lantern, B.cx, top - 0.03, B.cz, clamp(Math.min(rx, rz) * 0.18, 0.4, 0.75), w.tint);
     } else if (hashU(this.seed, i, 0x3f) < 0.5) {
       // a little vent at the crown
       w.mat = MAT.plaster;
@@ -2151,7 +2417,9 @@ export class NearBuilder {
     const door: Hole = { u0: pw - 0.5, u1: pw + 0.5, y0: 0, y1: Math.min(2.0, ph - 0.2), d: pd + 0.4, back: rng() < 0.6 ? MAT.wood : MAT.opening, seed: rng() < 0.25 ? lit() : 0, arch: 0.5, k: 3, point: 0.1 };
     wallFace(w, front, FOOT, ph, [door]);
     faceBox(w, front, 0, 2 * pw, FOOT, ph, -pd, 0, 2 | 8 | 16);
-    if (rng() < 0.35) this.archFrame(front, door);
+    const framed = rng() < 0.35;
+    if (framed) this.archFrame(front, door);
+    this.fitHoles(front, [door], 0, MAT.plaster, w.tint, framed ? new Set([door]) : null);
     const [cxF, czF] = at(s1, 0);
     this.doors.push({ x: cxF, z: czF, nx: dx, nz: dz, w: 1.0 });
   }
@@ -2205,6 +2473,7 @@ export class NearBuilder {
       }
       w.mat = wallMat;
       loopWalls(w, loop, faces, faces.map(() => false), y0, faces.map(() => y1), holes);
+      if (this.kit) for (let fi = 0; fi < faces.length; fi++) this.fitHoles(faces[fi], holes[fi], 0, wallMat, w.tint, null);
       // the ring band where the tower steps in (at the top it stands up as a low parapet)
       const last = k === n - 1;
       const rb = r + band;
@@ -2255,6 +2524,9 @@ export class NearBuilder {
       if (point > 0) {
         w.mat = MAT.wood;
         taper(w, cx, cz, 0.07, 0, b.h + b.crown * 0.97, b.h + b.crown + 0.6, 4, 0);
+        if (this.kit) this.domeTop(this.kit.finial, cx, b.h + b.crown * 0.95, cz, 1.1, w.tint);
+      } else if (this.kit && hashU(this.seed, i, 0x4d) < 0.4) {
+        this.domeTop(this.kit.lantern, cx, b.h + Math.max(0.8, b.crown) - 0.03, cz, clamp(rTop * 0.22, 0.45, 0.9), w.tint);
       }
     }
   }
@@ -2325,6 +2597,7 @@ export class NearBuilder {
       }
       w.mat = MAT.stone;
       loopWalls(w, loop, faces, faces.map(() => false), T.y0, faces.map(() => wallTop), holes);
+      if (this.kit) for (let fi = 0; fi < faces.length; fi++) this.fitHoles(faces[fi], holes[fi], 0, MAT.stone, w.tint, null);
       // the flared lip, and the flat ring roof out to it (the lowest one is the walkable roof at h)
       frustum(w, cx, cz, T.r, T.r + T.fl, wallTop, T.y1, T.sides);
       cylinder(w, cx, cz, T.r + T.fl, T.y1, T.y1 + 0.12, T.sides);
@@ -2601,6 +2874,18 @@ function polyRing(w: Writer, cx: number, cz: number, r0: number, r1: number, y0:
 // ------------------------------------------------------------------ the far skyline
 
 const FAR_MIN_H = 6;
+// Shares of the openings and edges the kit fits out (by a hash of their place), which keep the
+// details near a quarter of a city's near triangles: windows are by far the most numerous.
+/** Windows at eye height, and above it. */
+const WINDOW_FIT_LOW = 0.12;
+const WINDOW_FIT_HIGH = 0.05;
+/** Carved leaves in closed doors; surrounds on any door. */
+const DOOR_LEAF_FIT = 0.6;
+const DOOR_FRAME_FIT = 0.28;
+/** Rows of beam ends drawn as logs. */
+const VIGA_FIT = 0.4;
+/** Slumped houses with teeth along their parapet. */
+const TOOTH_FIT = 0.08;
 /** About how many windows a city may have before their spacing is widened. */
 const WINDOW_BUDGET = 9000;
 const FAR_DOTS = 320;
@@ -2848,19 +3133,33 @@ function farGroup(plan: CityPlan, uniforms: Uniforms, geos: THREE.BufferGeometry
 export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
   const geos: THREE.BufferGeometry[] = [];
   const mats: THREE.Material[] = [];
-  const nb = new NearBuilder(plan);
+  const kit = ARCH;
+  const loading = loadArchitecture();
+  const nb = new NearBuilder(plan, kit);
   nb.build();
 
   const near = new THREE.Group();
   near.name = 'city-near';
   const cut = createCutUniforms();
   const mg = nb.w.geometry();
+  let masonryMat: THREE.ShaderMaterial | null = null;
   if (mg) {
     const m = createMasonryMaterial(uniforms, { shadow: true, twoSided: false, sway: false, cut });
+    masonryMat = m;
     mats.push(m);
     geos.push(mg);
     near.add(mesh(mg, m, 'city-masonry'));
   }
+  // the modelled details, drawn with the masonry's own material (so its light, grain, night and
+  // cut-away) but kept out of the masonry geometry, which collision is worked out from
+  const addDetails = (w: Writer): void => {
+    const g = w.geometry();
+    if (!g || !masonryMat) return;
+    geos.push(g);
+    near.add(mesh(g, masonryMat, 'city-details'));
+    near.userData.triangles = ((near.userData.triangles as number | undefined) ?? 0) + w.tris;
+  };
+  let disposed = false;
   const cg = nb.cloth.geometry();
   if (cg) {
     const m = createMasonryMaterial(uniforms, { shadow: true, twoSided: true, sway: false });
@@ -2896,6 +3195,16 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
 
   const far = farGroup(plan, uniforms, geos, mats);
   near.userData.triangles = nb.w.tris + nb.cloth.tris + nb.plants.tris;
+  if (kit) addDetails(nb.detail);
+  else {
+    // built before the details arrived: build the city again with them, once, and keep only those
+    void loading.then((K) => {
+      if (!K || disposed) return;
+      const again = new NearBuilder(plan, K);
+      again.build();
+      addDetails(again.detail);
+    });
+  }
   return {
     cut,
     near,
@@ -2903,6 +3212,7 @@ export function buildCity(plan: CityPlan, uniforms: Uniforms): CityMeshes {
     masonry: mg,
     doors: nb.doors,
     dispose() {
+      disposed = true;
       for (const g of geos) g.dispose();
       for (const m of mats) m.dispose();
       geos.length = 0;
