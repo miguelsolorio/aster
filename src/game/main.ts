@@ -509,6 +509,8 @@ function start() {
 
   let rt: THREE.WebGLRenderTarget | null = null;
   let rtDepth: THREE.WebGLRenderTarget | null = null;
+  let sizeKey = ''; // pixel size and samples of the current targets (resize skips when unchanged)
+  let resizeTimer = 0;
   const rtSize = new THREE.Vector2(2, 2);
   /** True when the post shader reads the depth buffer this frame: a storm in reach or a rainbow (storm.ts), or the depth-edge outline (shaders.ts). */
   const postNeedsDepth = () =>
@@ -539,6 +541,10 @@ function start() {
     ratio = Math.min(ratio, Math.sqrt(q.pixelBudget / (w * h))) * auto.renderScale;
     const pw = Math.max(2, Math.round(w * ratio));
     const ph = Math.max(2, Math.round(h * ratio));
+    // iOS Safari fires resize as its toolbar shows and hides: nothing to do when the pixels are the same.
+    const key = `${pw}x${ph}x${q.samples}`;
+    if (key === sizeKey && rt) return;
+    sizeKey = key;
     renderer.setSize(pw, ph, false);
     rt?.dispose();
     rtDepth?.depthTexture?.dispose();
@@ -557,7 +563,10 @@ function start() {
     camera.updateProjectionMatrix();
     stillDrawn = false;
   }
-  window.addEventListener('resize', resize);
+  window.addEventListener('resize', () => {
+    window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(resize, 150);
+  });
 
   // ---- sending things to the GPU ahead of need: a city's full detail a mesh a frame before it is shown
   const uploader = new Uploader();
@@ -644,6 +653,7 @@ function start() {
     // Forget the journey and the spawn, keep the settings, and arrive at the default spot.
     onReset() {
       resetting = true;
+      save.discard();
       clearProgress();
       const url = new URL(window.location.href);
       for (const k of ['x', 'z', 'miner', 'reset', 'tools', 'deep', 'cavern']) url.searchParams.delete(k);
@@ -1239,10 +1249,25 @@ function start() {
   }
   // ---- and the map with it, whatever kind of visit this is
   {
+    // The map is encoded from rows kept up to date as cells are revealed, and written when the browser is idle,
+    // at most every ~15 s; leaving the page writes it at once.
     const keepMap = () => {
       if (!resetting) atlas.store();
     };
-    window.setInterval(keepMap, 5000);
+    let mapWritten = performance.now();
+    let mapIdle = false;
+    const keepMapSoon = () => {
+      if (mapIdle || !atlas.dirty || performance.now() - mapWritten < 15000) return;
+      mapIdle = true;
+      const go = () => {
+        mapIdle = false;
+        mapWritten = performance.now();
+        keepMap();
+      };
+      if (window.requestIdleCallback) window.requestIdleCallback(go, { timeout: 4000 });
+      else window.setTimeout(go, 300);
+    };
+    window.setInterval(keepMapSoon, 5000);
     window.addEventListener('pagehide', keepMap);
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') keepMap();
@@ -2010,7 +2035,11 @@ function start() {
     camera,
     player: player.state,
   };
+  save.deferWrites();
   window.addEventListener('pagehide', () => save.flush());
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') save.flush();
+  });
   const push = new THREE.Vector2();
   const input: PlayerInput = { x: 0, z: 0, jump: false, lift: false, drop: false, wind, push };
   const camTarget = new THREE.Vector3().copy(player.state.pos);
@@ -3194,6 +3223,11 @@ function start() {
 
   let frozen = false;
   let last = performance.now();
+  let lastRaf = 0;
+  let prevWork = 0; // ms the previous rAF callback spent drawing
+  let refreshKnown = false;
+  let gapCount = 0;
+  const rafGaps: number[] = [];
   function tick(now: number) {
     requestAnimationFrame(tick);
     // Nothing to do while the tab is hidden.
@@ -3201,9 +3235,34 @@ function start() {
       last = now;
       return;
     }
-    // Phones are capped at 60 frames a second to save battery.
-    const capped = touch.used || auto.tier === 'mobile';
-    if (capped && now - last < 1000 / 62) return;
+    // The display's refresh interval, from the gaps between rAF callbacks. Only gaps that follow a cheap
+    // callback count (a long frame delays the next callback to a later vsync and would read as a slower display).
+    if (lastRaf > 0 && prevWork < 6) {
+      const d = now - lastRaf;
+      if (d > 3 && d < 45) {
+        rafGaps.push(d);
+        if (rafGaps.length > 90) rafGaps.shift();
+        if (rafGaps.length >= 30 && ++gapCount % 15 === 0) {
+          const sorted = [...rafGaps].sort((a, b) => a - b);
+          const est = sorted[Math.floor(sorted.length * 0.15)];
+          const hz = 1000 / est;
+          const snap = [30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 240].find((r) => Math.abs(hz - r) / r < 0.08);
+          auto.setRefresh(1 / (snap ?? hz));
+          refreshKnown = true;
+        }
+      }
+    }
+    lastRaf = now;
+    prevWork = 0;
+    // Phones are paced: an even 60 (or the display's rate below that), or an even 30 when 60 cannot be held
+    // (every 2nd vsync on 60 Hz, every 4th on 120 Hz; see AutoQuality). Half a vsync of slack so a timestamp
+    // that comes a little early does not drop a beat. Desktop runs as fast as the display goes.
+    const paced = touch.used || auto.tier === 'mobile';
+    auto.setPaced(paced);
+    if (paced) {
+      const gate = refreshKnown ? auto.targetIntervalS * 1000 - auto.refreshS * 500 : 1000 / 62;
+      if (now - last < gate) return;
+    }
     const real = (now - last) / 1000;
     const dt = Math.min(0.05, Math.max(0, real));
     last = now;
@@ -3220,14 +3279,16 @@ function start() {
     stillDrawn = resting;
     // what this frame can give to building the world (see world/budget.ts)
     frameBudget.begin(budgetFor(auto.tier));
+    const t0 = performance.now();
     update(still || ui.state === 'photo' ? 0 : dt);
     perf?.begin();
     uploader.before();
     render();
     uploader.after();
+    prevWork = performance.now() - t0;
     perf?.end(now);
     lateWatch?.();
-    if (ui.state === 'playing' && !mapOpen) auto.frame(real);
+    if (ui.state === 'playing' && !mapOpen) auto.frame(real, prevWork / 1000);
   }
   requestAnimationFrame(tick);
 

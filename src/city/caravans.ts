@@ -26,6 +26,7 @@ const CAP_PROP = 560;
 const CAP_FIRE = 500;
 /** Route parties and camps are kept for the routes this near the player (distance to the line between the cities). */
 const ROUTE_NEAR = RANGE + 1500;
+const EVICT_AFTER = 240; // s a built place can go unwanted before it is let go
 const TAU = Math.PI * 2;
 const AVOID_R = 400; // within this of the player, walkers step round whatever stands on their way
 // How far aside of their line they look for a way past, nearest first (m).
@@ -3136,14 +3137,43 @@ export class Caravans {
 
   // ---------------------------------------------------------------- update
 
+  // What was built for places the player has left behind is let go, so a long walk does not grow memory:
+  // an entry not wanted for EVICT_AFTER seconds is out of range (the player cannot cross 2x the largest range that fast
+  // without it being rebuilt anyway, which is deterministic from the place). Checked once a minute.
+  private clock = 0;
+  private swept = 0;
+  private readonly seen = new Map<Map<never, never>, Map<unknown, number>>();
+
+  private touch<K, V>(m: Map<K, V>, key: K): void {
+    let s = this.seen.get(m as unknown as Map<never, never>);
+    if (!s) {
+      s = new Map();
+      this.seen.set(m as unknown as Map<never, never>, s);
+    }
+    s.set(key, this.clock);
+  }
+
+  private evict(): void {
+    this.swept = this.clock;
+    for (const [m, s] of this.seen) {
+      for (const [key, at] of s) {
+        if (this.clock - at < EVICT_AFTER) continue;
+        s.delete(key);
+        (m as Map<unknown, unknown>).delete(key);
+      }
+    }
+  }
+
   update(f: FrameState): void {
     const dt = Math.min(f.dt, 0.1);
     const px = f.player.pos.x;
     const pz = f.player.pos.z;
 
+    this.clock += dt;
     this.refresh -= dt;
     if (this.refresh <= 0) {
       this.refresh = 1.5;
+      if (this.clock - this.swept > 60) this.evict();
       const sites = this.cities.near(px, pz);
       this.live.length = 0;
       for (let i = 0; i < sites.length; i++) {
@@ -3154,6 +3184,7 @@ export class Caravans {
           gs = this.build(s);
           this.cache.set(s.id, gs);
         }
+        this.touch(this.cache, s.id);
         for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
       }
       // the routes between cities: their camps, and the parties walking them
@@ -3167,6 +3198,7 @@ export class Caravans {
           gs = this.buildRoute(r);
           this.routeLife.set(r.key, gs);
         }
+        this.touch(this.routeLife, r.key);
         for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
       }
       for (let k = 0; k < this.placed.length; k++) this.live.push(this.placed[k]);
@@ -3181,6 +3213,7 @@ export class Caravans {
               os = this.buildOasis(l);
               this.oases.set(l.key, os);
             }
+            this.touch(this.oases, l.key);
             for (let k = 0; k < os.length; k++) this.live.push(os[k]);
             continue;
           }
@@ -3190,6 +3223,7 @@ export class Caravans {
             gs = this.buildShrine(l, ls);
             this.shrines.set(l.key, gs);
           }
+          this.touch(this.shrines, l.key);
           for (let k = 0; k < gs.length; k++) this.live.push(gs[k]);
         }
       }
@@ -3203,6 +3237,7 @@ export class Caravans {
             g = this.buildVillage(v);
             this.villagers.set(v.key, g);
           }
+          this.touch(this.villagers, v.key);
           this.live.push(g);
         }
       }
@@ -3281,12 +3316,19 @@ export class Caravans {
     this.personGeo.instanceCount = this.nP;
     this.propGeo.instanceCount = this.nR;
     this.fireGeo.instanceCount = this.nF;
-    this.aPos.attr.needsUpdate = this.aUp.attr.needsUpdate = this.aMot.attr.needsUpdate = true;
-    this.aCoat.attr.needsUpdate = this.aLoad.attr.needsUpdate = this.aAux.attr.needsUpdate = true;
-    this.pPos.attr.needsUpdate = this.pUp.attr.needsUpdate = this.pMot.attr.needsUpdate = true;
-    this.pCoat.attr.needsUpdate = this.pLoad.attr.needsUpdate = true;
-    this.rPos.attr.needsUpdate = this.rProp.attr.needsUpdate = this.rCol.attr.needsUpdate = true;
-    this.fBase.attr.needsUpdate = this.fKind.attr.needsUpdate = true;
+    // upload only the instances in use, not the whole capacity
+    const up = (n: number, ...bufs: Inst[]): void => {
+      if (n <= 0) return;
+      for (const b of bufs) {
+        b.attr.clearUpdateRanges();
+        b.attr.addUpdateRange(0, n * 4);
+        b.attr.needsUpdate = true;
+      }
+    };
+    up(this.nA, this.aPos, this.aUp, this.aMot, this.aCoat, this.aLoad, this.aAux);
+    up(this.nP, this.pPos, this.pUp, this.pMot, this.pCoat, this.pLoad);
+    up(this.nR, this.rPos, this.rProp, this.rCol);
+    up(this.nF, this.fBase, this.fKind);
   }
 
   /** Put a group where its schedule says it should be, used whenever it (re)appears. */

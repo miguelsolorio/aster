@@ -194,14 +194,14 @@ async function runScenario(browser, base, name) {
   const poll = async () => {
     const s = await page.evaluate(() => {
       const p = window.__perf;
-      return { count: p.count, tail: p.frames.slice(-200), calls: p.calls, triangles: p.triangles, programs: p.programs, tier: p.tier, scale: p.renderScale, heap: p.heapMB, long: p.longTasks };
+      return { count: p.count, tail: p.frames.slice(-200), calls: p.calls, triangles: p.triangles, programs: p.programs, tier: p.tier, scale: p.renderScale, pace: p.pace, heap: p.heapMB, long: p.longTasks };
     });
     if (seen === null) seen = { count: s.count, long: s.long };
     else {
       const fresh = Math.min(s.count - seen.count - ft.length, s.tail.length);
       if (fresh > 0) ft.push(...s.tail.slice(-fresh));
     }
-    samples.push({ calls: s.calls, triangles: s.triangles, programs: s.programs, tier: s.tier, scale: s.scale, heap: s.heap });
+    samples.push({ calls: s.calls, triangles: s.triangles, programs: s.programs, tier: s.tier, scale: s.scale, pace: s.pace, heap: s.heap });
     return s;
   };
   await poll();
@@ -248,7 +248,7 @@ try {
       continue;
     }
     const ft = res.raw.ft;
-    const row = { scenario: name, ...summarize(ft, res.raw.long, res.samples), tier: res.samples.at(-1)?.tier, scale: res.samples.at(-1)?.scale };
+    const row = { scenario: name, ...summarize(ft, res.raw.long, res.samples), tier: res.samples.at(-1)?.tier, scale: res.samples.at(-1)?.scale, pace: res.samples.at(-1)?.pace };
     row.longTasks = res.raw.long;
     rows.push(row);
     fs.writeFileSync(path.join(OUT, `${name}.json`), JSON.stringify({ row, frames: ft, samples: res.samples, trace: res.traceInfo, errors: res.errors }));
@@ -268,7 +268,7 @@ try {
 } catch {}
 fs.writeFileSync(path.join(OUT, 'summary.json'), JSON.stringify({ sha, date: new Date().toISOString(), throttle: THROTTLE, seconds: SECONDS, rows }, null, 2));
 
-const cols = ['scenario', 'median', 'p95', 'p99', 'over33', 'over50', 'over100', 'max', 'longTasks', 'calls', 'triangles', 'tier', 'scale'];
+const cols = ['scenario', 'median', 'p95', 'p99', 'over33', 'over50', 'over100', 'max', 'longTasks', 'calls', 'triangles', 'tier', 'scale', 'pace'];
 console.log(`\nthrottle ${THROTTLE}x, ${SECONDS}s, ${sha}`);
 console.log(cols.join('\t'));
 for (const r of rows) console.log(r.skipped ? `${r.scenario}\tSKIPPED: ${r.skipped}` : cols.map((c) => r[c]).join('\t'));

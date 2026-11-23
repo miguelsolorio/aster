@@ -47,6 +47,11 @@ export class Atlas {
   /** Where each thing the wanderer has been sent after was said to lie, until it is in hand. */
   readonly errands: Partial<Record<Errand, { x: number; z: number }>> = {};
   private readonly ids = new Set<string>();
+  /** The cells as runs along each row (z): start, length, start, length... ascending in x. Kept up to date as cells are added. */
+  private readonly rowRuns = new Map<number, number[]>();
+  /** Each row as stored (JSON), made again only for rows that changed since. */
+  private readonly rowJson = new Map<number, string>();
+  private readonly rowsDirty = new Set<number>();
   /** Something has changed since it was last stored. */
   dirty = false;
 
@@ -73,6 +78,7 @@ export class Atlas {
         const key = cellKey(cx, cz);
         if (this.cells.has(key) || this.cells.size >= MAX_CELLS) continue;
         this.cells.add(key);
+        this.addToRow(cx, cz);
         fresh?.push(key);
         n++;
       }
@@ -103,29 +109,48 @@ export class Atlas {
     this.dirty = true;
   }
 
-  /** The map as it is stored. */
+  /** Records a new cell in its row's runs (merging with neighbours) and marks the row for re-encoding. */
+  private addToRow(cx: number, cz: number): void {
+    let runs = this.rowRuns.get(cz);
+    if (!runs) {
+      runs = [];
+      this.rowRuns.set(cz, runs);
+    }
+    this.rowsDirty.add(cz);
+    // the last run starting at or before cx
+    let lo = 0;
+    let hi = runs.length >> 1;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (runs[mid * 2] <= cx) lo = mid + 1;
+      else hi = mid;
+    }
+    const i = lo - 1;
+    if (i >= 0 && cx < runs[i * 2] + runs[i * 2 + 1]) return;
+    const joinsPrev = i >= 0 && cx === runs[i * 2] + runs[i * 2 + 1];
+    const joinsNext = i + 1 < runs.length >> 1 && runs[(i + 1) * 2] === cx + 1;
+    if (joinsPrev && joinsNext) {
+      runs[i * 2 + 1] += 1 + runs[(i + 1) * 2 + 1];
+      runs.splice((i + 1) * 2, 2);
+    } else if (joinsPrev) {
+      runs[i * 2 + 1]++;
+    } else if (joinsNext) {
+      runs[(i + 1) * 2]--;
+      runs[(i + 1) * 2 + 1]++;
+    } else {
+      runs.splice((i + 1) * 2, 0, cx, 1);
+    }
+  }
+
+  /** The map as it is stored. Only the rows that changed since the last call are written out again. */
   encode(): string {
-    const byRow = new Map<number, number[]>();
-    for (const key of this.cells) {
-      const cz = keyZ(key);
-      let row = byRow.get(cz);
-      if (!row) byRow.set(cz, (row = []));
-      row.push(keyX(key));
+    for (const cz of this.rowsDirty) {
+      const runs = this.rowRuns.get(cz);
+      if (runs?.length) this.rowJson.set(cz, `"${cz}":${JSON.stringify(runs)}`);
+      else this.rowJson.delete(cz);
     }
-    const rows: Record<string, number[]> = {};
-    for (const [cz, xs] of byRow) {
-      xs.sort((a, b) => a - b);
-      const runs: number[] = [];
-      for (let i = 0; i < xs.length; ) {
-        let j = i + 1;
-        while (j < xs.length && xs[j] === xs[j - 1] + 1) j++;
-        runs.push(xs[i], j - i);
-        i = j;
-      }
-      rows[cz] = runs;
-    }
-    const out: Stored = { v: 1, rows, places: this.places, errands: this.errands };
-    return JSON.stringify(out);
+    this.rowsDirty.clear();
+    return `{"v":1,"rows":{${[...this.rowJson.values()].join(',')}},"places":${JSON.stringify(this.places)},"errands":${JSON.stringify(this.errands)}}`;
   }
 
   /** Read a stored map back. Anything that cannot be trusted is left out. */
@@ -143,7 +168,13 @@ export class Atlas {
             const len = runs[i + 1];
             if (!whole(start) || !whole(len) || len <= 0) continue;
             for (let cx = start; cx < start + len && a.cells.size < MAX_CELLS; cx++) {
-              if (inRange(cx)) a.cells.add(cellKey(cx, cz));
+              if (inRange(cx)) {
+                const key = cellKey(cx, cz);
+                if (!a.cells.has(key)) {
+                  a.cells.add(key);
+                  a.addToRow(cx, cz);
+                }
+              }
             }
           }
         }

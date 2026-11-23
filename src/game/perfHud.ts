@@ -26,6 +26,8 @@ interface PerfData {
   triangles: number;
   programs: number;
   tier: string;
+  pace: number; // the frame-rate target: 60, or an even 30
+  refreshHz: number; // the display, as measured
   renderScale: number;
   heapMB: number | null;
 }
@@ -54,6 +56,8 @@ export function createPerfHud(renderer: WebGLRenderer, auto: AutoQuality): PerfH
     triangles: 0,
     programs: 0,
     tier: auto.tier,
+    pace: auto.pace,
+    refreshHz: 60,
     renderScale: auto.renderScale,
     heapMB: null,
   };
@@ -108,6 +112,8 @@ export function createPerfHud(renderer: WebGLRenderer, auto: AutoQuality): PerfH
       data.median = median(ms);
       data.worst = ms.length ? Math.max(...ms) : 0;
       data.tier = auto.tier;
+      data.pace = auto.pace;
+      data.refreshHz = Math.round(1 / auto.refreshS);
       data.renderScale = auto.renderScale;
       const mem = (performance as unknown as { memory?: { usedJSHeapSize: number } }).memory;
       data.heapMB = mem ? mem.usedJSHeapSize / 1048576 : null;
@@ -116,7 +122,7 @@ export function createPerfHud(renderer: WebGLRenderer, auto: AutoQuality): PerfH
         `${data.fps} fps  med ${data.median.toFixed(1)}  worst ${data.worst.toFixed(0)} ms\n` +
         `>50: ${data.over50}  >100: ${data.over100}  long: ${data.longTasks}\n` +
         `${data.calls} calls  ${(data.triangles / 1000).toFixed(0)}k tris  ${data.programs} prog\n` +
-        `${data.tier} x${data.renderScale}` +
+        `${data.tier} x${data.renderScale}  pace ${data.pace}${auto.paced ? '' : ' (uncapped)'}  ${data.refreshHz} Hz` +
         (data.heapMB !== null ? `  ${data.heapMB.toFixed(0)} MB` : '');
     },
   };
