@@ -6,12 +6,14 @@ import * as THREE from 'three';
 import { warmObjects } from '../render/warm';
 import type { Uniforms } from '../game/contract';
 
-const RES = 1024;
+const RES = 1024; // texels per side at full quality (see setQuality)
 const TAU = 180; // seconds, wind fill-in time constant
 const MAX_STAMPS = 256;
 
 interface Cascade {
   size: number; // metres covered
+  baseStep: number; // seconds between decay passes at full quality
+  baseBlur: number; // blur mix per decay pass at full quality
   texel: number; // metres per texel
   step: number; // seconds between decay passes
   blur: number; // blur mix per decay pass
@@ -112,14 +114,17 @@ export class TrailField {
   private readonly stampGeo = new THREE.InstancedBufferGeometry();
   private readonly stampData = new Float32Array(MAX_STAMPS * 6);
   private readonly instBuf: THREE.InstancedInterleavedBuffer;
+  private readonly makeRT: (res?: number) => THREE.WebGLRenderTarget;
   private count = 0;
+  private res = RES; // texels per side now
+  private scrollTexels = 1; // the window moves in steps of this many texels
   private readonly clearColor = new THREE.Color();
 
   constructor(renderer: THREE.WebGLRenderer, uniforms: Uniforms) {
     this.renderer = renderer;
 
-    const makeRT = () => {
-      const rt = new THREE.WebGLRenderTarget(RES, RES, {
+    this.makeRT = (res = RES) => {
+      const rt = new THREE.WebGLRenderTarget(res, res, {
         format: THREE.RedFormat,
         type: THREE.UnsignedByteType,
         minFilter: THREE.LinearFilter,
@@ -133,8 +138,9 @@ export class TrailField {
       rt.texture.generateMipmaps = false;
       return rt;
     };
+    const makeRT = this.makeRT;
     const make = (size: number, step: number, blur: number, minRadius: number, strScale: number, names: [string, string]): Cascade => ({
-      size, texel: size / RES, step, blur, minRadius, strScale,
+      size, baseStep: step, baseBlur: blur, texel: size / RES, step, blur, minRadius, strScale,
       rts: [makeRT(), makeRT()], read: 0, ix: 0, iz: 0, accum: 0, steps: 0,
       texU: holder(uniforms, names[0], null),
       rectU: holder(uniforms, names[1], new THREE.Vector3()),
@@ -202,6 +208,50 @@ export class TrailField {
     d[o + 4] = heading; d[o + 5] = Math.max(0.01, aspect);
   }
 
+  /**
+   * Quality: `res` texels per side over the same ground (so coarser marks, not a smaller map), the
+   * window re-centres in steps of `scrollTexels` texels (fewer scroll passes while moving), and a
+   * decay pass runs every `decayEvery` times as long (with that much more blur per pass, so the
+   * fill-in is the same). Full quality is (1024, 1, 1). Existing marks are carried over.
+   */
+  setQuality(res: number, scrollTexels: number, decayEvery: number): void {
+    this.scrollTexels = Math.max(1, Math.round(scrollTexels));
+    for (const c of this.cascades) {
+      c.step = c.baseStep * decayEvery;
+      c.blur = Math.min(1, c.baseBlur * decayEvery);
+    }
+    if (res === this.res) return;
+    const r = this.renderer;
+    const prevRT = r.getRenderTarget();
+    const prevAuto = r.autoClear;
+    r.autoClear = false;
+    const m = this.scrollMat.uniforms;
+    for (const c of this.cascades) {
+      const oldTexel = c.texel;
+      const nt = c.size / res;
+      const ix = Math.round((c.ix * oldTexel) / nt);
+      const iz = Math.round((c.iz * oldTexel) / nt);
+      const next = [this.makeRT(res), this.makeRT(res)] as [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget];
+      m.tMap.value = c.rts[c.read].texture;
+      (m.uOffset.value as THREE.Vector2).set((ix * nt - c.ix * oldTexel) / c.size, (iz * nt - c.iz * oldTexel) / c.size);
+      m.uDecay.value = 1;
+      m.uTexel.value = 1 / res;
+      r.setRenderTarget(next[0]);
+      r.render(this.scrollScene, this.camera);
+      for (const rt of c.rts) rt.dispose();
+      c.rts = next;
+      c.read = 0;
+      c.texel = nt;
+      c.ix = ix;
+      c.iz = iz;
+      this.publish(c);
+    }
+    m.uTexel.value = 1 / res;
+    this.res = res;
+    r.setRenderTarget(prevRT);
+    r.autoClear = prevAuto;
+  }
+
   /** Once per frame: re-centre, decay, draw queued stamps, swap. */
   update(dt: number, cx: number, cz: number): void {
     const r = this.renderer;
@@ -215,8 +265,9 @@ export class TrailField {
     this.stampGeo.instanceCount = this.count;
 
     for (const c of this.cascades) {
-      const ix = Math.round(cx / c.texel);
-      const iz = Math.round(cz / c.texel);
+      const n = this.scrollTexels;
+      const ix = Math.round(cx / c.texel / n) * n;
+      const iz = Math.round(cz / c.texel / n) * n;
       const scrolled = ix !== c.ix || iz !== c.iz;
       c.accum += dt;
       const decayDue = c.accum >= c.step;
@@ -226,7 +277,7 @@ export class TrailField {
         const w = c.rts[1 - c.read];
         m.tMap.value = c.rts[c.read].texture;
         // New texel (i,j) reads old texel (i + shift): uv offset in whole texels.
-        (m.uOffset.value as THREE.Vector2).set((ix - c.ix) / RES, (iz - c.iz) / RES);
+        (m.uOffset.value as THREE.Vector2).set((ix - c.ix) / this.res, (iz - c.iz) / this.res);
         if (decayDue) {
           m.uDecay.value = Math.exp(-c.accum / TAU);
           m.uBlur.value = c.blur;

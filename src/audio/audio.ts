@@ -1440,7 +1440,7 @@ export class AudioEngine {
     const music = gain(0.75);
     music.connect(preMaster);
     const reverb = ctx.createConvolver();
-    reverb.buffer = makeImpulse(ctx, 5.2);
+    reverb.buffer = makeImpulse(ctx, isPhone() ? 2.8 : 5.2); // a shorter tail on phones: a third of the generating work
     const reverbIn = gain(1);
     const reverbOut = gain(0.85);
     reverbIn.connect(reverb).connect(reverbOut).connect(music);
@@ -3236,6 +3236,35 @@ function makeWhiteNoise(ctx: BaseAudioContext, seconds: number): AudioBuffer {
 
 /** Pink-ish noise (Paul Kellet's economy filter), independent per channel, with a crossfaded loop seam. */
 function makePinkNoise(ctx: BaseAudioContext, seconds: number, channels: number): AudioBuffer {
+  // Made once per context: the city bed starts again after every idle teardown and must not regenerate seconds of noise.
+  let byKey = pinkCache.get(ctx);
+  if (!byKey) {
+    byKey = new Map();
+    pinkCache.set(ctx, byKey);
+  }
+  const key = `${seconds}x${channels}`;
+  let buf = byKey.get(key);
+  if (!buf) {
+    buf = buildPinkNoise(ctx, seconds, channels);
+    byKey.set(key, buf);
+  }
+  return buf;
+}
+
+const pinkCache = new WeakMap<BaseAudioContext, Map<string, AudioBuffer>>();
+
+/** A phone or tablet (coarse pointer or a mobile user agent). */
+function isPhone(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  if (/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent || '')) return true;
+  try {
+    return typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches;
+  } catch {
+    return false;
+  }
+}
+
+function buildPinkNoise(ctx: BaseAudioContext, seconds: number, channels: number): AudioBuffer {
   const sr = ctx.sampleRate;
   const len = Math.floor(sr * seconds);
   const buf = ctx.createBuffer(channels, len, sr);

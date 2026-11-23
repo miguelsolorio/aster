@@ -148,4 +148,28 @@ describe('areaAround', () => {
     expect(areaAround(1234, -5678, 400)).toEqual(areaAround(1234, -5678, 400));
     expect(areaAround(1234, -5678, 400)).not.toEqual(areaAround(1334, -5678, 400));
   });
+
+  it('keeps its rows up to date as cells are revealed, encoding in the stored format', () => {
+    const a = new Atlas();
+    let seed = 7;
+    const rnd = () => {
+      seed = (seed * 1664525 + 1013904223) >>> 0;
+      return seed / 4294967296;
+    };
+    for (let round = 0; round < 6; round++) {
+      for (let i = 0; i < 40; i++) a.reveal((rnd() - 0.5) * 6000, (rnd() - 0.5) * 6000, 100 + rnd() * 600);
+      const text = a.encode(); // re-encodes only the rows that changed
+      const b = Atlas.decode(text);
+      expect([...b.cells].sort((x, y) => x - y)).toEqual([...a.cells].sort((x, y) => x - y));
+      // runs are ascending, apart and non-empty
+      const raw = JSON.parse(text) as { v: number; rows: Record<string, number[]> };
+      expect(raw.v).toBe(1);
+      for (const runs of Object.values(raw.rows)) {
+        for (let k = 0; k < runs.length; k += 2) {
+          expect(runs[k + 1]).toBeGreaterThan(0);
+          if (k >= 2) expect(runs[k]).toBeGreaterThan(runs[k - 2] + runs[k - 1]);
+        }
+      }
+    }
+  });
 });

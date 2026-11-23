@@ -35,6 +35,7 @@ attribute float aAlpha;
 uniform float uTime;
 uniform vec2 uWind;
 uniform float uScale;
+uniform float uMaxPx;
 uniform float uFog;
 uniform float uNight;
 uniform vec3 uSunDir;
@@ -64,7 +65,7 @@ void main() {
   float dist = max(-mv.z, 0.1);
   float u = age / life;
   float grow = 1.0 + 1.6 * sqrt(u);
-  gl_PointSize = clamp(aM.x * grow * uScale / dist, 0.0, ${MAX_POINT_PX.toFixed(1)});
+  gl_PointSize = clamp(aM.x * grow * uScale / dist, 0.0, uMaxPx);
   float fadeIn = smoothstep(0.0, 0.05, u);
   float fadeOut = 1.0 - smoothstep(0.08, 1.0, u);
   vec3 vd = normalize(wp - cameraPosition);
@@ -144,6 +145,8 @@ export class Dust {
   private readonly points: THREE.Points;
   private readonly motes: THREE.Points;
   private readonly scaleU = { value: 800 };
+  private readonly maxPxU = { value: MAX_POINT_PX };
+  private capacity = CAPACITY; // ring size in use (the tier may shrink it; the buffer keeps CAPACITY)
 
   private density = 1;
   private next = 0;
@@ -174,7 +177,7 @@ export class Dust {
     geo.setDrawRange(0, CAPACITY);
 
     const mat = new THREE.ShaderMaterial({
-      uniforms: { ...uniforms, uScale: this.scaleU },
+      uniforms: { ...uniforms, uScale: this.scaleU, uMaxPx: this.maxPxU },
       vertexShader: PARTICLE_VERT,
       fragmentShader: PARTICLE_FRAG,
       transparent: true,
@@ -217,6 +220,19 @@ export class Dust {
     this.motes.geometry.setDrawRange(0, Math.round(MOTE_COUNT * d));
   }
 
+  /**
+   * How much of the particle pool is used and how big a point may be drawn, in pixels. A smaller
+   * pool is fewer, not different, dust: spawn rates are unchanged, so a puff just recycles older
+   * grains sooner. Defaults are full (CAPACITY, MAX_POINT_PX).
+   */
+  setBudget(capacity: number, maxPointPx: number): void {
+    const c = Math.max(1, Math.min(CAPACITY, Math.round(capacity)));
+    this.capacity = c;
+    if (this.next >= c) this.next = 0;
+    this.points.geometry.setDrawRange(0, c);
+    this.maxPxU.value = maxPointPx;
+  }
+
   private now(): number {
     const t = this.uniforms.uTime?.value as number | undefined;
     return typeof t === 'number' ? t : 0;
@@ -228,7 +244,7 @@ export class Dust {
     life: number, size: number, drag: number, grav: number, alpha: number,
   ): void {
     const i = this.next;
-    this.next = (this.next + 1) % CAPACITY;
+    this.next = (this.next + 1) % this.capacity;
     const o = i * STRIDE;
     const d = this.data;
     d[o] = x; d[o + 1] = y; d[o + 2] = z;
@@ -239,7 +255,7 @@ export class Dust {
     if (i < this.dirtyMax) {
       // ring wrapped within the frame: upload everything
       this.dirtyMin = 0;
-      this.dirtyMax = CAPACITY - 1;
+      this.dirtyMax = this.capacity - 1;
     } else {
       if (i < this.dirtyMin) this.dirtyMin = i;
       this.dirtyMax = i;

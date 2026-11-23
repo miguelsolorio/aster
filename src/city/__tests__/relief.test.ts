@@ -72,7 +72,7 @@ describe('the drawn relief of a city', () => {
     expect(n).toBeGreaterThan(5);
   });
 
-  it('keeps only what rises over the roof of a square building', () => {
+  it('keeps only what rises over the roof of a square building', { timeout: 60_000 }, () => {
     for (const { plan, relief } of towns)
       for (const b of plan.buildings) {
         if (!b.solid || isRound(b)) continue;

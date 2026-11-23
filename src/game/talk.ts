@@ -186,6 +186,8 @@ export class Talk {
     this.hooks.voice(this.who.pitch);
   }
 
+  private readonly measured = new WeakMap<HTMLElement, { key: string; w: number; h: number }>();
+
   /** Put an element over a head. A bubble sits above the point and stays on screen. */
   private place(el: HTMLElement, camera: THREE.PerspectiveCamera, s: { x: number; y: number; z: number }, lift: number, bubble: boolean): void {
     const v = this.v.set(s.x, s.y + lift, s.z).project(camera);
@@ -201,8 +203,15 @@ export class Talk {
     if (bubble) {
       // The bubble is a caption in a fixed place near the top of the screen, so a close or
       // crowded view never hides it. Its tail points down at the speaker when they are below it.
-      const bw = el.offsetWidth;
-      const bh = el.offsetHeight;
+      // (measuring forces a layout: only done again when the words, the screen or the "more" mark change)
+      const mkey = `${el.textContent}|${w}x${h}|${this.more.style.display}`;
+      let m = this.measured.get(el);
+      if (!m || m.key !== mkey) {
+        m = { key: mkey, w: el.offsetWidth, h: el.offsetHeight };
+        this.measured.set(el, m);
+      }
+      const bw = m.w;
+      const bh = m.h;
       const top = Math.round(Math.max(56, h * 0.1));
       const left = Math.round((w - bw) / 2);
       el.style.transform = `translate(${left}px, ${top}px)`;
