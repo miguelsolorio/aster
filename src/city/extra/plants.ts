@@ -105,6 +105,7 @@ function modelOf(gltf: Parameters<typeof modelGeometry>[0], name: string): Model
 
 /** Starts loading the modelled plants (once); resolves to them, or null without the file. */
 function loadPlants(): Promise<Modelled | null> {
+  loadReeds();
   if (!modelLoad) {
     modelLoad = loadModel('props.glb').then((gltf) => {
       if (!gltf) return null;
@@ -121,6 +122,26 @@ function loadPlants(): Promise<Modelled | null> {
     });
   }
   return modelLoad;
+}
+
+/**
+ * The modelled reed clumps (tools/blender/cacti.py writes them into public/art/cacti.glb, beside
+ * the desert's cacti): blades and cattails with seed heads for the pools, heads left off for the
+ * grass in pots. Unit height, scaled by a clump's height; _info as the palms'. Drawn into cities
+ * built once they have loaded; those built before keep their procedural reeds, as with shrubs.
+ */
+let REEDS: { heads: Model[]; grass: Model[] } | null = null;
+let reedsAsked = false;
+
+function loadReeds(): void {
+  if (reedsAsked) return;
+  reedsAsked = true;
+  void loadModel('cacti.glb').then((gltf) => {
+    if (!gltf) return;
+    const heads = [0, 1, 2].map((i) => modelOf(gltf, `Reeds${i}`)).filter((m): m is Model => !!m);
+    const grass = [0, 1].map((i) => modelOf(gltf, `ReedGrass${i}`)).filter((m): m is Model => !!m);
+    if (heads.length && grass.length) REEDS = { heads, grass };
+  });
 }
 
 /** Where the procedural plants are drawn when only their draws from the shared rng are wanted. */
@@ -503,7 +524,11 @@ export function shrub(out: Writer, x: number, y: number, z: number, r: number, t
 }
 
 /** A clump of reeds or spiky grass: n tapering blades bending out from (x, z). */
-export function reeds(w: Writer, x: number, y: number, z: number, n: number, hgt: number, heads: boolean, rng: () => number): void {
+export function reeds(out: Writer, x: number, y: number, z: number, n: number, hgt: number, heads: boolean, rng: () => number): void {
+  // with the model, the blades below only take their draws from rng (into scratch), so whatever
+  // follows in the city is placed the same with or without it
+  const M = REEDS;
+  const w = M ? scratch : out;
   for (let k = 0; k < n; k++) {
     const a = rng() * TAU;
     const c = Math.cos(a), s = Math.sin(a);
@@ -552,6 +577,23 @@ export function reeds(w: Writer, x: number, y: number, z: number, n: number, hgt
     }
   }
   w.extra = 0;
+  if (M) {
+    rewind(scratch);
+    const set = heads ? M.heads : M.grass;
+    const m = set[n % set.length];
+    const yaw = hashXZ(x, z, 17) * TAU;
+    const c = Math.cos(yaw), s = Math.sin(yaw);
+    stamp(out, m, c, s, (px, py, pz, o) => {
+      o[0] = x + (px * c - pz * s) * hgt;
+      o[1] = y + py * hgt;
+      o[2] = z + (px * s + pz * c) * hgt;
+    }, (mat, tint, sway) => {
+      out.mat = mat;
+      out.tint = clamp(Math.round(tint * 255), 0, 255);
+      out.extra = byte(sway);
+    });
+    out.extra = 0;
+  }
 }
 
 /** A clay or glazed urn of height about 0.5 s with something growing in it. */

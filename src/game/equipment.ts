@@ -9,9 +9,10 @@
 // Rolled carpet: a bundle lying along x, centred. Pick: handle up the y axis from the
 // grip at the origin, head at the top, striking edge toward +z.
 import * as THREE from 'three';
+import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import type { Uniforms } from './contract';
 import { DETAIL_GLSL, STYLE_GLSL } from '../render/styleGlsl';
-import { detailTexture, detailTexture2 } from '../render/art';
+import { detailTexture, detailTexture2, loadModel, modelGeometry } from '../render/art';
 
 type V3 = [number, number, number];
 
@@ -36,6 +37,10 @@ const MAUVE: V3 = [0.55, 0.4, 0.44];
 const SAND: V3 = [0.7, 0.64, 0.52];
 const IRON: V3 = [0.2, 0.19, 0.2];
 const STONE: V3 = [0.42, 0.38, 0.34];
+const BRASS: V3 = [0.74, 0.56, 0.24];
+const WOOL: V3 = [0.74, 0.68, 0.56];
+const HEMP: V3 = [0.7, 0.6, 0.42];
+const HIDE: V3 = [0.42, 0.27, 0.17];
 
 // ------------------------------------------------------------------ builder
 
@@ -142,6 +147,76 @@ class Build {
 }
 
 const mul = (c: V3, k: number): V3 => [c[0] * k, c[1] * k, c[2] * k];
+
+// ------------------------------------------------------------------ modelled shapes
+// public/art/equipment.glb (tools/blender/equipment.py) holds the modelled shapes. They carry no
+// colour, only a part id per face (and a pattern cell on the board and the roll), so every design
+// is still coloured from its spec below. Until the file has loaded, or without it, everything is
+// built from the code alone.
+
+let model: GLTF | null = null;
+let modelLoad: Promise<boolean> | null = null;
+
+/**
+ * Fetch the modelled shapes. Resolves true once the geometry functions here build from them;
+ * what was built before then keeps the plain shapes, so callers build again.
+ */
+export function loadEquipment(): Promise<boolean> {
+  modelLoad ??= loadModel('equipment.glb').then((g) => {
+    model = g;
+    return g !== null;
+  });
+  return modelLoad;
+}
+
+interface Shape {
+  pos: THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
+  part: THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
+  cell: THREE.BufferAttribute | THREE.InterleavedBufferAttribute | null;
+}
+const shapes = new Map<string, Shape | null>();
+
+/** A modelled shape by mesh name, unrolled to plain triangles, or null while there is none. */
+function shape(name: string): Shape | null {
+  if (!model) return null;
+  let s = shapes.get(name);
+  if (s === undefined) {
+    let g = modelGeometry(model, name);
+    if (g?.index) g = g.toNonIndexed();
+    const part = g?.getAttribute('_part');
+    s = g && part ? { pos: g.getAttribute('position'), part, cell: g.getAttribute('_cell') ?? null } : null;
+    shapes.set(name, s);
+  }
+  return s;
+}
+
+/** Every triangle of a shape: its corners, its part and its pattern cell. */
+function eachTri(s: Shape, fn: (a: V3, b: V3, c: V3, part: number, ci: number, cj: number) => void): void {
+  const p = s.pos;
+  const v = (k: number): V3 => [p.getX(k), p.getY(k), p.getZ(k)];
+  for (let k = 0; k + 2 < p.count; k += 3) {
+    const ci = s.cell ? Math.round(s.cell.getX(k)) : 0;
+    const cj = s.cell ? Math.round(s.cell.getY(k)) : 0;
+    fn(v(k), v(k + 1), v(k + 2), Math.round(s.part.getX(k)), ci, cj);
+  }
+}
+
+/** A shape coloured by part (and grained by part), into a Build. */
+function addShape(b: Build, s: Shape, cols: V3[], grain: (part: number) => number = () => GRAIN.none): void {
+  eachTri(s, (a, c, d, part) => {
+    b.grain = grain(part);
+    b.tri(a, c, d, cols[Math.min(part, cols.length - 1)]);
+  });
+}
+
+/** A small thing from its modelled shape, or from the code when there is none. */
+function modelled(name: string, cols: V3[], grain: ((part: number) => number) | undefined, fallback: () => THREE.BufferGeometry): THREE.BufferGeometry {
+  const s = shape(name);
+  if (!s) return fallback();
+  const b = new Build();
+  addShape(b, s, cols, grain);
+  return b.done();
+}
 /** A rounded profile: 1 in the middle, 0 at both ends. p sharpens the ends, q fattens the middle. */
 const sup = (t: number, p: number, q: number) => Math.pow(Math.max(0, 1 - Math.pow(Math.abs(2 * t - 1), p)), q);
 
@@ -166,6 +241,8 @@ interface BoardSpec {
 const BU = 4; // cells across a board
 const BT = 18; // cells along it
 const THICK = 0.03;
+/** How thick the modelled board is along it, as a share of THICK: it thins toward the tips (as in equipment.py). */
+const boardThick = (t: number) => 0.55 + 0.45 * Math.sin(Math.PI * Math.min(1, Math.max(0, t))) ** 0.35;
 
 const BOARD_SPECS: BoardSpec[] = [
   {
@@ -309,6 +386,12 @@ function buildBoard(s: BoardSpec): THREE.BufferGeometry {
   const b = new Build(GRAIN.woodZ);
   const rock = (t: number) => s.nose * Math.pow(Math.max(0, t - 0.62), 2) + s.tail * Math.pow(Math.max(0, 0.38 - t), 2);
   const at = (u: number, t: number, dy = 0): V3 => [u * s.half(t), rock(t) + THICK + dy, (t - 0.5) * s.len];
+  const sh = shape('Board');
+  if (sh) {
+    modelBoard(b, s, sh, at);
+    s.extra?.(b, at, s);
+    return b.done();
+  }
   for (let j = 0; j < BT; j++) {
     const t0 = j / BT;
     const t1 = (j + 1) / BT;
@@ -328,6 +411,38 @@ function buildBoard(s: BoardSpec): THREE.BufferGeometry {
   }
   s.extra?.(b, at, s);
   return b.done();
+}
+
+/**
+ * The board from its modelled template (equipment.py): rails with an inlaid bevel and an underside
+ * that thins toward the tips, bent to this design's outline and rocker and coloured by its pattern.
+ */
+function modelBoard(b: Build, s: BoardSpec, sh: Shape, at: (u: number, t: number, dy?: number) => V3): void {
+  const cell = (i: number, j: number) => s.deck(((i + 0.5) / BU) * 2 - 1, (j + 0.5) / BT, i, j);
+  const rim = s.cols[s.rim];
+  const cols = [rim, mul(rim, 0.85), mul(s.cols[s.under], 0.8)];
+  const m = (v: V3) => at(v[0], v[2], v[1] - THICK);
+  eachTri(sh, (p, q, r, part, i, j) => {
+    const c = cell(i, j);
+    if (c < 0) return;
+    b.tri(m(p), m(q), m(r), part === 0 ? s.cols[c] : cols[part - 1]);
+  });
+  // the cut edges where the pattern leaves a hole inside the board
+  const wall = (u0: number, t0: number, u1: number, t1: number) =>
+    b.quad(at(u0, t0), at(u1, t1), at(u1, t1, -THICK * boardThick(t1)), at(u0, t0, -THICK * boardThick(t0)), rim);
+  const hole = (i: number, j: number) => i >= 0 && i < BU && j >= 0 && j < BT && cell(i, j) < 0;
+  const ux = (i: number) => (i <= 0 ? -0.95 : i >= BU ? 0.95 : (i / BU) * 2 - 1);
+  for (let j = 0; j < BT; j++) {
+    for (let i = 0; i < BU; i++) {
+      if (cell(i, j) < 0) continue;
+      const t0 = j / BT;
+      const t1 = (j + 1) / BT;
+      if (hole(i - 1, j)) wall(ux(i), t0, ux(i), t1);
+      if (hole(i + 1, j)) wall(ux(i + 1), t0, ux(i + 1), t1);
+      if (hole(i, j - 1)) wall(ux(i), t0, ux(i + 1), t0);
+      if (hole(i, j + 1)) wall(ux(i), t1, ux(i + 1), t1);
+    }
+  }
 }
 
 // ------------------------------------------------------------------ carpets
@@ -467,7 +582,11 @@ const CARPET_SPECS: CarpetSpec[] = [
   },
 ];
 
-function buildCarpet(s: CarpetSpec): THREE.BufferGeometry {
+/** Short warp threads left at the ends of a carpet with no fringe of its own, when modelled. */
+const WARP = 0.07;
+
+/** The carpet laid flat, and its length over the fringe. */
+function buildCarpet(s: CarpetSpec): { geo: THREE.BufferGeometry; len: number } {
   const b = new Build(GRAIN.weave);
   const x = (i: number) => (i / CX - 0.5) * s.w;
   const z = (j: number) => (j / CZ - 0.5) * s.len;
@@ -478,6 +597,9 @@ function buildCarpet(s: CarpetSpec): THREE.BufferGeometry {
       b.quad([x(i), 0, z(j)], [x(i + 1), 0, z(j)], [x(i + 1), 0, z(j + 1)], [x(i), 0, z(j + 1)], s.cols[c]);
     }
   }
+  const tuft = shape('Fringe');
+  const tassel = shape('Tassel');
+  if (tuft && tassel) return modelCarpetEdges(b, s, tuft, tassel, x, z);
   if (s.fringe) {
     const [f, c] = s.fringe;
     for (let i = 0; i < CX * 2; i += 2) {
@@ -499,7 +621,43 @@ function buildCarpet(s: CarpetSpec): THREE.BufferGeometry {
       }
     }
   }
-  return b.done();
+  return { geo: b.done(), len: s.len + (s.fringe ? s.fringe[0] * 2 : 0) };
+}
+
+/**
+ * The modelled ends: a tuft of fringe on every half cell of both ends, tied on where the weave
+ * begins (so it follows a ragged or forked end), in the colour of the cell it hangs from or the
+ * spec's fringe; and the tassels at the corners. It lies in the cloth, so it ripples with it.
+ */
+function modelCarpetEdges(b: Build, s: CarpetSpec, tuft: Shape, tassel: Shape, x: (i: number) => number, z: (j: number) => number): { geo: THREE.BufferGeometry; len: number } {
+  const flen = s.fringe ? s.fringe[0] : WARP;
+  const tw = (s.w / (CX * 2)) * 1.3;
+  for (const sgn of [-1, 1]) {
+    for (let i = 0; i < CX; i++) {
+      let j = sgn < 0 ? 0 : CZ - 1;
+      while (j >= 0 && j < CZ && s.weave(i, j) < 0) j -= sgn;
+      if (j < 0 || j >= CZ) continue;
+      const base = s.fringe ? s.cols[s.fringe[1]] : s.cols[s.weave(i, j)];
+      const cols = [mul(base, 0.92), mul(base, 0.8)];
+      const z0 = sgn < 0 ? z(j) : z(j + 1);
+      for (const k of [0.25, 0.75]) {
+        const xc = x(i + k);
+        const m = (v: V3): V3 => [xc + v[0] * tw * sgn, v[1], z0 + sgn * v[2] * flen];
+        eachTri(tuft, (p, q, r, part) => b.tri(m(p), m(q), m(r), cols[part]));
+      }
+    }
+  }
+  if (s.tassel !== undefined) {
+    const c = s.cols[s.tassel];
+    const cols = [mul(c, 0.8), c, mul(c, 0.92)];
+    for (const sx of [-1, 1]) {
+      for (const sz of [-1, 1]) {
+        const m = (v: V3): V3 => [(sx * s.w) / 2 + v[0] * sx, v[1], (sz * s.len) / 2 + v[2] * sz];
+        eachTri(tassel, (p, q, r, part) => b.tri(m(p), m(q), m(r), cols[part]));
+      }
+    }
+  }
+  return { geo: b.done(), len: s.len + flen * 2 };
 }
 
 /** The carpet rolled up and strapped: its own weave wrapped round the bundle, folded once to shorten it. */
@@ -507,6 +665,19 @@ function buildRoll(s: CarpetSpec): THREE.BufferGeometry {
   const b = new Build(GRAIN.weave);
   const L = Math.min(0.78, s.w * 0.46);
   const R = 0.07 + s.len * 0.006;
+  const sh = shape('Roll');
+  if (sh) {
+    // the modelled roll: a spiral at each end, the free edge showing, two buckled straps
+    const weave = (i: number, k: number) => s.cols[Math.max(0, s.weave(i, k))];
+    const cols: V3[] = [s.cols[0], mul(s.cols[0], 0.8), mul(s.cols[1 % s.cols.length], 0.7), DARK, s.cols[0], mul(GOLD, 1.1)];
+    const m = (v: V3): V3 => [v[0] * L, v[1] * R, v[2] * R];
+    eachTri(sh, (p, q, r, part, i, k) => {
+      b.grain = part === 3 || part === 5 ? GRAIN.none : GRAIN.weave;
+      const col = part === 0 ? weave(i, k) : part === 4 ? mul(weave(i, 0), 0.7) : cols[part];
+      b.tri(m(p), m(q), m(r), col);
+    });
+    return b.done();
+  }
   const SIDES = 8;
   const pt = (i: number, k: number, r: number): V3 => {
     const a = (k / SIDES) * Math.PI * 2;
@@ -545,6 +716,8 @@ function buildRoll(s: CarpetSpec): THREE.BufferGeometry {
 interface PickSpec {
   name: string;
   note: string;
+  /** Handle, binding and head: the colours of the modelled pick's parts. */
+  cols: [V3, V3, V3];
   build(b: Build): void;
 }
 
@@ -556,6 +729,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Spike',
     note: 'One curved iron spike on a wooden handle.',
+    cols: [BROWN, DARK, IRON],
     build(b) {
       handle(b, BROWN);
       b.tube([[0, HANDLE - 0.01, -0.03], [0, HANDLE + 0.02, 0.06], [0, HANDLE - 0.02, 0.16], [0, HANDLE - 0.08, 0.22]], [0.022, 0.02, 0.013, 0.002], 4, IRON, Math.PI / 4);
@@ -564,6 +738,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Pick',
     note: 'The plain two-ended pick, small enough for one hand.',
+    cols: [PALE, DARK, IRON],
     build(b) {
       handle(b, PALE);
       b.tube([[0, HANDLE - 0.06, -0.18], [0, HANDLE - 0.01, -0.09], [0, HANDLE + 0.01, 0], [0, HANDLE - 0.01, 0.09], [0, HANDLE - 0.06, 0.18]], [0.002, 0.014, 0.022, 0.014, 0.002], 4, IRON, Math.PI / 4);
@@ -572,6 +747,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Adze',
     note: 'A flat blade set across the handle, for shaving sand away.',
+    cols: [BROWN, DARK, IRON],
     build(b) {
       handle(b, BROWN);
       wrap(b, HANDLE - 0.05, HANDLE + 0.01, DARK, 0.024);
@@ -581,6 +757,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Claw',
     note: 'Two hooked prongs, like a bird foot.',
+    cols: [DARK, RED, IRON],
     build(b) {
       handle(b, DARK);
       wrap(b, 0.02, 0.13, RED);
@@ -592,6 +769,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Trowel',
     note: 'A leaf blade in line with the handle.',
+    cols: [PALE, GOLD, IRON],
     build(b) {
       handle(b, PALE, 0.26);
       wrap(b, 0.22, 0.28, GOLD, 0.021);
@@ -601,6 +779,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Fork',
     note: 'Three prongs for loosening packed ground.',
+    cols: [BROWN, DARK, IRON],
     build(b) {
       handle(b, BROWN, 0.3);
       b.box([0, 0.31, 0], [0.11, 0.022, 0.022], IRON);
@@ -610,6 +789,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Bone pick',
     note: 'A stone point lashed to a long bone with red cord.',
+    cols: [BONE, RED, STONE],
     build(b) {
       b.tube([[0, 0, 0], [0, 0.03, 0], [0, HANDLE * 0.5, 0], [0, HANDLE - 0.02, 0], [0, HANDLE + 0.02, 0]], [0.026, 0.017, 0.014, 0.018, 0.027], 5, BONE);
       b.tube([[0, HANDLE - 0.02, -0.05], [0, HANDLE - 0.01, 0.03], [0, HANDLE - 0.07, 0.17]], [0.02, 0.027, 0.003], 4, STONE, Math.PI / 4, [0.7, 1]);
@@ -619,6 +799,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Hammer',
     note: 'A spike one side, a square hammer the other, a gold grip.',
+    cols: [DARK, GOLD, IRON],
     build(b) {
       handle(b, DARK);
       wrap(b, 0.02, 0.15, GOLD);
@@ -629,6 +810,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Sickle',
     note: 'A crescent blade that hooks and pulls.',
+    cols: [BROWN, DARK, IRON],
     build(b) {
       handle(b, BROWN, 0.3);
       const pts: V3[] = [];
@@ -644,6 +826,7 @@ const PICK_SPECS: PickSpec[] = [
   {
     name: 'Wedge',
     note: 'A lump of stone bound to a stick. The oldest tool there is.',
+    cols: [BROWN, SAND, STONE],
     build(b) {
       handle(b, BROWN, HANDLE, 0.018);
       b.tube([[0, HANDLE - 0.07, -0.05], [0, HANDLE - 0.01, -0.02], [0, HANDLE + 0.02, 0.06], [0, HANDLE - 0.03, 0.14]], [0.03, 0.05, 0.04, 0.004], 5, STONE, 0.3, [0.75, 1]);
@@ -668,30 +851,38 @@ const pickOf = <T,>(list: T[], i: number): T => list[Math.max(0, Math.min(list.l
 
 export const boardGeometry = (i: number): THREE.BufferGeometry => buildBoard(pickOf(BOARD_SPECS, i));
 /** The carpet laid flat, and how long it is (the ripple runs along its length). */
-export const carpetGeometry = (i: number): { geo: THREE.BufferGeometry; len: number } => {
-  const s = pickOf(CARPET_SPECS, i);
-  return { geo: buildCarpet(s), len: s.len + (s.fringe ? s.fringe[0] * 2 : 0) };
-};
+export const carpetGeometry = (i: number): { geo: THREE.BufferGeometry; len: number } => buildCarpet(pickOf(CARPET_SPECS, i));
 export const rollGeometry = (i: number): THREE.BufferGeometry => buildRoll(pickOf(CARPET_SPECS, i));
 export const pickGeometry = (i: number): THREE.BufferGeometry => {
   const b = new Build();
-  pickOf(PICK_SPECS, i).build(b);
+  const n = Math.max(0, Math.min(PICK_SPECS.length - 1, i | 0));
+  const s = PICK_SPECS[n];
+  const sh = shape(`Pick${n}`);
+  if (sh) {
+    // the modelled pick: a shaped head on a tang or collar, a bound grip, a knob at the butt
+    const [handle, binding, head] = s.cols;
+    const wood = handle === BONE ? GRAIN.none : GRAIN.woodY;
+    addShape(b, sh, [handle, binding, head, mul(head, 1.25)], (part) => (part === 0 ? wood : GRAIN.none));
+  } else {
+    s.build(b);
+  }
   return b.done().scale(1.2, 1.2, 1.2); // a little larger than life, so it reads on the back
 };
 
 // ------------------------------------------------------------------ small things carried
 
 /** A miner's lamp, hanging from the top of its ring: iron frame, horn panes. */
-export const lampGeometry = (): THREE.BufferGeometry => {
-  const b = new Build();
-  const pane: V3 = [1.0, 0.84, 0.5];
-  b.tube([[-0.03, -0.01, 0], [-0.03, 0.03, 0], [0.03, 0.03, 0], [0.03, -0.01, 0]], [0.006, 0.006, 0.006, 0.006], 4, IRON);
-  b.tube([[0, -0.01, 0], [0, -0.05, 0]], [0.05, 0.062], 4, IRON, Math.PI / 4);
-  b.box([0, -0.105, 0], [0.07, 0.11, 0.07], pane);
-  b.box([0, -0.17, 0], [0.095, 0.022, 0.095], IRON);
-  for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) b.box([x * 0.038, -0.105, z * 0.038], [0.012, 0.11, 0.012], DARK);
-  return b.done();
-};
+export const lampGeometry = (): THREE.BufferGeometry =>
+  modelled('Lamp', [IRON, [1.0, 0.84, 0.5], DARK], undefined, () => {
+    const b = new Build();
+    const pane: V3 = [1.0, 0.84, 0.5];
+    b.tube([[-0.03, -0.01, 0], [-0.03, 0.03, 0], [0.03, 0.03, 0], [0.03, -0.01, 0]], [0.006, 0.006, 0.006, 0.006], 4, IRON);
+    b.tube([[0, -0.01, 0], [0, -0.05, 0]], [0.05, 0.062], 4, IRON, Math.PI / 4);
+    b.box([0, -0.105, 0], [0.07, 0.11, 0.07], pane);
+    b.box([0, -0.17, 0], [0.095, 0.022, 0.095], IRON);
+    for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) b.box([x * 0.038, -0.105, z * 0.038], [0.012, 0.11, 0.012], DARK);
+    return b.done();
+  });
 
 /** The wanderer's trim: closed bands worn round the figure, each by height, radius, front-to-back squash and thickness. */
 export const trimGeometry = (bands: { y: number; r: number; flat: number; w: number; col: V3; arc?: number }[]): THREE.BufferGeometry => {
@@ -738,38 +929,41 @@ export const heapGeometry = (): THREE.BufferGeometry => {
 // ------------------------------------------------------------------ tools found later
 
 /** A spyglass, closed: three brass draws along the y axis, eyepiece at the origin, bound in dark leather. */
-export const spyglassGeometry = (): THREE.BufferGeometry => {
-  const b = new Build();
-  const brass: V3 = [0.74, 0.56, 0.24];
-  b.tube([[0, 0, 0], [0, 0.085, 0]], [0.017, 0.019], 6, mul(brass, 0.82));
-  b.tube([[0, 0.085, 0], [0, 0.2, 0]], [0.025, 0.027], 6, DARK);
-  b.tube([[0, 0.2, 0], [0, 0.27, 0]], [0.031, 0.033], 6, brass);
-  b.tube([[0, -0.006, 0], [0, 0.008, 0]], [0.022, 0.022], 6, brass);
-  b.tube([[0, 0.262, 0], [0, 0.276, 0]], [0.037, 0.037], 6, mul(brass, 1.12));
-  return b.done();
-};
+export const spyglassGeometry = (): THREE.BufferGeometry =>
+  modelled('Spyglass', [mul(BRASS, 0.82), DARK, BRASS, mul(BRASS, 1.12), [0.3, 0.36, 0.4]], undefined, () => {
+    const b = new Build();
+    const brass: V3 = [0.74, 0.56, 0.24];
+    b.tube([[0, 0, 0], [0, 0.085, 0]], [0.017, 0.019], 6, mul(brass, 0.82));
+    b.tube([[0, 0.085, 0], [0, 0.2, 0]], [0.025, 0.027], 6, DARK);
+    b.tube([[0, 0.2, 0], [0, 0.27, 0]], [0.031, 0.033], 6, brass);
+    b.tube([[0, -0.006, 0], [0, 0.008, 0]], [0.022, 0.022], 6, brass);
+    b.tube([[0, 0.262, 0], [0, 0.276, 0]], [0.037, 0.037], 6, mul(brass, 1.12));
+    return b.done();
+  });
 
 /** A reed flute: a pale cane along the y axis, mouth at the top, bound in red thread at the joints. */
-export const fluteGeometry = (): THREE.BufferGeometry => {
-  const b = new Build(GRAIN.woodY);
-  b.tube([[0, 0, 0], [0, 0.4, 0]], [0.0125, 0.0105], 5, PALE);
-  b.grain = GRAIN.none;
-  for (const y of [0.05, 0.19, 0.33]) b.tube([[0, y, 0], [0, y + 0.022, 0]], [0.0155, 0.0155], 5, RED);
-  // the finger holes, as dark flecks down the front
-  for (let i = 0; i < 4; i++) b.box([0, 0.085 + i * 0.03, 0.0115], [0.007, 0.009, 0.004], DARK);
-  return b.done();
-};
+export const fluteGeometry = (): THREE.BufferGeometry =>
+  modelled('Flute', [PALE, RED, DARK], (p) => (p === 0 ? GRAIN.woodY : GRAIN.none), () => {
+    const b = new Build(GRAIN.woodY);
+    b.tube([[0, 0, 0], [0, 0.4, 0]], [0.0125, 0.0105], 5, PALE);
+    b.grain = GRAIN.none;
+    for (const y of [0.05, 0.19, 0.33]) b.tube([[0, y, 0], [0, y + 0.022, 0]], [0.0155, 0.0155], 5, RED);
+    // the finger holes, as dark flecks down the front
+    for (let i = 0; i < 4; i++) b.box([0, 0.085 + i * 0.03, 0.0115], [0.007, 0.009, 0.004], DARK);
+    return b.done();
+  });
 
 /** A bedroll, rolled: undyed wool lying along x, centred, with two red straps and the darker lining showing at the ends. */
-export const bedrollGeometry = (): THREE.BufferGeometry => {
-  const b = new Build();
-  const wool: V3 = [0.74, 0.68, 0.56];
-  const L = 0.25;
-  b.tube([[-L, 0, 0], [-L + 0.03, 0, 0], [L - 0.03, 0, 0], [L, 0, 0]], [0.062, 0.074, 0.074, 0.062], 8, wool);
-  for (const x of [-0.13, 0.13]) b.tube([[x - 0.013, 0, 0], [x + 0.013, 0, 0]], [0.079, 0.079], 8, RED);
-  for (const sx of [-1, 1]) b.tube([[sx * (L + 0.001), 0, 0], [sx * (L + 0.004), 0, 0]], [0.04, 0.04], 6, BROWN);
-  return b.done();
-};
+export const bedrollGeometry = (): THREE.BufferGeometry =>
+  modelled('Bedroll', [WOOL, RED, BROWN, GOLD], undefined, () => {
+    const b = new Build();
+    const wool: V3 = [0.74, 0.68, 0.56];
+    const L = 0.25;
+    b.tube([[-L, 0, 0], [-L + 0.03, 0, 0], [L - 0.03, 0, 0], [L, 0, 0]], [0.062, 0.074, 0.074, 0.062], 8, wool);
+    for (const x of [-0.13, 0.13]) b.tube([[x - 0.013, 0, 0], [x + 0.013, 0, 0]], [0.079, 0.079], 8, RED);
+    for (const sx of [-1, 1]) b.tube([[sx * (L + 0.001), 0, 0], [sx * (L + 0.004), 0, 0]], [0.04, 0.04], 6, BROWN);
+    return b.done();
+  });
 
 /**
  * The bedroll laid out on the ground at y = 0: head toward +z, a pillow roll at the head and
@@ -810,18 +1004,19 @@ export const hearthGeometry = (): THREE.BufferGeometry => {
  * A dowsing rod: a forked twig. The tip points toward +z and the two grips come back to
  * either hand, so it is held level out in front and dips about the grips (the origin).
  */
-export const rodGeometry = (): THREE.BufferGeometry => {
-  const b = new Build(GRAIN.woodZ);
-  const fork: V3 = [0, 0, 0.17];
-  b.tube([fork, [0, 0.004, 0.27], [0, 0, 0.36]], [0.012, 0.01, 0.005], 5, BROWN);
-  for (const sx of [-1, 1]) {
-    b.grain = GRAIN.woodZ;
-    b.tube([fork, [sx * 0.05, 0, 0.09], [sx * 0.095, 0, 0]], [0.011, 0.0105, 0.01], 5, BROWN);
-    b.grain = GRAIN.none;
-    b.tube([[sx * 0.095, 0, 0], [sx * 0.1, 0, -0.012]], [0.0102, 0.0102], 5, BONE); // the cut ends
-  }
-  return b.done();
-};
+export const rodGeometry = (): THREE.BufferGeometry =>
+  modelled('Rod', [BROWN, BONE, mul(BROWN, 0.7)], (p) => (p === 1 ? GRAIN.none : GRAIN.woodZ), () => {
+    const b = new Build(GRAIN.woodZ);
+    const fork: V3 = [0, 0, 0.17];
+    b.tube([fork, [0, 0.004, 0.27], [0, 0, 0.36]], [0.012, 0.01, 0.005], 5, BROWN);
+    for (const sx of [-1, 1]) {
+      b.grain = GRAIN.woodZ;
+      b.tube([fork, [sx * 0.05, 0, 0.09], [sx * 0.095, 0, 0]], [0.011, 0.0105, 0.01], 5, BROWN);
+      b.grain = GRAIN.none;
+      b.tube([[sx * 0.095, 0, 0], [sx * 0.1, 0, -0.012]], [0.0102, 0.0102], 5, BONE); // the cut ends
+    }
+    return b.done();
+  });
 
 /** A star chart in its case: a blue tube along the y axis, centred, capped in brass. */
 export const chartGeometry = (): THREE.BufferGeometry => {
@@ -837,74 +1032,77 @@ export const chartGeometry = (): THREE.BufferGeometry => {
  * A rope and hook: a coil lying flat on the ground at y = 0, centred, with an iron
  * three-pronged hook resting across it.
  */
-export const ropeCoilGeometry = (): THREE.BufferGeometry => {
-  const b = new Build();
-  const hemp: V3 = [0.7, 0.6, 0.42];
-  const N = 12;
-  // three turns, each a touch smaller and not quite over the last
-  [[0.17, 0.022, 0.0], [0.158, 0.058, 0.9], [0.164, 0.094, 1.9]].forEach(([r, y, ph], k) => {
-    const ring: V3[] = [];
-    for (let i = 0; i <= N; i++) {
-      const a = ph + (i / N) * Math.PI * 2;
-      ring.push([Math.cos(a) * r + (k === 1 ? 0.012 : 0), y, Math.sin(a) * r]);
+export const ropeCoilGeometry = (): THREE.BufferGeometry =>
+  modelled('RopeCoil', [HEMP, mul(HEMP, 0.74), IRON], undefined, () => {
+    const b = new Build();
+    const hemp: V3 = [0.7, 0.6, 0.42];
+    const N = 12;
+    // three turns, each a touch smaller and not quite over the last
+    [[0.17, 0.022, 0.0], [0.158, 0.058, 0.9], [0.164, 0.094, 1.9]].forEach(([r, y, ph], k) => {
+      const ring: V3[] = [];
+      for (let i = 0; i <= N; i++) {
+        const a = ph + (i / N) * Math.PI * 2;
+        ring.push([Math.cos(a) * r + (k === 1 ? 0.012 : 0), y, Math.sin(a) * r]);
+      }
+      b.tube(ring, ring.map(() => 0.021), 4, mul(hemp, 0.9 + 0.08 * k), Math.PI / 4);
+    });
+    // the loose end, run out over the side to the hook
+    b.tube([[0.15, 0.094, 0.07], [0.2, 0.07, 0.11], [0.24, 0.03, 0.12]], [0.021, 0.021, 0.021], 4, hemp, Math.PI / 4);
+    // the hook: a shank and three prongs curling back
+    const hx = 0.25;
+    const hz = 0.12;
+    b.tube([[hx, 0.03, hz], [hx + 0.13, 0.03, hz + 0.03]], [0.012, 0.012], 4, IRON);
+    for (let i = 0; i < 3; i++) {
+      const a = (i / 3) * Math.PI * 2 + 0.5;
+      const oy = Math.cos(a) * 0.055;
+      const oz = Math.sin(a) * 0.055;
+      b.tube([[hx + 0.13, 0.03, hz + 0.03], [hx + 0.165, 0.03 + oy * 0.7, hz + 0.038 + oz * 0.7], [hx + 0.13, 0.03 + oy, hz + 0.03 + oz], [hx + 0.095, 0.03 + oy * 0.95, hz + 0.022 + oz * 0.95]], [0.011, 0.01, 0.008, 0.003], 4, IRON);
     }
-    b.tube(ring, ring.map(() => 0.021), 4, mul(hemp, 0.9 + 0.08 * k), Math.PI / 4);
+    return b.done();
   });
-  // the loose end, run out over the side to the hook
-  b.tube([[0.15, 0.094, 0.07], [0.2, 0.07, 0.11], [0.24, 0.03, 0.12]], [0.021, 0.021, 0.021], 4, hemp, Math.PI / 4);
-  // the hook: a shank and three prongs curling back
-  const hx = 0.25;
-  const hz = 0.12;
-  b.tube([[hx, 0.03, hz], [hx + 0.13, 0.03, hz + 0.03]], [0.012, 0.012], 4, IRON);
-  for (let i = 0; i < 3; i++) {
-    const a = (i / 3) * Math.PI * 2 + 0.5;
-    const oy = Math.cos(a) * 0.055;
-    const oz = Math.sin(a) * 0.055;
-    b.tube([[hx + 0.13, 0.03, hz + 0.03], [hx + 0.165, 0.03 + oy * 0.7, hz + 0.038 + oz * 0.7], [hx + 0.13, 0.03 + oy, hz + 0.03 + oz], [hx + 0.095, 0.03 + oy * 0.95, hz + 0.022 + oz * 0.95]], [0.011, 0.01, 0.008, 0.003], 4, IRON);
-  }
-  return b.done();
-};
 
 /**
  * One nailed boot, stood on its sole at y = 0 with the toe toward +z and the shaft over the
  * heel: brown hide, a dark sole studded with iron, and a cuff of pale wool turned over the top.
  */
-export const bootGeometry = (): THREE.BufferGeometry => {
-  const b = new Build();
-  const hide: V3 = [0.42, 0.27, 0.17];
-  b.box([0, 0.009, 0.035], [0.07, 0.018, 0.168], DARK);
-  b.box([0, 0.04, 0.04], [0.06, 0.046, 0.15], hide);
-  // the toe cap, a touch lighter where it is scuffed
-  b.box([0, 0.036, 0.108], [0.062, 0.04, 0.03], mul(hide, 1.18));
-  b.tube([[0, 0.03, -0.028], [0, 0.1, -0.03], [0, 0.16, -0.032]], [0.035, 0.036, 0.04], 8, hide);
-  b.tube([[0, 0.148, -0.032], [0, 0.178, -0.032]], [0.046, 0.047], 8, PALE);
-  // a thong tied round the ankle
-  b.tube([[0, 0.078, -0.03], [0, 0.09, -0.03]], [0.0385, 0.0385], 8, GOLD);
-  // the nails: three a side along the edge of the sole, and one under the toe
-  for (const z of [-0.03, 0.035, 0.095]) for (const x of [-0.034, 0.034]) b.box([x, 0.006, z], [0.012, 0.014, 0.014], IRON);
-  b.box([0, 0.006, 0.118], [0.014, 0.014, 0.012], IRON);
-  return b.done();
-};
+export const bootGeometry = (): THREE.BufferGeometry =>
+  modelled('Boot', [HIDE, DARK, mul(HIDE, 1.18), PALE, GOLD, IRON, mul(HIDE, 0.72)], undefined, () => {
+    const b = new Build();
+    const hide: V3 = [0.42, 0.27, 0.17];
+    b.box([0, 0.009, 0.035], [0.07, 0.018, 0.168], DARK);
+    b.box([0, 0.04, 0.04], [0.06, 0.046, 0.15], hide);
+    // the toe cap, a touch lighter where it is scuffed
+    b.box([0, 0.036, 0.108], [0.062, 0.04, 0.03], mul(hide, 1.18));
+    b.tube([[0, 0.03, -0.028], [0, 0.1, -0.03], [0, 0.16, -0.032]], [0.035, 0.036, 0.04], 8, hide);
+    b.tube([[0, 0.148, -0.032], [0, 0.178, -0.032]], [0.046, 0.047], 8, PALE);
+    // a thong tied round the ankle
+    b.tube([[0, 0.078, -0.03], [0, 0.09, -0.03]], [0.0385, 0.0385], 8, GOLD);
+    // the nails: three a side along the edge of the sole, and one under the toe
+    for (const z of [-0.03, 0.035, 0.095]) for (const x of [-0.034, 0.034]) b.box([x, 0.006, z], [0.012, 0.014, 0.014], IRON);
+    b.box([0, 0.006, 0.118], [0.014, 0.014, 0.012], IRON);
+    return b.done();
+  });
 
 /**
  * An eagle's feather, stood on its quill at y = 0 and flat to the front: a pale vane, barred,
  * with a dark tip leaning a little to one side.
  */
-export const featherGeometry = (): THREE.BufferGeometry => {
-  const b = new Build();
-  const pale: V3 = [0.93, 0.9, 0.82];
-  const bar: V3 = [0.5, 0.36, 0.24];
-  const tip: V3 = [0.22, 0.15, 0.11];
-  const blade: [number, number] = [1, 0.1];
-  b.tube([[0, 0, 0], [0.002, 0.09, 0]], [0.0045, 0.004], 4, BONE);
-  b.tube([[0.002, 0.07, 0], [0.005, 0.11, 0], [0.009, 0.17, 0]], [0.008, 0.036, 0.04], 4, pale, Math.PI / 4, blade);
-  b.tube([[0.009, 0.17, 0], [0.012, 0.2, 0]], [0.04, 0.04], 4, bar, Math.PI / 4, blade);
-  b.tube([[0.012, 0.2, 0], [0.017, 0.25, 0]], [0.04, 0.036], 4, pale, Math.PI / 4, blade);
-  b.tube([[0.017, 0.25, 0], [0.024, 0.31, 0], [0.03, 0.35, 0]], [0.036, 0.024, 0.003], 4, tip, Math.PI / 4, blade);
-  // the shaft, showing down the middle of the vane
-  b.tube([[0.002, 0.08, 0.005], [0.014, 0.22, 0.005], [0.027, 0.33, 0.004]], [0.0035, 0.003, 0.0015], 4, BONE);
-  return b.done();
-};
+export const featherGeometry = (): THREE.BufferGeometry =>
+  modelled('Feather', [[0.93, 0.9, 0.82], [0.5, 0.36, 0.24], [0.22, 0.15, 0.11], BONE], undefined, () => {
+    const b = new Build();
+    const pale: V3 = [0.93, 0.9, 0.82];
+    const bar: V3 = [0.5, 0.36, 0.24];
+    const tip: V3 = [0.22, 0.15, 0.11];
+    const blade: [number, number] = [1, 0.1];
+    b.tube([[0, 0, 0], [0.002, 0.09, 0]], [0.0045, 0.004], 4, BONE);
+    b.tube([[0.002, 0.07, 0], [0.005, 0.11, 0], [0.009, 0.17, 0]], [0.008, 0.036, 0.04], 4, pale, Math.PI / 4, blade);
+    b.tube([[0.009, 0.17, 0], [0.012, 0.2, 0]], [0.04, 0.04], 4, bar, Math.PI / 4, blade);
+    b.tube([[0.012, 0.2, 0], [0.017, 0.25, 0]], [0.04, 0.036], 4, pale, Math.PI / 4, blade);
+    b.tube([[0.017, 0.25, 0], [0.024, 0.31, 0], [0.03, 0.35, 0]], [0.036, 0.024, 0.003], 4, tip, Math.PI / 4, blade);
+    // the shaft, showing down the middle of the vane
+    b.tube([[0.002, 0.08, 0.005], [0.014, 0.22, 0.005], [0.027, 0.33, 0.004]], [0.0035, 0.003, 0.0015], 4, BONE);
+    return b.done();
+  });
 
 // ------------------------------------------------------------------ material
 

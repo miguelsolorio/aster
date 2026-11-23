@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import type { Uniforms } from '../../game/contract';
 import { Glows, Writer, layoutOf } from '../build';
 import { CITY_SHADOW_GLSL } from '../cityGlsl';
+import { loadModel, modelGeometry } from '../../render/art';
 import { STYLE_GLSL } from '../../render/styleGlsl';
 import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, trackViewport } from '../cityShaders';
 import type { Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
@@ -393,6 +394,209 @@ function cord(
   f.seed = 0;
 }
 
+// ------------------------------------------------------------------ modelled furniture
+
+// public/art/furniture.glb (tools/blender/furniture.py) holds modelled jars, sacks, baskets,
+// crates, benches, handcarts and lanterns, drawn in the frames the props below size them in.
+// Until it has loaded, and wherever it cannot be had, the procedural props are drawn. Every prop
+// takes the same draws from the shared rng either way (the model's variant comes from a hash of
+// its position), so a town is laid out the same with or without the file; a town built before it
+// arrives is rebuilt once from the models when it does. Each vertex carries _info: x a part
+// (below), y a tint (a signed offset / 255 for body and goods, else 0..1), and _grain, the wood's
+// texture coordinates.
+
+const PART = { body: 0, opening: 1, goods: 2, rope: 3, iron: 4, glass: 5 } as const;
+
+interface Model {
+  pos: Float32Array;
+  nrm: Float32Array;
+  info: Float32Array;
+  uv: Float32Array;
+  index: ArrayLike<number>;
+}
+
+interface Furn {
+  /** By jar kind: water jars, amphorae, jugs. */
+  jar: Model[][];
+  sack: Model[];
+  basket: Model[];
+  crateShut: Model[];
+  crateOpen: Model[];
+  /** Two legs (seat half length 0.7), three legs (1.05). */
+  bench: Model[];
+  cart: Model[];
+  lantern: Model[];
+}
+
+let FURN: Furn | null = null;
+let furnLoad: Promise<Furn | null> | null = null;
+
+/** The crate the models were drawn for (half sizes and height). */
+const CRATE_HU = 0.29, CRATE_HN = 0.25, CRATE_HH = 0.42;
+const BENCH_HL = [0.7, 1.05];
+
+function modelOf(gltf: Parameters<typeof modelGeometry>[0], name: string): Model | null {
+  const g = modelGeometry(gltf, name);
+  const info = g?.getAttribute('_info');
+  const uv = g?.getAttribute('_grain');
+  if (!g || !info || info.itemSize !== 3 || !uv || uv.itemSize !== 2) return null;
+  g.computeVertexNormals();
+  const n = g.getAttribute('position').count;
+  const index = g.getIndex()?.array ?? Array.from({ length: n }, (_, i) => i);
+  return {
+    pos: Float32Array.from(g.getAttribute('position').array),
+    nrm: Float32Array.from(g.getAttribute('normal').array),
+    info: Float32Array.from(info.array),
+    uv: Float32Array.from(uv.array),
+    index,
+  };
+}
+
+/** Starts loading the modelled furniture (once); resolves to it, or null without the file. */
+function loadFurniture(): Promise<Furn | null> {
+  if (!furnLoad) {
+    furnLoad = loadModel('furniture.glb').then((gltf) => {
+      if (!gltf) return null;
+      const set = (base: string, n: number): Model[] | null => {
+        const out: Model[] = [];
+        for (let i = 0; i < n; i++) {
+          const m = modelOf(gltf, `${base}${i}`);
+          if (!m) return null;
+          out.push(m);
+        }
+        return out;
+      };
+      const jar = set('Jar', 3), amph = set('Amphora', 2), jug = set('Jug', 2);
+      const sack = set('Sack', 3), basket = set('Basket', 3);
+      const crateShut = set('CrateShut', 2), crateOpen = set('CrateOpen', 2);
+      const bench = set('Bench', 2), cart = set('Cart', 2), lantern = set('Lantern', 2);
+      if (!jar || !amph || !jug || !sack || !basket || !crateShut || !crateOpen || !bench || !cart || !lantern) return null;
+      FURN = { jar: [jar, amph, jug], sack, basket, crateShut, crateOpen, bench, cart, lantern };
+      return FURN;
+    });
+  }
+  return furnLoad;
+}
+
+/** A small hash of a position, 0..1, so a modelled prop picks the same variant whenever it is built. */
+function hashXZ(x: number, z: number, salt: number): number {
+  let h = Math.imul(Math.round(x * 16) | 0, 0x27d4eb2d) ^ Math.imul(Math.round(z * 16) | 0, 0x165667b1) ^ Math.imul(salt, 0x9e3779b1);
+  h = Math.imul(h ^ (h >>> 15), 0x85ebca6b);
+  h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
+const variant = (ms: readonly Model[], x: number, y: number, z: number, salt: number): Model =>
+  ms[Math.min(ms.length - 1, Math.floor(hashXZ(x + y * 3.7, z, salt) * ms.length))];
+
+/** Sets w.mat and w.tint for a vertex of the given part and tint. */
+type Look = (w: Writer, part: number, t: number) => void;
+
+/**
+ * Writes a model's triangles into w at (x, y, z): its x axis along (ux, uz), its z axis across
+ * (-uz, ux), scaled by su, sy, sn along them. Normals follow the scale (inverse transpose).
+ */
+function stamp(
+  w: Writer, m: Model, x: number, y: number, z: number, ux: number, uz: number,
+  su: number, sy: number, sn: number, look: Look,
+): void {
+  const vx = -uz, vz = ux;
+  const nv = m.pos.length / 3;
+  w.reserve(nv, m.index.length);
+  const base = w.nv;
+  for (let i = 0; i < nv; i++) {
+    const p = i * 3;
+    const px = m.pos[p] * su, py = m.pos[p + 1] * sy, pz = m.pos[p + 2] * sn;
+    const ax = m.nrm[p] / su, ay = m.nrm[p + 1] / sy, az = m.nrm[p + 2] / sn;
+    const nx = ux * ax + vx * az, nz = uz * ax + vz * az;
+    const l = Math.hypot(nx, ay, nz) || 1;
+    look(w, m.info[p], m.info[p + 1]);
+    w.vert(x + ux * px + vx * pz, y + py, z + uz * px + vz * pz, nx / l, ay / l, nz / l, m.uv[i * 2], m.uv[i * 2 + 1]);
+  }
+  const I = m.index;
+  for (let t = 0; t < I.length; t += 3) w.index3(base + I[t], base + I[t + 1], base + I[t + 2]);
+}
+
+/** The usual look: body in the prop's material and tint, goods in cloth, rope and iron as wood/stone. */
+function looks(mat: number, tint: number, goods = 0, ironMat: number = MAT.stone): Look {
+  return (w, part, t) => {
+    const k = Math.round(part);
+    if (k === PART.body) {
+      w.mat = mat;
+      w.tint = clamp(Math.round(tint + t * 255), 0, 255);
+    } else if (k === PART.opening) {
+      w.mat = MAT.opening;
+      w.tint = 128;
+    } else if (k === PART.goods) {
+      w.mat = MAT.cloth;
+      w.tint = clamp(Math.round(goods + t * 255), 0, 255);
+    } else if (k === PART.rope) {
+      w.mat = MAT.wood;
+      w.tint = byte(t);
+    } else if (k === PART.iron) {
+      w.mat = ironMat;
+      w.tint = byte(t);
+    } else {
+      w.mat = MAT.lantern;
+      w.tint = 128;
+    }
+  };
+}
+
+/** A prop's geometry, written into w from the models (M) or procedurally (M null). Takes no draws. */
+type Emit = (w: Writer, M: Furn | null) => void;
+
+/** A prop written into a writer: its vertex and index ranges, and how to write it again. */
+interface Op {
+  v0: number;
+  v1: number;
+  i0: number;
+  i1: number;
+  emit: Emit;
+}
+
+/** While a town is built without the models, what each writer holds of the props they replace. */
+let replay: Map<Writer, Op[]> | null = null;
+
+/** Writes a prop into w now, and records it for a rebuild from the models if one may follow. */
+function put(w: Writer, emit: Emit): void {
+  const v0 = w.nv, i0 = w.ni;
+  emit(w, FURN);
+  if (!replay) return;
+  const op = { v0, v1: w.nv, i0, i1: w.ni, emit };
+  const l = replay.get(w);
+  if (l) l.push(op);
+  else replay.set(w, [op]);
+}
+
+/** src written again with its recorded props drawn from the models; everything else copied. */
+function rebuilt(src: Writer, ops: readonly Op[], M: Furn): Writer {
+  const w = new Writer(src.nv + 4096, src.ni + 8192);
+  let v = 0, i = 0;
+  const copy = (v1: number, i1: number): void => {
+    const nv = v1 - v, ni = i1 - i;
+    w.reserve(nv, ni);
+    const off = w.nv - v;
+    w.pos.set(src.pos.subarray(v * 3, v1 * 3), w.nv * 3);
+    w.nrm.set(src.nrm.subarray(v * 3, v1 * 3), w.nv * 3);
+    w.info.set(src.info.subarray(v * 4, v1 * 4), w.nv * 4);
+    w.uvs.set(src.uvs.subarray(v * 2, v1 * 2), w.nv * 2);
+    w.nv += nv;
+    for (let k = i; k < i1; k++) w.idx[w.ni++] = src.idx[k] + off;
+  };
+  for (const op of ops) {
+    copy(op.v0, op.i0);
+    op.emit(w, M);
+    w.seed = 0;
+    w.extra = 0;
+    v = op.v1;
+    i = op.i1;
+  }
+  copy(src.nv, src.ni);
+  w.orient();
+  return w;
+}
+
 // ------------------------------------------------------------------ props
 
 /** Where the props below register their solids while a city is being built (set by the builder). */
@@ -413,27 +617,44 @@ const JAR_R = [0.37, 0.24, 0.25];
 
 /** A clay jar (0), an amphora (1) or a jug (2) of height s standing at (x, y, z). */
 function jar(w: Writer, x: number, y: number, z: number, s: number, kind: number, rng: () => number): void {
+  put(w, drawJar(x, y, z, s, kind, rng));
+}
+
+function drawJar(x: number, y: number, z: number, s: number, kind: number, rng: () => number): Emit {
   const pick = rng();
+  let mat: number, tint: number;
   if (pick < 0.62) {
-    w.mat = MAT.cloth; // terracotta: the rust of the dye ramp
-    w.tint = 140 + Math.floor(rng() * 45);
+    mat = MAT.cloth; // terracotta: the rust of the dye ramp
+    tint = 140 + Math.floor(rng() * 45);
   } else if (pick < 0.8) {
-    w.mat = MAT.plaster; // limewashed
-    w.tint = 10 + Math.floor(rng() * 100);
+    mat = MAT.plaster; // limewashed
+    tint = 10 + Math.floor(rng() * 100);
   } else if (pick < 0.9) {
-    w.mat = MAT.cloth; // a faded blue glaze
-    w.tint = 70 + Math.floor(rng() * 50);
+    mat = MAT.cloth; // a faded blue glaze
+    tint = 70 + Math.floor(rng() * 50);
   } else {
-    w.mat = MAT.dome; // pale glaze
-    w.tint = 128;
+    mat = MAT.dome; // pale glaze
+    tint = 128;
   }
   const rot = rng() * TAU;
-  const prof = kind === 0 ? JAR : kind === 1 ? AMPHORA : JUG;
   const jh = s * (kind === 1 ? 1.02 : kind === 2 ? 0.84 : 1);
   if (solidSink && jh >= SOLID_MIN) {
     const jr = JAR_R[kind] * s;
     solidSink.push({ x, z, hw: jr, hd: jr, y0: y - 1, y1: y + jh });
   }
+  return (w, M) => {
+    w.mat = mat;
+    w.tint = tint;
+    if (M) {
+      stamp(w, variant(M.jar[kind], x, y, z, 11), x, y - 0.02, z, Math.cos(rot), Math.sin(rot), s, s, s, looks(mat, tint));
+      return;
+    }
+    jarShape(w, x, y, z, s, kind, rot);
+  };
+}
+
+function jarShape(w: Writer, x: number, y: number, z: number, s: number, kind: number, rot: number): void {
+  const prof = kind === 0 ? JAR : kind === 1 ? AMPHORA : JUG;
   lathe(w, x, y - 0.02, z, prof, s, s, kind === 2 ? 6 : 7, rot, MAT.opening, 128);
   if (kind === 1) {
     // two loop handles from the neck to the shoulder
@@ -459,8 +680,23 @@ function crate(
   w: Writer, x: number, y: number, z: number, ux: number, uz: number, hu: number, hn: number, hh: number,
   open: boolean, rng: () => number,
 ): void {
-  w.mat = MAT.wood;
   const t = 110 + Math.floor(rng() * 110);
+  const goods = open ? goodsTint(rng) : 0;
+  put(w, (w, M) => {
+    if (M) {
+      const m = variant(open ? M.crateOpen : M.crateShut, x, y, z, 13);
+      stamp(w, m, x, y, z, ux, uz, hu / CRATE_HU, hh / CRATE_HH, hn / CRATE_HN, looks(MAT.wood, t, goods));
+      return;
+    }
+    crateShape(w, x, y, z, ux, uz, hu, hn, hh, open, t, goods);
+  });
+}
+
+function crateShape(
+  w: Writer, x: number, y: number, z: number, ux: number, uz: number, hu: number, hn: number, hh: number,
+  open: boolean, t: number, goods: number,
+): void {
+  w.mat = MAT.wood;
   w.tint = t;
   if (!open) {
     ybox(w, x, z, ux, uz, hu, hn, y, y + hh, 1 | 2 | 4 | 16 | 32);
@@ -483,7 +719,7 @@ function crate(
   }
   // goods heaped a little in the middle
   w.mat = MAT.cloth;
-  w.tint = goodsTint(rng);
+  w.tint = goods;
   const yg = y + hh * 0.86;
   const hx = (a: number, b: number): number => x + ux * a + vx * b;
   const hz = (a: number, b: number): number => z + uz * a + vz * b;
@@ -502,17 +738,32 @@ function crate(
 
 /** A tied sack of grain or cotton. */
 function sack(w: Writer, x: number, y: number, z: number, r: number, h: number, rng: () => number): void {
-  w.mat = MAT.cloth;
+  put(w, drawSack(x, y, z, r, h, rng));
+}
+
+function drawSack(x: number, y: number, z: number, r: number, h: number, rng: () => number): Emit {
   const p = rng();
-  w.tint = p < 0.55 ? 205 + Math.floor(rng() * 50) : p < 0.85 ? Math.floor(rng() * 55) : 140 + Math.floor(rng() * 40);
-  lathe(w, x, y - 0.02, z, SACK, r, h, 6, rng() * TAU, -1, 0);
+  const tint = p < 0.55 ? 205 + Math.floor(rng() * 50) : p < 0.85 ? Math.floor(rng() * 55) : 140 + Math.floor(rng() * 40);
+  const rot = rng() * TAU;
+  return (w, M) => {
+    w.mat = MAT.cloth;
+    w.tint = tint;
+    if (M) stamp(w, variant(M.sack, x, y, z, 17), x, y - 0.02, z, Math.cos(rot), Math.sin(rot), r, h, r, looks(MAT.cloth, tint));
+    else lathe(w, x, y - 0.02, z, SACK, r, h, 6, rot, -1, 0);
+  };
 }
 
 /** A wide wicker basket heaped with goods. */
 function basket(w: Writer, x: number, y: number, z: number, r: number, h: number, rng: () => number): void {
-  w.mat = MAT.wood;
-  w.tint = 200 + Math.floor(rng() * 55);
-  lathe(w, x, y - 0.01, z, BASKET, r, h, 7, rng() * TAU, MAT.cloth, goodsTint(rng));
+  const tint = 200 + Math.floor(rng() * 55);
+  const rot = rng() * TAU;
+  const goods = goodsTint(rng);
+  put(w, (w, M) => {
+    w.mat = MAT.wood;
+    w.tint = tint;
+    if (M) stamp(w, variant(M.basket, x, y, z, 19), x, y - 0.01, z, Math.cos(rot), Math.sin(rot), r, h, r, looks(MAT.wood, tint, goods));
+    else lathe(w, x, y - 0.01, z, BASKET, r, h, 7, rot, MAT.cloth, goods);
+  });
 }
 
 /** A rug laid flat: a plain border and a striped field. */
@@ -552,14 +803,17 @@ function rugPile(w: Writer, x: number, y: number, z: number, ux: number, uz: num
 /** A bench along (ux, uz): planks on legs, or a plastered block with a stone top. */
 function bench(w: Writer, x: number, y: number, z: number, ux: number, uz: number, hl: number, rng: () => number): void {
   if (rng() < 0.55) {
-    w.mat = MAT.wood;
-    w.tint = 70 + Math.floor(rng() * 110);
-    ybox(w, x, z, ux, uz, hl, 0.2, y + 0.38, y + 0.45);
-    const n = hl > 0.9 ? 3 : 2;
-    for (let k = 0; k < n; k++) {
-      const a = -hl + 0.12 + ((2 * hl - 0.24) * k) / (n - 1);
-      ybox(w, x + ux * a, z + uz * a, ux, uz, 0.04, 0.16, y - 0.02, y + 0.38, 1 | 2 | 16 | 32);
-    }
+    const tint = 70 + Math.floor(rng() * 110);
+    put(w, (w, M) => {
+      w.mat = MAT.wood;
+      w.tint = tint;
+      if (M) {
+        const k = hl > 0.9 ? 1 : 0;
+        stamp(w, M.bench[k], x, y, z, ux, uz, hl / BENCH_HL[k], 1, 1, looks(MAT.wood, tint));
+        return;
+      }
+      benchShape(w, x, y, z, ux, uz, hl);
+    });
   } else {
     w.mat = MAT.plaster;
     w.tint = Math.floor(rng() * 120);
@@ -570,15 +824,23 @@ function bench(w: Writer, x: number, y: number, z: number, ux: number, uz: numbe
   }
 }
 
+/** The wooden bench: planks on legs. */
+function benchShape(w: Writer, x: number, y: number, z: number, ux: number, uz: number, hl: number): void {
+  ybox(w, x, z, ux, uz, hl, 0.2, y + 0.38, y + 0.45);
+  const n = hl > 0.9 ? 3 : 2;
+  for (let k = 0; k < n; k++) {
+    const a = -hl + 0.12 + ((2 * hl - 0.24) * k) / (n - 1);
+    ybox(w, x + ux * a, z + uz * a, ux, uz, 0.04, 0.16, y - 0.02, y + 0.38, 1 | 2 | 16 | 32);
+  }
+}
+
 /**
  * A two-wheeled handcart along (ux, uz), its shafts resting on the ground ahead (+u).
  * The bed spans u in [-0.65, 0.65], the wheels sit at +-0.5 across.
  */
 function cart(w: Writer, x: number, y: number, z: number, ux: number, uz: number, rng: () => number): void {
   const vx = -uz, vz = ux;
-  w.mat = MAT.wood;
   const t = 70 + Math.floor(rng() * 100);
-  w.tint = t;
   const yb = y + 0.5;
   if (solidSink) {
     // the bed and its wheels, three boxes along the cart so a diagonal one is not one fat box;
@@ -593,6 +855,29 @@ function cart(w: Writer, x: number, y: number, z: number, ux: number, uz: number
       });
     }
   }
+  // a load on the bed, now and then
+  const load: Emit[] = [];
+  if (rng() < 0.6) {
+    const n = 1 + Math.floor(rng() * 3);
+    for (let k = 0; k < n; k++) {
+      const a = -0.35 + (0.7 * (k + 0.5)) / n;
+      const cx = x + ux * a + vx * (rng() - 0.5) * 0.2, cz = z + uz * a + vz * (rng() - 0.5) * 0.2;
+      if (rng() < 0.6) load.push(drawSack(cx, yb + 0.07, cz, 0.18, 0.42, rng));
+      else load.push(drawJar(cx, yb + 0.07, cz, 0.45, 2, rng));
+    }
+  }
+  put(w, (w, M) => {
+    w.mat = MAT.wood;
+    w.tint = t;
+    if (M) stamp(w, variant(M.cart, x, y, z, 23), x, y, z, ux, uz, 1, 1, 1, looks(MAT.wood, t));
+    else cartShape(w, x, y, z, ux, uz, t);
+    for (const e of load) e(w, M);
+  });
+}
+
+function cartShape(w: Writer, x: number, y: number, z: number, ux: number, uz: number, t: number): void {
+  const vx = -uz, vz = ux;
+  const yb = y + 0.5;
   ybox(w, x, z, ux, uz, 0.65, 0.42, yb, yb + 0.07);
   for (const s of [1, -1]) {
     ybox(w, x + vx * s * 0.4, z + vz * s * 0.4, ux, uz, 0.65, 0.022, yb + 0.07, yb + 0.3, 1 | 2 | 4 | 16 | 32);
@@ -609,16 +894,6 @@ function cart(w: Writer, x: number, y: number, z: number, ux: number, uz: number
   tube(w, x - vx * 0.5, ya, z - vz * 0.5, x + vx * 0.5, ya, z + vz * 0.5, 0.04, 0.04, 4, 0, false);
   for (const s of [1, -1]) {
     tube(w, x + vx * s * 0.47, ya, z + vz * s * 0.47, x + vx * s * 0.54, ya, z + vz * s * 0.54, 0.42, 0.42, 8, 0, true);
-  }
-  // a load on the bed, now and then
-  if (rng() < 0.6) {
-    const n = 1 + Math.floor(rng() * 3);
-    for (let k = 0; k < n; k++) {
-      const a = -0.35 + (0.7 * (k + 0.5)) / n;
-      const cx = x + ux * a + vx * (rng() - 0.5) * 0.2, cz = z + uz * a + vz * (rng() - 0.5) * 0.2;
-      if (rng() < 0.6) sack(w, cx, yb + 0.07, cz, 0.18, 0.42, rng);
-      else jar(w, cx, yb + 0.07, cz, 0.45, 2, rng);
-    }
   }
 }
 
@@ -649,13 +924,23 @@ function bracket(w: Writer, wx: number, wz: number, nx: number, nz: number, y: n
 
 /** A lantern hanging from a hook at (x, y, z) on a chain `drop` long. Adds its light. */
 function lantern(f: Writer, G: Glows, x: number, y: number, z: number, drop: number, seed: number): void {
-  f.mat = MAT.wood;
-  f.tint = 30;
-  f.extra = 0;
   const yt = y - drop;
-  cord(f, x, y, z, x, yt, z, 0.012, 0, 1);
-  // the lantern swings as one piece (weight 1 everywhere below the chain)
-  f.seed = 255;
+  put(f, (f, M) => {
+    f.mat = MAT.wood;
+    f.tint = 30;
+    f.extra = 0;
+    cord(f, x, y, z, x, yt, z, 0.012, 0, 1);
+    // the lantern swings as one piece (weight 1 everywhere below the chain)
+    f.seed = 255;
+    if (M) stamp(f, variant(M.lantern, x, y, z, 29), x, yt, z, 1, 0, 1, 1, 1, looks(MAT.wood, 30, 0, MAT.wood));
+    else lanternShape(f, x, yt, z);
+    f.seed = 0;
+  });
+  G.add(x, yt - 0.22, z, 0.6, GLOW.lantern, seed, 0.85);
+}
+
+/** The procedural lantern below the hook end of its chain at (x, yt, z). */
+function lanternShape(f: Writer, x: number, yt: number, z: number): void {
   const r = 0.11;
   // cap: a little four-sided roof
   f.reserve(5, 12);
@@ -670,8 +955,6 @@ function lantern(f: Writer, G: Glows, x: number, y: number, z: number, drop: num
   ybox(f, x, z, 1, 0, r, r, yt - 0.36, yt - 0.09, 1 | 2 | 16 | 32);
   f.mat = MAT.wood;
   ybox(f, x, z, 1, 0, r + 0.025, r + 0.025, yt - 0.4, yt - 0.36);
-  f.seed = 0;
-  G.add(x, yt - 0.22, z, 0.6, GLOW.lantern, seed, 0.85);
 }
 
 /** Cloth colour: mostly cream for washing, any dye for banners. */
@@ -1044,6 +1327,11 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const ground = (x: number, z: number): number => ctx.groundAt(x, z);
   const solids: Solid[] = [];
   solidSink = solids;
+  const loading = loadFurniture();
+  const modelled = FURN;
+  // built before the models arrived: remember what each writer holds of them, to rebuild from
+  const ops = modelled ? null : new Map<Writer, Op[]>();
+  replay = ops;
   const rugsLater: number[] = []; // flat rugs are claimed last, so goods can stand on them
 
   // ---------------------------------------------------------------- single goods
@@ -1660,9 +1948,12 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const mats: THREE.Material[] = [solidMat, flexMat];
   const geos: THREE.BufferGeometry[] = [];
   const cellMeshes: THREE.Mesh[] = [];
+  const cellWriters: Writer[] = [];
+  const pads: number[] = [];
   const bounds: number[] = [];
   const hides: number[] = [];
   let tris = 0;
+  replay = null;
   const addCells = (m: Map<number, Writer>, mat: THREE.Material, name: string, hide: number, pad: number): void => {
     for (const w of m.values()) {
       w.orient();
@@ -1676,6 +1967,8 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       me.visible = false;
       near.add(me);
       cellMeshes.push(me);
+      cellWriters.push(w);
+      pads.push(pad);
       const bb = g.boundingBox!;
       bounds.push(bb.min.x, bb.min.z, bb.max.x, bb.max.z);
       hides.push(hide * hide);
@@ -1701,6 +1994,38 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   near.userData.triangles = tris;
   near.userData.counts = { ...counts, total: total(), target };
 
+  // built before the modelled furniture arrived: rebuild the cells that hold any once it does
+  let disposed = false;
+  if (ops && ops.size > 0) {
+    void loading.then((M) => {
+      if (!M || disposed) return;
+      for (let i = 0; i < cellMeshes.length; i++) {
+        const src = cellWriters[i];
+        const list = ops.get(src);
+        if (!list) continue;
+        const w = rebuilt(src, list, M);
+        const g = w.geometry();
+        if (!g?.boundingSphere || !g.boundingBox) continue;
+        g.boundingSphere.radius += pads[i];
+        near.userData.triangles += w.tris - src.tris;
+        const me = cellMeshes[i];
+        const old = me.geometry;
+        me.geometry = g;
+        geos[geos.indexOf(old)] = g;
+        old.dispose();
+        const bb = g.boundingBox;
+        bx[i * 4] = bb.min.x;
+        bx[i * 4 + 1] = bb.min.z;
+        bx[i * 4 + 2] = bb.max.x;
+        bx[i * 4 + 3] = bb.max.z;
+      }
+      ops.clear();
+      cellWriters.length = 0;
+    });
+  } else {
+    cellWriters.length = 0;
+  }
+
   return {
     near,
     far: null,
@@ -1715,6 +2040,9 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       }
     },
     dispose() {
+      disposed = true;
+      ops?.clear();
+      cellWriters.length = 0;
       for (const g of geos) g.dispose();
       for (const m of mats) m.dispose();
       geos.length = 0;

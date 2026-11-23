@@ -3,7 +3,7 @@ import type { PlayerState, SaddleSway, Uniforms } from './contract';
 import { strideLength } from './player';
 import { STYLE_GLSL } from '../render/styleGlsl';
 import { detailTexture, loadModel, modelGeometry } from '../render/art';
-import { CHOSEN, TRIM, bedrollGeometry, boardGeometry, bootGeometry, featherGeometry, carpetGeometry, chartGeometry, fluteGeometry, lampGeometry, pickGeometry, relicGeometry, rodGeometry, rollGeometry, ropeCoilGeometry, rugMaterial, solidMaterial, spyglassGeometry, trimGeometry } from './equipment';
+import { CHOSEN, TRIM, bedrollGeometry, loadEquipment, boardGeometry, bootGeometry, featherGeometry, carpetGeometry, chartGeometry, fluteGeometry, lampGeometry, pickGeometry, relicGeometry, rodGeometry, rollGeometry, ropeCoilGeometry, rugMaterial, solidMaterial, spyglassGeometry, trimGeometry } from './equipment';
 
 // The wanderer: a dark hooded traveller. A cone robe with a ragged hem, two thin
 // legs, a plain white face and a round hood.
@@ -512,16 +512,42 @@ export class Figure {
     this.setBoard(CHOSEN.board);
     this.setCarpet(CHOSEN.carpet);
     this.setPick(CHOSEN.pick);
+
+    // The modelled equipment, when it arrives (tools/blender/equipment.py): build it all again.
+    void loadEquipment().then((ok) => {
+      if (!ok) return;
+      const swap = (mesh: THREE.Mesh, g: THREE.BufferGeometry) => {
+        mesh.geometry.dispose();
+        mesh.geometry = g;
+      };
+      this.setBoard(this.designs.board);
+      this.setCarpet(this.designs.carpet);
+      this.setPick(this.designs.pick);
+      swap(this.lampMesh, lampGeometry());
+      swap(this.glassMesh, spyglassGeometry());
+      swap(this.fluteMesh, fluteGeometry());
+      swap(this.bedMesh, bedrollGeometry());
+      swap(this.rodMesh, rodGeometry());
+      swap(this.ropeMesh, ropeCoilGeometry().translate(0, -0.058, 0).scale(0.8, 0.8, 0.8));
+      const boot = bootGeometry();
+      for (const m of this.bootMeshes) m.geometry = boot;
+      swap(this.featherMesh, featherGeometry());
+    });
   }
+
+  /** The designs worn (indices into BOARDS, CARPETS and PICKS). */
+  private designs = { ...CHOSEN };
 
   /** Wear a different design (an index into BOARDS, CARPETS or PICKS in equipment.ts). */
   setBoard(i: number) {
+    this.designs.board = i;
     const g = boardGeometry(i);
     this.boardBack.geometry = g;
     this.boardFoot.geometry = g;
   }
 
   setCarpet(i: number) {
+    this.designs.carpet = i;
     const c = carpetGeometry(i);
     this.rug.geometry = c.geo;
     this.rugLen.value = c.len;
@@ -529,6 +555,7 @@ export class Figure {
   }
 
   setPick(i: number) {
+    this.designs.pick = i;
     this.pickMesh.geometry = pickGeometry(i);
   }
 

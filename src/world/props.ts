@@ -276,6 +276,59 @@ function loadRocks(): Promise<boolean> {
   return rockLoad;
 }
 
+/**
+ * The modelled cacti (tools/blender/cacti.py writes public/art/cacti.glb). Stems are drawn in knot
+ * space and swept along the paths laid out below, so the layout and its solids stay this file's;
+ * pads and fruit are placed whole. Every vertex carries _info: what it is (1 flesh, 2 bloom,
+ * 3 spine, 4 fruit) and a shade. Null until they have loaded, and for good without the file;
+ * the ribbed tubes below are drawn then.
+ */
+interface CactusModel {
+  pos: Float32Array;
+  info: Float32Array;
+  index: ArrayLike<number>;
+}
+interface Cacti {
+  trunk: CactusModel[];
+  arm: CactusModel[];
+  organ: CactusModel[];
+  barrel: CactusModel[];
+  pad: CactusModel[];
+  fruit: CactusModel;
+}
+let MODEL_CACTI: Cacti | null = null;
+let cactusLoad: Promise<boolean> | null = null;
+
+function loadCacti(): Promise<boolean> {
+  if (!cactusLoad) {
+    cactusLoad = loadModel('cacti.glb').then((gltf) => {
+      if (!gltf) return false;
+      const get = (name: string): CactusModel | null => {
+        const g = modelGeometry(gltf, name);
+        const info = g?.getAttribute('_info');
+        if (!g || !info || info.itemSize !== 3) return null;
+        const n = g.getAttribute('position').count;
+        return {
+          pos: Float32Array.from(g.getAttribute('position').array),
+          info: Float32Array.from(info.array),
+          index: g.getIndex()?.array ?? Array.from({ length: n }, (_, i) => i),
+        };
+      };
+      const all = (base: string, n: number) => Array.from({ length: n }, (_, i) => get(`${base}${i}`)).filter((m): m is CactusModel => !!m);
+      const trunk = all('SaguaroTrunk', 3);
+      const arm = all('SaguaroArm', 2);
+      const organ = all('OrganStem', 3);
+      const barrel = all('Barrel', 3);
+      const pad = all('PearPad', 3);
+      const fruit = get('PearFruit');
+      if (!fruit || !trunk.length || !arm.length || !organ.length || !barrel.length || !pad.length) return false;
+      MODEL_CACTI = { trunk, arm, organ, barrel, pad, fruit };
+      return true;
+    });
+  }
+  return cactusLoad;
+}
+
 const _m = new THREE.Matrix4();
 const _mi = new THREE.Matrix4();
 const _q = new THREE.Quaternion();
@@ -338,7 +391,7 @@ class Build {
     this.k = k;
   }
 
-  private vert(p: ArrayLike<number>, i: number): void {
+  vert(p: ArrayLike<number>, i: number): void {
     const o = i * 4;
     const m = p[o + 3];
     this.pos.push(p[o] - this.ox, p[o + 1] - this.oy, p[o + 2] - this.oz);
@@ -895,6 +948,103 @@ function footShades(pts: THREE.Vector3[], g: number): number[] {
   return pts.map((p) => 0.72 + 0.28 * smooth(g, g + 0.7, p.y));
 }
 
+// colours of a model's own parts, by _info.x: 2 the species' bloom (passed in), 3 spines, 4 fruit
+const STRAW = [1.05, 0.96, 0.74];
+const FRUIT = [0.78, 0.2, 0.34];
+const SAGUARO_BLOOM = [1.3, 1.24, 1.02];
+const ORGAN_BLOOM = [1.2, 0.8, 0.86];
+let _mp = new Float64Array(1024);
+
+/**
+ * A model's triangles written into b, each vertex placed by `place` (model x, y, z to world, into
+ * _v). Flesh takes the tint set when it is called, darkened toward the ground below `foot` as the
+ * ribbed stems are (footShades); blooms, spines and fruit their own colours.
+ */
+function stamp(b: Build, m: CactusModel, place: (x: number, y: number, z: number) => void, foot: number | null, bloom: readonly number[]): void {
+  const n = m.pos.length / 3;
+  if (_mp.length < n * 4) _mp = new Float64Array(n * 4);
+  const p = _mp;
+  for (let i = 0; i < n; i++) {
+    place(m.pos[i * 3], m.pos[i * 3 + 1], m.pos[i * 3 + 2]);
+    p[i * 4] = _v.x;
+    p[i * 4 + 1] = _v.y;
+    p[i * 4 + 2] = _v.z;
+    const flesh = m.info[i * 3] < 1.5;
+    p[i * 4 + 3] = m.info[i * 3 + 1] * (flesh && foot !== null ? 0.72 + 0.28 * smooth(foot, foot + 0.7, _v.y) : 1);
+  }
+  const fr = b.r;
+  const fg = b.g;
+  const fb = b.b;
+  const fk = b.k;
+  const I = m.index;
+  for (let t = 0; t < I.length; t++) {
+    const v = I[t];
+    const kind = m.info[v * 3];
+    if (kind < 1.5) b.tintTo(fr, fg, fb, fk);
+    else {
+      const c = kind < 2.5 ? bloom : kind < 3.5 ? STRAW : FRUIT;
+      b.tintTo(c[0], c[1], c[2], BLOOM);
+    }
+    b.vert(p, v);
+  }
+  b.tintTo(fr, fg, fb, fk);
+}
+
+const _kT: THREE.Vector3[] = [];
+const _kN: THREE.Vector3[] = [];
+const _kB: THREE.Vector3[] = [];
+const _kq = new THREE.Quaternion();
+
+/**
+ * A modelled stem swept along knots pts (world) at radius r, turned about its own axis by roll:
+ * model y is the knot coordinate (past the last knot, a distance along the end in radii), x and
+ * z are across, in radii, along the path's normal and normal x tangent (see cacti.py).
+ */
+function sweep(b: Build, m: CactusModel, pts: THREE.Vector3[], r: number, roll: number, foot: number | null, bloom: readonly number[]): void {
+  const K = pts.length;
+  while (_kT.length < K) {
+    _kT.push(new THREE.Vector3());
+    _kN.push(new THREE.Vector3());
+    _kB.push(new THREE.Vector3());
+  }
+  for (let i = 0; i < K; i++) {
+    const t = _kT[i];
+    if (i === 0) t.subVectors(pts[1], pts[0]).normalize();
+    else if (i === K - 1) t.subVectors(pts[K - 1], pts[K - 2]).normalize();
+    else t.subVectors(pts[i + 1], pts[i - 1]).normalize();
+    const n = _kN[i];
+    if (i === 0) {
+      n.set(1, 0, 0);
+      if (Math.abs(t.x) > 0.9) n.set(0, 0, 1);
+      n.addScaledVector(t, -n.dot(t)).normalize();
+    } else {
+      n.copy(_kN[i - 1]).applyQuaternion(_kq.setFromUnitVectors(_kT[i - 1], t));
+    }
+    _kB[i].crossVectors(n, t).normalize();
+  }
+  const cr = Math.cos(roll);
+  const sr = Math.sin(roll);
+  stamp(b, m, (mx, y, mz) => {
+    const x = (mx * cr - mz * sr) * r;
+    const z = (mx * sr + mz * cr) * r;
+    if (y <= K - 1) {
+      const k = Math.min(Math.max(Math.floor(y), 0), K - 2);
+      const f = y - k;
+      _a.copy(_kN[k]).lerp(_kN[k + 1], f).normalize();
+      _b.copy(_kB[k]).lerp(_kB[k + 1], f).normalize();
+      _v.copy(pts[k]).lerp(pts[k + 1], f);
+    } else {
+      _a.copy(_kN[K - 1]);
+      _b.copy(_kB[K - 1]);
+      _v.copy(pts[K - 1]).addScaledVector(_kT[K - 1], (y - (K - 1)) * r);
+    }
+    _v.addScaledVector(_a, x).addScaledVector(_b, z);
+  }, foot, bloom);
+}
+
+/** A turn about a stem's axis that is the same whenever the stem is built. */
+const rollAt = (x: number, z: number) => hash4(Math.round(x * 64), Math.round(z * 64), 7, 31) * TAU;
+
 /** A saguaro: a ribbed column with a domed top and, once old enough, arms that bend up. */
 function saguaro(b: Build, x: number, z: number, r: number, rng: () => number, young: boolean): Made {
   const H = young ? 1.9 + rng() * 1.6 : 4.5 + rng() * 4;
@@ -903,11 +1053,17 @@ function saguaro(b: Build, x: number, z: number, r: number, rng: () => number, y
   b.base = g;
   cactusTint(b, rng);
   const lean: [number, number] = [(rng() - 0.5) * 0.4, (rng() - 0.5) * 0.4];
-  const pts: THREE.Vector3[] = [];
-  const radii: number[] = [];
-  stem(x, z, g - 0.3, g + H, R, 0.7, lean, pts, radii);
   const ribs = 14 + Math.floor(rng() * 6);
-  ribTube(b, pts, radii, ribs, 0.1, footShades(pts, g));
+  const M = MODEL_CACTI;
+  if (M) {
+    const knots = [0, 0.12, 0.5, 1].map((t) => new THREE.Vector3(x + lean[0] * t * t, g - 0.3 + (H + 0.3) * t, z + lean[1] * t * t));
+    sweep(b, M.trunk[ribs % M.trunk.length], knots, R, rollAt(x, z), g, SAGUARO_BLOOM);
+  } else {
+    const pts: THREE.Vector3[] = [];
+    const radii: number[] = [];
+    stem(x, z, g - 0.3, g + H, R, 0.7, lean, pts, radii);
+    ribTube(b, pts, radii, ribs, 0.1, footShades(pts, g));
+  }
   b.capsule(x, g - 1, z, x + lean[0], g + H, z + lean[1], R * 0.95, 2);
   // and an upright post under all of the trunk, or its lean is an overhang to walk in under
   const ll = Math.hypot(lean[0], lean[1]);
@@ -932,28 +1088,38 @@ function saguaro(b: Build, x: number, z: number, r: number, rng: () => number, y
     const ap: THREE.Vector3[] = [];
     const ar: number[] = [];
     const at = (d: number, y: number) => ap.push(new THREE.Vector3(ax + ux * d, y, azz + uz * d));
-    at(R * 0.2, ha - 0.04);
-    ar.push(ra * 0.95);
-    at(R + 0.08, ha + 0.02);
-    ar.push(ra);
-    at(out - rc, ha + 0.08);
-    ar.push(ra);
-    for (const th of [0.5, 1.0]) {
-      at(out - rc + rc * Math.sin(th), ha + 0.08 + rc * (1 - Math.cos(th)));
-      ar.push(ra);
-    }
     const y0 = ha + 0.08 + rc;
-    const nUp = Math.max(1, Math.ceil((armTop - y0) / 0.7));
-    for (let k = 0; k <= nUp; k++) {
-      at(out, y0 + ((armTop - y0) * k) / nUp);
-      ar.push(ra * (1 - 0.06 * (k / nUp)));
+    if (M) {
+      // the root in the trunk, half way round the elbow, the elbow's top, the arm's top
+      const s45 = Math.SQRT1_2;
+      at(R * 0.2, ha - 0.04);
+      at(out - rc + rc * s45, ha + 0.08 + rc * (1 - s45));
+      at(out, y0);
+      at(out, armTop);
+      sweep(b, M.arm[(10 + Math.floor(rng() * 3)) % M.arm.length], ap, ra, rollAt(ap[2].x, ap[2].z), null, SAGUARO_BLOOM);
+    } else {
+      at(R * 0.2, ha - 0.04);
+      ar.push(ra * 0.95);
+      at(R + 0.08, ha + 0.02);
+      ar.push(ra);
+      at(out - rc, ha + 0.08);
+      ar.push(ra);
+      for (const th of [0.5, 1.0]) {
+        at(out - rc + rc * Math.sin(th), ha + 0.08 + rc * (1 - Math.cos(th)));
+        ar.push(ra);
+      }
+      const nUp = Math.max(1, Math.ceil((armTop - y0) / 0.7));
+      for (let k = 0; k <= nUp; k++) {
+        at(out, y0 + ((armTop - y0) * k) / nUp);
+        ar.push(ra * (1 - 0.06 * (k / nUp)));
+      }
+      const top = ap[ap.length - 1];
+      for (const phi of [0.5, 0.95, 1.3]) {
+        ap.push(new THREE.Vector3(top.x, top.y + ra * 0.85 * Math.sin(phi), top.z));
+        ar.push(ra * Math.cos(phi));
+      }
+      ribTube(b, ap, ar, 10 + Math.floor(rng() * 3), 0.1);
     }
-    const top = ap[ap.length - 1];
-    for (const phi of [0.5, 0.95, 1.3]) {
-      ap.push(new THREE.Vector3(top.x, top.y + ra * 0.85 * Math.sin(phi), top.z));
-      ar.push(ra * Math.cos(phi));
-    }
-    ribTube(b, ap, ar, 10 + Math.floor(rng() * 3), 0.1);
     b.capsule(ax, ha + 0.04, azz, ax + ux * out, ha + 0.08, azz + uz * out, ra, 2);
     b.capsule(ax + ux * out, y0, azz + uz * out, ax + ux * out, armTop, azz + uz * out, ra, 2);
     reach = Math.max(reach, out * 0.6);
@@ -963,6 +1129,9 @@ function saguaro(b: Build, x: number, z: number, r: number, rng: () => number, y
   if (arm > 0) b.piece(x, z, arm, arm, 0, g - 1, g + H, g + H, 2, false);
   return { h: H, sr: Math.max(R * 1.6, reach) };
 }
+
+/** Where the modelled barrel's rings stand, as a share of its height (cacti.py BARREL_T). */
+const BARREL_KNOTS = [0, 0.3, 0.62, 0.86, 1];
 
 /** A barrel cactus: squat, deeply ribbed, leaning south, with a crown of flowers. */
 function barrel(b: Build, x: number, z: number, H: number, R: number, rng: () => number): number {
@@ -976,16 +1145,18 @@ function barrel(b: Build, x: number, z: number, H: number, R: number, rng: () =>
   const radii: number[] = [];
   const y0 = g - 0.15;
   const len = H + 0.15;
-  for (let i = 0; i < ts.length; i++) {
-    const t = ts[i];
-    pts.push(new THREE.Vector3(x, y0 + Math.cos(lean) * len * t, z + Math.sin(lean) * len * t));
-    radii.push(R * prof[i]);
-  }
-  ribTube(b, pts, radii, 16 + Math.floor(rng() * 7), 0.14, footShades(pts, g));
+  const M = MODEL_CACTI;
+  for (const t of M ? BARREL_KNOTS : ts) pts.push(new THREE.Vector3(x, y0 + Math.cos(lean) * len * t, z + Math.sin(lean) * len * t));
+  for (let i = 0; i < ts.length; i++) radii.push(R * prof[i]);
+  const ribs = 16 + Math.floor(rng() * 7);
+  if (!M) ribTube(b, pts, radii, ribs, 0.14, footShades(pts, g));
   // flowers: a ring of little points of colour on the crown
   const top = pts[pts.length - 1];
   const red = rng() < 0.4;
-  b.tintTo(red ? 1.15 : 1.25, red ? 0.42 : 0.9, red ? 0.3 : 0.32, BLOOM);
+  const bloom = [red ? 1.15 : 1.25, red ? 0.42 : 0.9, red ? 0.3 : 0.32];
+  // the model brings its own crown of flowers; the draws below are still taken
+  if (M) sweep(b, M.barrel[ribs % M.barrel.length], pts, R, rollAt(x, z), g, bloom);
+  b.tintTo(bloom[0], bloom[1], bloom[2], BLOOM);
   const nf = 5 + Math.floor(rng() * 4);
   const p = _ring;
   for (let i = 0; i < nf; i++) {
@@ -994,6 +1165,7 @@ function barrel(b: Build, x: number, z: number, H: number, R: number, rng: () =>
     const fz = top.z + Math.sin(a) * R * 0.32;
     const fy = top.y - 0.02;
     const s = 0.05 + rng() * 0.03;
+    if (M) continue;
     // a little three-sided cone
     for (let k = 0; k < 3; k++) {
       const c0 = a + (k / 3) * TAU;
@@ -1052,13 +1224,25 @@ function organ(b: Build, x: number, z: number, r: number, rng: () => number): Ma
     const Hi = H0 * (0.55 + rng() * 0.5);
     const pts: THREE.Vector3[] = [];
     const radii: number[] = [];
+    const sx = x + ux * out;
+    const sz = z + uz * out;
+    const M = MODEL_CACTI;
+    if (M) {
+      // the root, out and up, the foot of the upright, its top
+      for (const [d, y] of [[0.1, -0.3], [out * 0.8, 0.55], [out, 1.0]]) pts.push(new THREE.Vector3(x + ux * d, g + y, z + uz * d));
+      pts.push(new THREE.Vector3(sx, g + Hi, sz));
+      sweep(b, M.organ[(9 + Math.floor(rng() * 3)) % M.organ.length], pts, rs, rollAt(sx, sz), g, ORGAN_BLOOM);
+      b.capsule(sx, g + 1.0, sz, sx, g + Hi, sz, rs, 2);
+      hMin = Math.min(hMin, Hi);
+      hMax = Math.max(hMax, Hi);
+      reach = Math.max(reach, out + rs);
+      continue;
+    }
     // out from the root, then up
     for (const [d, y] of [[0.1, -0.3], [spread * 0.5, 0.15], [out * 0.8, 0.55], [out, 1.0]]) {
       pts.push(new THREE.Vector3(x + ux * d, g + y, z + uz * d));
       radii.push(rs);
     }
-    const sx = x + ux * out;
-    const sz = z + uz * out;
     const up: THREE.Vector3[] = [];
     const ur: number[] = [];
     stem(sx, sz, g + 1.0, g + Hi, rs, 0.8, null, up, ur, 0.05);
@@ -1129,11 +1313,23 @@ function pear(b: Build, x: number, z: number, r: number, rng: () => number): Mad
   const RIM = 10;
   let top = g;
   let far = 0;
-  for (const pd of pads) {
+  const M = MODEL_CACTI;
+  for (let pi = 0; pi < pads.length; pi++) {
+    const pd = pads[pi];
     const s = new THREE.Vector3().crossVectors(pd.u, pd.nn);
     const shade = pd.lvl === 0 ? 0.85 : 1;
     b.tintTo(tr * shade, tg * shade, tb * shade, CACTUS);
-    for (let k = 0; k < RIM; k++) {
+    if (M) {
+      // the modelled pad: across by its half width, along by its half height, through by T
+      stamp(b, M.pad[pi % M.pad.length], (mx, my, mz) => {
+        _v.copy(pd.c).addScaledVector(s, mx * pd.w).addScaledVector(pd.u, my * pd.hh).addScaledVector(pd.nn, mz * T);
+      }, null, FRUIT);
+      for (let k = 0; k < RIM; k++) {
+        const th = (k / RIM) * TAU;
+        top = Math.max(top, pd.c.y + pd.u.y * pd.hh * Math.cos(th) + s.y * pd.w * Math.sin(th));
+      }
+    }
+    for (let k = 0; k < RIM && !M; k++) {
       const th = (k / RIM) * TAU;
       _v.copy(pd.c).addScaledVector(pd.u, pd.hh * Math.cos(th)).addScaledVector(s, pd.w * Math.sin(th));
       p[k * 4] = _v.x;
@@ -1142,7 +1338,7 @@ function pear(b: Build, x: number, z: number, r: number, rng: () => number): Mad
       p[k * 4 + 3] = 0.92;
       top = Math.max(top, _v.y);
     }
-    for (let f = 0; f < 2; f++) {
+    for (let f = 0; f < 2 && !M; f++) {
       const o = (RIM + f) * 4;
       const sg = f === 0 ? T : -T;
       p[o] = pd.c.x + pd.nn.x * sg;
@@ -1150,7 +1346,7 @@ function pear(b: Build, x: number, z: number, r: number, rng: () => number): Mad
       p[o + 2] = pd.c.z + pd.nn.z * sg;
       p[o + 3] = 1.06;
     }
-    for (let k = 0; k < RIM; k++) {
+    for (let k = 0; k < RIM && !M; k++) {
       b.face(p, RIM, k, (k + 1) % RIM, pd.c.x, pd.c.y, pd.c.z);
       b.face(p, RIM + 1, (k + 1) % RIM, k, pd.c.x, pd.c.y, pd.c.z);
     }
@@ -1163,6 +1359,13 @@ function pear(b: Build, x: number, z: number, r: number, rng: () => number): Mad
         const th = (rng() - 0.5) * 1.6;
         _v.copy(pd.c).addScaledVector(pd.u, pd.hh * Math.cos(th) + 0.04).addScaledVector(s, pd.w * Math.sin(th));
         const fs = 0.05;
+        if (M) {
+          const fx = _v.x;
+          const fy = _v.y;
+          const fz = _v.z;
+          stamp(b, M.fruit, (mx, my, mz) => _v.set(fx + mx * fs, fy + my * fs, fz + mz * fs), null, FRUIT);
+          continue;
+        }
         // a tiny octahedron
         const O = [[1, 0, 0], [-1, 0, 0], [0, 1.4, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]];
         for (let j = 0; j < 6; j++) {
@@ -1219,7 +1422,7 @@ export class Props {
   private readonly chunks = new Map<number, Chunk>();
   private readonly clearings: number[] = []; // x, z, r
   private readonly pending: number[] = []; // chunk keys, nearest last
-  /** Chunks built before the modelled rocks arrived, to be built again (a few a frame). */
+  /** Chunks built before the modelled rocks or cacti arrived, to be built again (a few a frame). */
   private readonly redo: number[] = [];
   private disposed = false;
   private readonly far = { value: FAR.high };
@@ -1260,14 +1463,15 @@ export class Props {
     this.watchModels();
   }
 
-  /** Starts loading the modelled rocks; once they arrive, what is already built is built again. */
+  /** Starts loading the modelled rocks and cacti; as each arrives, what is already built is built again. */
   private watchModels(): void {
-    if (MODEL_ROCKS) return;
-    void loadRocks().then((ok) => {
+    const again = (ok: boolean) => {
       if (!ok || this.disposed) return;
       this.redo.length = 0;
       for (const k of this.chunks.keys()) this.redo.push(k);
-    });
+    };
+    if (!MODEL_ROCKS) void loadRocks().then(again);
+    if (!MODEL_CACTI) void loadCacti().then(again);
   }
 
   /** How far out props are drawn, by graphics tier. */
@@ -1329,7 +1533,7 @@ export class Props {
       this.chunks.set(k, this.build(cix, ciz));
       built++;
     }
-    // then, a chunk or so a frame, those built before the modelled rocks came, in place
+    // then, a chunk or so a frame, those built before the modelled rocks or cacti came, in place
     while (this.redo.length > 0 && this.pending.length === 0 && (built === 0 || performance.now() - t0 < budget)) {
       const k = this.redo.pop();
       const old = k === undefined ? undefined : this.chunks.get(k);
