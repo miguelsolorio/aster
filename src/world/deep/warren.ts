@@ -15,9 +15,8 @@
 // put rock back (stairs, bridges, the lookout), then dress it. Carving after filling would cut
 // the stairs.
 
-import type { Uniforms } from '../../game/contract';
 import type { DeepSpec } from './types';
-import { DeepBuilder, TEAL, mulberry32, type BuiltDeep } from './builder';
+import { DeepBuilder, TEAL, mulberry32, type DeepData } from './builder';
 import type { Pt } from './spans';
 
 /** What was built where, in the deep's own frame ([u, y, v]): for checks. */
@@ -37,10 +36,9 @@ export interface WarrenLayout {
   back: [number, number, number] | null;
 }
 
-const layouts = new WeakMap<object, WarrenLayout>();
-/** The layout of a deep built by buildWarren. */
+/** The layout of a deep built by buildWarren: left on it by the build (see DeepData.extra), for checks. */
 export function warrenLayout(d: object): WarrenLayout | undefined {
-  return layouts.get(d);
+  return (d as { warren?: WarrenLayout }).warren;
 }
 
 function hash2(a: number, b: number): number {
@@ -133,7 +131,7 @@ interface Room {
   skip: boolean;
 }
 
-export function buildWarren(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
+export function buildWarren(spec: DeepSpec): DeepData {
   const tier = spec.tier;
   const lid = spec.lid;
   // the shape of the place comes from a generator of its own, so every tier builds the same warren
@@ -165,7 +163,7 @@ export function buildWarren(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   const y3 = yL;
   const Yh = Yf - 0.4; // the hearth, sunk a step into the commons' floor
 
-  const b = new DeepBuilder(spec, uniforms, { cell: tier === 2 ? 2 : 1, yMin: Yf - 4, maxSpans: 6, wallStep: [3, 4, 5][tier] });
+  const b = new DeepBuilder(spec, { cell: tier === 2 ? 2 : 1, yMin: Yf - 4, maxSpans: 6, wallStep: [3, 4, 5][tier] });
   const g = b.grid;
 
   // ---- halls: a rounded square with a wandering edge
@@ -1407,7 +1405,7 @@ export function buildWarren(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   }
 
   const built = b.finish({ ledge: [uH0 + 1.5, yL, vP], centre: [C.u, Yh, C.v], relic });
-  layouts.set(built, {
+  built.extra.warren = {
     halls: halls.map((h) => ({ role: h.role, u: h.u, v: h.v, a: h.a, b: h.b, floor: h.floor, top: h.top })),
     galleries: galleryPts,
     rooms: rooms.filter((r) => !r.skip).map((r) => [(r.u0 + r.u1) / 2, r.y, (r.v0 + r.v1) / 2]),
@@ -1415,6 +1413,6 @@ export function buildWarren(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     pools: cistern.pools.map((p) => [p.u, WL, p.v, p.r]),
     flights: flightHeads,
     back: backEnd,
-  });
+  };
   return built;
 }

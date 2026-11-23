@@ -4,6 +4,9 @@ import { FrameBudget, Task, finish, frameBudget } from '../budget';
 import { soupNormals, soupSphere } from '../soup';
 import { createWorld } from '../surface';
 import { Discoveries } from '../discoveries';
+import { GLTFLoader, type GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { dropSettlementModels, useSettlementModels } from '../settlements';
+import { isSettlement } from '../settlementKinds';
 
 describe('FrameBudget', () => {
   /** A job of `n` steps, each taking `ms` on the fake clock. */
@@ -160,16 +163,25 @@ describe('the discoveries on a frame budget', () => {
     villagesOf(gi: number, gj: number, m: unknown): unknown;
   };
 
-  it('builds sites through jobs, stepped in turn with one another, exactly as at once', () => {
-    const now = new Discoveries(createWorld(3), {});
-    const later = new Discoveries(createWorld(3), {});
+  /** The settlements' modelled pieces, read straight from the file (no fetch in tests). */
+  const kit = async (): Promise<GLTF> => {
+    // (node's own fs, without node's types, which this project does not have)
+    type Fs = { readFileSync(path: string): Uint8Array };
+    const fs = (globalThis as unknown as { process: { getBuiltinModule(id: string): Fs } }).process.getBuiltinModule('node:fs');
+    const buf = fs.readFileSync('public/art/settlements.glb');
+    const ab = buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+    return new Promise((res, rej) => new GLTFLoader().parse(ab, '', res, rej));
+  };
+
+  /** Builds the cells' finds of a world at once in one, and as jobs stepped round robin in another. */
+  const both = (seed: number, during?: () => void) => {
+    const now = new Discoveries(createWorld(seed), {});
+    const later = new Discoveries(createWorld(seed), {});
     const a = now as unknown as Inner;
     const b = later as unknown as Inner;
     const cells: [number, number][] = [];
-    for (let cz = -3; cz <= 3; cz++) for (let cx = -3; cx <= 3; cx++) if (a.cellSite(cx, cz)) cells.push([cx, cz]);
-    expect(cells.length).toBeGreaterThan(8);
+    for (let cz = -5; cz <= 5; cz++) for (let cx = -5; cx <= 5; cx++) if (a.cellSite(cx, cz)) cells.push([cx, cz]);
     for (const [cx, cz] of cells) a.buildSite(cx, cz);
-    // the same sites, all started at once and then stepped round robin, a step each
     b.syncBuild = false;
     for (const [cx, cz] of cells) b.buildSite(cx, cz);
     b.syncBuild = true;
@@ -177,13 +189,43 @@ describe('the discoveries on a frame budget', () => {
     let steps = 0;
     while (b.jobs.length > 0) {
       for (let i = 0; i < b.jobs.length; i++) {
-        steps++;
+        // (once every job has begun)
+        if (++steps === cells.length + 5) during?.();
         if (b.jobs[i].it.next().done) b.jobs.splice(i--, 1);
       }
     }
     expect(steps).toBeGreaterThan(cells.length * 3);
+    return { now, later };
+  };
+
+  it('builds sites through jobs, stepped in turn with one another, exactly as at once', async () => {
+    const { now, later } = both(3);
     // (jobs left their sites in the order they finished)
     expect(dump(later)).toEqual(dump(now));
+    expect(dump(now).some((s) => isSettlement(s[1] as string))).toBe(true);
+    // and with the modelled pieces in use
+    expect(useSettlementModels(await kit())).toBe(true);
+    try {
+      const m = both(3);
+      expect(dump(m.later)).toEqual(dump(m.now));
+      expect(dump(m.now)).not.toEqual(dump(now));
+    } finally {
+      dropSettlementModels();
+    }
+  });
+
+  it('a settlement begun without the modelled pieces is built without them throughout, though they come mid-way', async () => {
+    const gltf = await kit();
+    let came = false;
+    try {
+      const { now, later } = both(3, () => {
+        came = useSettlementModels(gltf);
+      });
+      expect(came).toBe(true);
+      expect(dump(later)).toEqual(dump(now));
+    } finally {
+      dropSettlementModels();
+    }
   });
 
   it('finishes a site at once when the wanderer comes near it, whatever the budget', () => {

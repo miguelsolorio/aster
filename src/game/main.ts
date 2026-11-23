@@ -238,6 +238,15 @@ function start() {
   const clipmap = new Clipmap(u);
   const dust = new Dust(world, u);
   const discoveries = new Discoveries(world, u);
+  // A deep's shaders are compiled (in parallel where the GPU allows it) and its textures uploaded
+  // as soon as it is made, not on the frame it is first drawn.
+  discoveries.onDeep = (obj) => {
+    obj.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined;
+      if (m?.uniforms) for (const k in m.uniforms) if ((m.uniforms[k].value as THREE.Texture | null)?.isTexture) renderer.initTexture(m.uniforms[k].value);
+    });
+    return renderer.compileAsync(obj, camera, scene);
+  };
   // Caverns opened on an earlier visit are open still, and their relics stay taken.
   discoveries.restore(save.data.opened, save.data.taken, save.data.woken);
   discoveries.onOpened = (key) => save.open(key);
