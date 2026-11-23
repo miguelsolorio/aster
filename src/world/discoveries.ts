@@ -6,7 +6,7 @@
 import * as THREE from 'three';
 import type { FrameState, SurfaceSample, Uniforms, World } from '../game/contract';
 import { WORLD_SCALE } from './scale';
-import { DETAIL_GLSL, STYLE_GLSL } from '../render/styleGlsl';
+import { DETAIL_GLSL, SAND_WALL_GLSL, STYLE_GLSL } from '../render/styleGlsl';
 import { detailTexture, detailTexture2 } from '../render/art';
 import { MAX_CAVERNS, TERRAIN, writeCaverns, type Cave, type Cavern, type DesertWorld, type Massif } from './surface';
 import { rockCapVert, terrainFrag } from '../render/terrainShaders';
@@ -200,6 +200,8 @@ varying float vKind;
 ${NOISE}
 ${STYLE_GLSL}
 ${DETAIL_GLSL}
+#define uDetail2 uDetailMap2
+${SAND_WALL_GLSL}
 void main() {
   ${DISSOLVE}
   vec3 n = normalize(vN);
@@ -222,8 +224,9 @@ void main() {
     float t;
     if (kind < 0.5) t = texture2D(uDetailMap2, puv * 0.5).g - 0.5;
     else if (kind > 2.1) t = texture2D(uDetailMap2, (an.y < max(an.x, an.z) ? puv.yx : puv) * 0.83).b - 0.5;
-    else t = texture2D(uDetailMap, puv * 0.625).b - 0.5;
-    col *= detailMul(t, kind > 2.1 ? 0.26 : 0.22, grainF);
+    // mud brick and packed sand: sand grain, clumps and rammed courses over a little of the brick
+    else t = sandWall(puv, vN) + (texture2D(uDetailMap, puv * 0.625).b - 0.5) * 0.35;
+    col *= detailMul(t, kind > 2.1 ? 0.26 : kind < 0.5 ? 0.22 : 0.32, grainF);
   }
   float m = dvn(vW.xz * 0.45 + vec2(vW.y * 0.6, -vW.y * 0.3)) * 0.6 + dvn(vW.xz * 1.7 + vW.y) * 0.4;
   col *= vTint * (0.88 + 0.24 * m);

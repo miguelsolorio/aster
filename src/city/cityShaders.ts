@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import type { Uniforms } from '../game/contract';
 import { CITY_SHADOW_GLSL } from './cityGlsl';
-import { DETAIL_GLSL, STYLE_GLSL } from '../render/styleGlsl';
+import { DETAIL_GLSL, SAND_WALL_GLSL, STYLE_GLSL } from '../render/styleGlsl';
 import { detailTexture, detailTexture2 } from '../render/art';
 
 // Shaders for the cities: masonry (walls, roofs, domes, wood, cloth, plants), the pool,
@@ -151,6 +151,7 @@ ${CITY_SHADOW_GLSL}
 ${NOISE}
 ${STYLE_GLSL}
 ${DETAIL_GLSL}
+${SAND_WALL_GLSL}
 float lum(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
 vec3 paler(vec3 c, float k) { return mix(c, vec3(lum(c)), k); }
 #ifdef CUT
@@ -287,7 +288,14 @@ void main() {
       vec2 puv = an.y >= an.x && an.y >= an.z ? vW.xz : an.x >= an.z ? vW.zy : vW.xy;
       vec3 dt = texture2D(uDetail, puv * (chan < 0.5 ? 2.0 : 0.625)).rgb - 0.5;
       float t = chan < 0.5 ? dt.r : chan < 1.5 ? dt.g : dt.b;
-      float k = 1.0 + t * 0.22 * fadeD;
+      float gain = 0.22;
+      if (chan > 0.5 && chan < 1.5) {
+        // sand-built: packed sand grain over a little of the trowel, with clumps and, on walls,
+        // the level courses of rammed earth
+        t = sandWall(puv, ng) + dt.g * 0.25;
+        gain = 0.4;
+      }
+      float k = 1.0 + t * gain * fadeD;
       sh *= k;
       li *= k;
     }

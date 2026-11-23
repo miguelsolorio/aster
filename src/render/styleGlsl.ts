@@ -72,3 +72,21 @@ float detailFade(float d, float near, float far) { return 1.0 - smoothstep(near,
 // The albedo multiplier for a centred texel value t (texel - 0.5) at strength k, faded by f.
 float detailMul(float t, float k, float f) { return 1.0 + t * k * f; }
 `;
+
+/**
+ * Sand as a building material, for walls and roofs of sand, mud and rammed earth. Needs a
+ * `uDetail2` sampler (render/art.ts detailTexture2) declared before it. Returns a centred value
+ * (about -0.5..0.5) to feed detailMul: fine grains, coarser clumps, and on walls faint level
+ * courses where the earth was packed in lifts.
+ */
+export const SAND_WALL_GLSL = /* glsl */ `
+float sandWall(vec2 p, vec3 n) {
+  float fine = texture2D(uDetail2, p * 1.7).r - 0.5;
+  float clump = texture2D(uDetail2, p * 0.37 + vec2(0.31, 0.17)).r - 0.5;
+  float speck = texture2D(uDetail2, p * 4.3 + vec2(0.53, 0.71)).r - 0.5;
+  // courses: broken and wavering, so they read as packed lifts rather than ruled lines
+  float lifts = texture2D(uDetail2, vec2(p.x * 0.23 + clump * 0.4, p.y * 0.36)).g - 0.5;
+  float wall = 1.0 - smoothstep(0.55, 0.85, abs(n.y));
+  return fine * 0.9 + speck * 0.45 + clump * 0.75 + lifts * 0.28 * wall;
+}
+`;
