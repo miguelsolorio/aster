@@ -454,10 +454,12 @@ function start() {
 
   const sky = new THREE.Mesh(
     new THREE.SphereGeometry(1, 48, 24),
-    new THREE.ShaderMaterial({ uniforms: u, vertexShader: gameSkyVert, fragmentShader: gameSkyFrag, side: THREE.BackSide, depthTest: false, depthWrite: false }),
+    new THREE.ShaderMaterial({ uniforms: u, vertexShader: gameSkyVert, fragmentShader: gameSkyFrag, side: THREE.BackSide, depthWrite: false }),
   );
   sky.scale.setScalar(9000);
-  sky.renderOrder = -10;
+  // Last of the opaque things, on the far plane with the depth test (LessEqual), so only the
+  // pixels nothing else covers are shaded; the transparent pass still comes after it.
+  sky.renderOrder = 1e6;
   sky.frustumCulled = false;
   scene.add(sky);
   // The fixed stars, the moon's phase, meteors, the comet and the eclipse (see render/heavens.ts).
@@ -2903,7 +2905,7 @@ function start() {
     footpaths.focus(u, st.pos.x, st.pos.z);
     collisionDebug.update(dt, st.pos.x, st.pos.y, st.pos.z);
     bake.update(st.pos);
-    clipmap.update(camera.position);
+    clipmap.update(camera.position, camera);
     trail.update(dt, st.pos.x, st.pos.z);
     dust.update(frame);
     splash.update(frame);
@@ -3164,7 +3166,7 @@ function start() {
           stillDrawn = false;
           return l?.name;
         },
-        player, day, keys, world, save, atlas, map, lanterns, heavens, talk, figure, trail, dust, bake, renderer, discoveries, props, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
+        player, day, keys, world, save, atlas, map, lanterns, heavens, talk, figure, trail, dust, bake, renderer, discoveries, props, splash, waterAt, water, wildlife, fauna, touch, ui, auto, cities, caravans, waymarks, audio, people, camera, clipmap, cam: (y: number, p: number, d: number) => ((camYaw = y), (camPitch = p), (camDist = d)) })) });
   }
 
   let frozen = false;

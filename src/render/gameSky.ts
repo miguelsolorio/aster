@@ -6,6 +6,9 @@ varying vec3 vDir;
 void main() {
   vDir = position;
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  // On the far plane: drawn after the world with the depth test, it fills only what nothing
+  // else covers (see main.ts).
+  gl_Position.z = gl_Position.w;
 }
 `;
 
@@ -180,12 +183,14 @@ void main() {
     col += vec3(1.0, 0.86, 0.6) * exp(-(fr.x * fr.x + fr.z * fr.z) / 0.03 - fr.y * fr.y / 0.004) * uFlash.w * 0.9;
   }
 
-  // thin high cloud, drifting with the wind
-  vec2 cp = d.xz / (d.y + 0.25) * 1.2 + uWind * uTime * 0.004;
-  float cl = fbm(cp * vec2(1.0, 2.6));
-  cl = smoothstep(0.52, 0.8, cl) * smoothstep(0.0, 0.15, h) * (1.0 - smoothstep(0.35, 0.8, h));
-  vec3 cc = mix(uHorizon, uSunCol, 0.35 + 0.5 * pow(sdp, 4.0));
-  col = mix(col, cc, cl * 0.32 * (1.0 - 0.65 * uStars));
+  // thin high cloud, drifting with the wind (none below the horizon or high overhead)
+  if (h > 0.0 && h < 0.8) {
+    vec2 cp = d.xz / (d.y + 0.25) * 1.2 + uWind * uTime * 0.004;
+    float cl = fbm(cp * vec2(1.0, 2.6));
+    cl = smoothstep(0.52, 0.8, cl) * smoothstep(0.0, 0.15, h) * (1.0 - smoothstep(0.35, 0.8, h));
+    vec3 cc = mix(uHorizon, uSunCol, 0.35 + 0.5 * pow(sdp, 4.0));
+    col = mix(col, cc, cl * 0.32 * (1.0 - 0.65 * uStars));
+  }
 
   // sun, striped across its lower half in some looks
   float sunR = 0.028 * uSunScale;
@@ -224,15 +229,17 @@ void main() {
   float moon = discMask(d, uMoonPos, moonR);
   vec3 mr = cross(uMoonPos, vec3(0.0, 1.0, 0.0));
   vec2 mp = vec2(dot(d, normalize(mr)), dot(d, cross(normalize(mr), uMoonPos))) / moonR;
-  float mott = 0.82 + 0.18 * fbm(mp * 2.2 + 4.0);
-  // its phase: the lit limb leads toward where the sun went down, the rest only just there
-  float limb = sqrt(max(0.0, 1.0 - mp.y * mp.y));
-  float term = cos(uMoonPhase * 6.2831853) * limb;
-  float sideM = uMoonPhase < 0.5 ? mp.x - term : -mp.x - term;
   float fwM = max(fwidth(mp.x), 1e-4) * 1.5;
-  float litM = smoothstep(-fwM, fwM, sideM);
-  vec3 moonCol = vec3(0.9, 0.96, 0.94) * mott * uMoonTint;
-  col = mix(col, mix(mix(col, moonCol, 0.09), moonCol, litM), moon * uMoonVis);
+  if (moon * uMoonVis > 0.0) {
+    float mott = 0.82 + 0.18 * fbm(mp * 2.2 + 4.0);
+    // its phase: the lit limb leads toward where the sun went down, the rest only just there
+    float limb = sqrt(max(0.0, 1.0 - mp.y * mp.y));
+    float term = cos(uMoonPhase * 6.2831853) * limb;
+    float sideM = uMoonPhase < 0.5 ? mp.x - term : -mp.x - term;
+    float litM = smoothstep(-fwM, fwM, sideM);
+    vec3 moonCol = vec3(0.9, 0.96, 0.94) * mott * uMoonTint;
+    col = mix(col, mix(mix(col, moonCol, 0.09), moonCol, litM), moon * uMoonVis);
+  }
 
   // below the horizon
   col = mix(col, uFogCol, 1.0 - smoothstep(-0.04, 0.0, h));
