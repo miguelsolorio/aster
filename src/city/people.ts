@@ -96,8 +96,9 @@ export function stormShelter(shelter: number, ahead: number, dt: number): number
   return want > shelter ? Math.min(want, shelter + step) : Math.max(want, shelter - step);
 }
 
-// Cloth by kind of city. Most people wear one muted colour in the city's own tones; a few
-// wear an accent: a bright robe that blends from one colour at the hood to another at the hem.
+// Cloth by kind of city. Most people wear a dress of one muted colour in the city's own tones and
+// a cloak of another of them; a few wear an accent: a bright dress that blends from one colour at
+// the neck to another at the hem, under a cloak in a deep shade of the hem colour.
 type RGB = [number, number, number];
 interface Cloth {
   base: Array<[number, number, number, number]>; // r, g, b, weight
@@ -142,14 +143,17 @@ const CLOTH: Record<CityKind, Cloth> = {
   },
 };
 
-// Silhouettes: 0 wide cone, 1 slim with a tall hood, 2 short round elder with a cane, 3 column with a headpiece.
+// Silhouettes (all in the wanderer's hood and dress, told apart by the cloak's cut and one thing more):
+// 0 wide, knee cloak and sash; 1 slim, ankle cloak and stole; 2 bent elder, short cape and staff; 3 column, turban.
 const SHAPES = 4;
 
 /**
- * Pick what one person wears. Writes the hood colour to a[o..o+2] and the hem colour to
- * b[o..o+2], and returns whether the robe is an accent with bands.
+ * Pick what one person wears. Writes the dress colour (at the neck) to a[o..o+2] and to b[o..o+2]
+ * the hem colour, or for a plain dress the cloak colour. Returns the fraction that goes with the
+ * silhouette in iE.w: 0 an accent blending to the hem, 0.5 an accent with a banded hem, 0.25 a
+ * plain dress with its own cloak colour.
  */
-function dress(kind: CityKind, rnd: () => number, a: Float32Array, b: Float32Array, o: number): boolean {
+function dress(kind: CityKind, rnd: () => number, a: Float32Array, b: Float32Array, o: number): number {
   const c = CLOTH[kind];
   if (rnd() < c.rate) {
     const [top, hem] = c.accent[Math.floor(rnd() * c.accent.length) % c.accent.length];
@@ -157,7 +161,7 @@ function dress(kind: CityKind, rnd: () => number, a: Float32Array, b: Float32Arr
       a[o + k] = top[k];
       b[o + k] = hem[k];
     }
-    return rnd() < 0.5;
+    return rnd() < 0.5 ? 0.5 : 0;
   }
   let total = 0;
   for (const p of c.base) total += p[3];
@@ -167,9 +171,17 @@ function dress(kind: CityKind, rnd: () => number, a: Float32Array, b: Float32Arr
     r -= c.base[p][3];
     if (r <= 0) break;
   }
-  const lum = 0.9 + rnd() * 0.2;
-  for (let k = 0; k < 3; k++) a[o + k] = b[o + k] = c.base[p][k] * lum * (0.95 + rnd() * 0.1);
-  return false;
+  const rl = rnd();
+  const lum = 0.9 + rl * 0.2;
+  // the cloak: another of the city's colours, never the dress's own (no draw of its own, so the
+  // rest of the person's picks stay as they were)
+  const n = c.base.length;
+  const q = (p + 1 + Math.floor(((rl * 7.31) % 1) * (n - 1))) % n;
+  for (let k = 0; k < 3; k++) {
+    a[o + k] = c.base[p][k] * lum * (0.95 + rnd() * 0.1);
+    b[o + k] = c.base[q][k] * lum;
+  }
+  return 0.25;
 }
 
 const bump = (d: number, c: number, w: number) => {
@@ -781,8 +793,8 @@ uniform float uTime;
 uniform vec2 uWindL;
 uniform vec3 uSunDir;
 attribute vec2 aPart;  // x: 0 robe, 1 head and hood, 2/3 legs, 4 cane; y: shade multiplier
-attribute vec3 aKind;  // x: 0 cloth, 1 white face, 2 dark; y: silhouette (-1 all, -2 all but the tall hood); z: robe height 0 hem .. 1 neck
-attribute vec4 iE;     // hem colour rgb, silhouette + 0.5 if banded
+attribute vec3 aKind;  // x: 0 dress, 1 white face, 2 dark, 3 cloak, 4 trim, 5 leather, 6 lamp glass; y: silhouette (-1 all, -2 all but 1, 4 the miner, 5 silhouette 3 but not the miner); z: robe height 0 hem .. 1 neck
+attribute vec4 iE;     // hem (or cloak) colour rgb, silhouette + 0.25 own cloak colour / + 0.5 banded
 attribute vec4 iA;     // x, z (city local), facing, height scale
 attribute vec4 iB;     // walk phase 0..1, speed m/s, sitting 0..1, talking 0..1
 attribute vec4 iC;     // cloth tint rgb, seed
@@ -793,20 +805,27 @@ varying float vFade;
 varying float vMul;
 varying float vSun;
 varying vec3 vTint2;
-varying vec3 vInfo;    // material, height along the robe, banded
+varying vec3 vInfo;    // material, height along the robe, iE.w's fraction (0 blend, 0.25 cloak colour, 0.5 banded)
 varying vec3 vL;       // the figure's own rest-pose metres, for the weave
 ${CITY_SHADOW_GLSL}
-// The robe's outline for each silhouette: radius, height, forward offset.
+// The dress's outline for each silhouette: radius, height, forward offset (tools/blender/townsfolk.py
+// robe() mirrors it). One bell for all, wider or narrower; the elder's bends forward from the waist
+// to meet the lowered head.
 vec3 robe(float v, float shape) {
-  if (shape < 0.5) return vec3(mix(0.36, 0.085, pow(v, 0.85)), mix(0.3, 1.42, v), 0.0);
-  if (shape < 1.5) return vec3(mix(0.25, 0.085, v * (0.5 + 0.5 * v)), mix(0.2, 1.42, v), 0.0);
-  if (shape < 2.5) return vec3(0.28 * (1.0 - 0.7 * v * v * v), mix(0.34, 1.18, v), 0.11 * v * v);
-  return vec3(mix(0.21, 0.185, v) * (1.0 - 0.52 * smoothstep(0.78, 1.0, v)), mix(0.18, 1.42, v), 0.0);
+  bool elder = abs(shape - 2.0) < 0.5;
+  float y = mix(elder ? 0.365 : 0.325, 1.42, v);
+  float w = shape < 0.5 ? 1.1 : shape < 1.5 ? 0.86 : shape < 2.5 ? 1.0 : 0.92;
+  float r = (0.07 + 0.24 * pow(max(0.0, (1.42 - y) / 1.06), 1.45)) * w;
+  float b = elder ? clamp((y - 0.72) / 0.7, 0.0, 1.0) : 0.0;
+  return vec3(r, y - 0.2 * b * b, 0.14 * b * b);
 }
 void main() {
   vFade = iD.x;
   float shape = floor(iE.w + 0.01);
-  bool mine = aKind.y < -1.5 ? abs(shape - 1.0) > 0.5 : (aKind.y < -0.5 || abs(aKind.y - shape) < 0.5);
+  // 4 (the miner) and 5 (silhouette 3's townsfolk) are both silhouette 3 here: their own draws
+  // (shapeFigure) keep them apart
+  float who = aKind.y > 3.5 ? 3.0 : aKind.y;
+  bool mine = who < -1.5 ? abs(shape - 1.0) > 0.5 : (who < -0.5 || abs(who - shape) < 0.5);
   if (iD.x < 0.004 || !mine || (aPart.x > 3.5 && iB.z > 0.3)) {
     vW = vec3(0.0); vTint = vec3(0.0); vMul = 0.0; vSun = 0.0; vTint2 = vec3(0.0); vInfo = vec3(0.0); vL = vec3(0.0);
     gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
@@ -936,12 +955,24 @@ void main() {
   float l = smoothstep(-0.1, 0.35, ndl) * vSun;
   l = styleBands(l, vW.xz);
   l += (1.0 - l) * uNight * 0.12;
-  // cloth: one colour, or a blend from the hood colour down to the hem colour, some with bands
+  // cloth. The dress: one colour (its cloak colour in iE), a blend from the neck colour down to
+  // the hem colour, or banded: a crisp hem in the hem colour with a stripe of the dress colour.
+  // The cloak: its own colour, or for an accent a deep shade of the hem colour; trim a light
+  // linen tinted by the cloak; leather and wood one fixed brown.
   float hgt = vInfo.y;
-  vec3 tint = mix(vTint2, vTint, smoothstep(0.15, 0.85, hgt));
-  if (vInfo.z > 0.25) {
-    float band = step(0.09, hgt) * step(hgt, 0.16) + step(0.21, hgt) * step(hgt, 0.245);
-    tint = mix(tint, vTint, band);
+  float mk = vInfo.x;
+  bool own = abs(vInfo.z - 0.25) < 0.12;
+  vec3 tint;
+  if (mk > 2.5) {
+    vec3 cloak = own ? vTint2 : vTint2 * vec3(0.55, 0.5, 0.6);
+    tint = mk < 3.5 ? cloak : mk < 4.5 ? mix(cloak, vec3(0.9, 0.86, 0.76), 0.6) : vec3(0.45, 0.29, 0.17);
+  } else if (own) {
+    tint = vTint;
+  } else if (vInfo.z > 0.375) {
+    float hem = step(hgt, 0.22) * (1.0 - step(0.1, hgt) * step(hgt, 0.14));
+    tint = mix(vTint, vTint2, hem);
+  } else {
+    tint = mix(vTint2, vTint, smoothstep(0.15, 0.85, hgt));
   }
   // lit by the same light as the sand, but less dyed by it, so a blue robe stays blue
   float lumL = dot(uLit, vec3(0.3333));
@@ -951,9 +982,12 @@ void main() {
   vec3 shC = mix(uShade * 1.3, mix(sunW, uFogCol, 0.5) * lumS * 1.9, 0.8);
   vec3 col = mix(tint * shC, tint * liC, l * 0.85);
   col = mix(col, mix(uFig, uFigLit, l), 0.1) * vMul;
-  if (vInfo.x > 1.5) {
+  if (mk > 5.5) {
+    // the miner's brow lamp: warm glass
+    col = vec3(1.0, 0.84, 0.5) * mix(0.85, 1.05, l);
+  } else if (mk > 1.5 && mk < 2.5) {
     col = uFig * mix(0.45, 0.75, l);
-  } else if (vInfo.x > 0.5) {
+  } else if (mk > 0.5 && mk < 1.5) {
     // the face: flat white, tinted by the light and dimmed at night
     col = vec3(0.97, 0.95, 0.9) * mix(vec3(1.0), uSunCol, 0.3) * (1.0 - 0.42 * uNight) * mix(0.7, 1.0, l);
   } else {
@@ -1181,31 +1215,36 @@ function modelledFigure(targets: FigureTarget[]): void {
   });
 }
 
-/** A geometry that draws one silhouette (0..SHAPES-1) of the figure. */
+/** A geometry that draws one silhouette (0..SHAPES-1) of the figure, or the miner (MINER_FIG). */
 type FigureTarget = [shape: number, geo: THREE.InstancedBufferGeometry];
 type AnyAttr = THREE.BufferAttribute | THREE.InterleavedBufferAttribute;
 
 /**
  * Points each target at the figure's vertices with an index of only the triangles its silhouette
  * draws: those with any vertex the vertex shader keeps for that silhouette (aKind.y: -1 every
- * silhouette, -2 all but 1, otherwise that one). Vertices no triangle of the index uses are never
- * run, so a person costs their own silhouette's triangles rather than every silhouette's. The
- * shader still collapses what isn't theirs, so what is drawn is the same as from the whole figure.
+ * silhouette, -2 all but 1, otherwise that one). The miner has a draw of their own (MINER_FIG):
+ * silhouette MINER_SHAPE's triangles, less those tagged 5 (that silhouette's townsfolk only), plus
+ * those tagged 4 (the miner only). Vertices no triangle of the index uses are never run, so a
+ * person costs their own silhouette's triangles rather than every silhouette's. The shader still
+ * collapses what isn't theirs (4 and 5 it takes as MINER_SHAPE, so only the index parts those).
  */
 function shapeFigure(targets: FigureTarget[], pos: AnyAttr, part: AnyAttr, kind: AnyAttr, index: THREE.BufferAttribute): void {
-  const all = (1 << SHAPES) - 1;
+  const n = MINER_FIG + 1;
+  const all = (1 << n) - 1;
+  const miner = 1 << MINER_FIG;
   const mask = new Uint8Array(kind.count);
   for (let v = 0; v < kind.count; v++) {
-    const y = kind.getY(v);
-    mask[v] = y < -1.5 ? all & ~2 : y < -0.5 ? all : 1 << Math.max(0, Math.round(y));
+    const y = Math.round(kind.getY(v));
+    mask[v] =
+      y <= -2 ? all & ~2 : y < 0 ? all : y === 4 ? miner : y === 5 ? 1 << MINER_SHAPE : (1 << y) | (y === MINER_SHAPE ? miner : 0);
   }
-  const lists: number[][] = Array.from({ length: SHAPES }, () => []);
+  const lists: number[][] = Array.from({ length: n }, () => []);
   for (let k = 0; k + 2 < index.count; k += 3) {
     const a = index.getX(k);
     const b = index.getX(k + 1);
     const c = index.getX(k + 2);
     const m = mask[a] | mask[b] | mask[c];
-    for (let s = 0; s < SHAPES; s++) if (m & (1 << s)) lists[s].push(a, b, c);
+    for (let s = 0; s < n; s++) if (m & (1 << s)) lists[s].push(a, b, c);
   }
   const big = pos.count > 65535;
   for (const [s, g] of targets) {
@@ -1227,8 +1266,10 @@ function figureTargets(shapes: number[]): THREE.InstancedBufferGeometry[] {
 
 /** Floats per instance in a silhouette's own buffer: iA, iB, iD (as DYN), then iC and iE. */
 const FIG = DYN + 8;
-/** Every miner wears the same silhouette (MINER_HEM's w). */
+/** Every miner wears the same silhouette (MINER_HEM's w)... */
 const MINER_SHAPE = Math.floor(MINER_HEM[3] + 0.01);
+/** ...drawn as a figure target of its own, after the silhouettes (see shapeFigure). */
+const MINER_FIG = SHAPES;
 
 /** One person on the dev review sheet. */
 /** A townsperson, as the talking needs them (see People.nearestPerson). */
@@ -1269,9 +1310,9 @@ export function townsfolkSheet(uniforms: Uniforms, kind: CityKind, list: SheetPe
       s >>>= 0;
       return s / 4294967296;
     };
-    const banded = dress(kind, rnd, a, b, i * 4);
+    const look = dress(kind, rnd, a, b, i * 4);
     a[i * 4 + 3] = rnd();
-    b[i * 4 + 3] = (p.child ? 0 : p.shape) + (banded ? 0.5 : 0);
+    b[i * 4 + 3] = (p.child ? 0 : p.shape) + look;
     dyn.set([p.x, p.z, p.facing, p.child ? 0.6 : 1, p.walk ? 0.2 : 0, p.walk ? 1.2 : 0, 0, 0, 1, 0, 0, 0], i * DYN);
   });
   // one draw per silhouette in use, each with only its own people
@@ -1549,7 +1590,7 @@ export class People {
     const mA = new THREE.InterleavedBufferAttribute(this.minerDyn, 4, 0);
     const mB = new THREE.InterleavedBufferAttribute(this.minerDyn, 4, 4);
     const mD = new THREE.InterleavedBufferAttribute(this.minerDyn, 4, 8);
-    this.minerGeo = figureTargets([MINER_SHAPE])[0];
+    this.minerGeo = figureTargets([MINER_FIG])[0];
     this.minerGeo.setAttribute('iA', mA);
     this.minerGeo.setAttribute('iB', mB);
     this.minerGeo.setAttribute('iD', mD);
@@ -2419,11 +2460,11 @@ export class People {
 
     // cloth and silhouette. Children are always the plain wide cone; an elder walks slowly.
     const o = i * 4;
-    const banded = dress(c.site.kind, () => this.rand(), this.statA, this.statB, o);
+    const look = dress(c.site.kind, () => this.rand(), this.statA, this.statB, o);
     const sr = this.rand();
     const shape = kid ? 0 : sr < 0.35 ? 0 : sr < 0.65 ? 1 : sr < 0.77 ? 2 : SHAPES - 1;
     if (shape === 2) this.pref[i] *= 0.7;
-    this.statB[o + 3] = shape + (banded ? 0.5 : 0);
+    this.statB[o + 3] = shape + look;
     this.statA[o + 3] = this.seed[i];
     if (i >= this.hi) this.hi = i + 1;
 
