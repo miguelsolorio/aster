@@ -1011,8 +1011,11 @@ const MODEL_NAMES = ['oryx', 'fox', 'hare', 'lizard', 'vulture', 'gazelle', 'ass
  * The modelled animals (tools/blender/fauna.py writes public/art/fauna.glb), swapped into these
  * geometries in place of faunaGeometry()'s when they arrive. Same attributes, same meaning: the
  * file carries aRig as two pairs (_arig, _arigzw), aPivot and the material (aMP.x); the species
- * (aMP.y) is the mesh's name. The instanced attributes are left as they are. Without the file, or
- * with any species missing from it, the built animals stay.
+ * (aMP.y) is the mesh's name. A mesh may also carry _acol (tools/tripo/fauna_convert.py: the Tripo
+ * hide baked to a colour per vertex, as shown): it becomes aCol, divided by the species' coat for
+ * the coat materials so each animal's own coat still tints it; without it aCol.x is -1 and the
+ * shader looks the colour up from the coat. The instanced attributes are left as they are. Without
+ * the file, or with any species missing from it, the built animals stay.
  */
 function modelledFauna(sets: THREE.InstancedBufferGeometry[][]): void {
   loadModel('fauna.glb').then((gltf) => {
@@ -1042,6 +1045,7 @@ function modelledFauna(sets: THREE.InstancedBufferGeometry[][]): void {
     const rig = new Float32Array(nv * 4);
     const piv = new Float32Array(nv * 3);
     const mp = new Float32Array(nv * 2);
+    const col = new Float32Array(nv * 3).fill(-1);
     const idx = nv > 65535 ? new Uint32Array(ni) : new Uint16Array(ni);
     let v0 = 0;
     let i0 = 0;
@@ -1052,6 +1056,8 @@ function modelledFauna(sets: THREE.InstancedBufferGeometry[][]): void {
       const W = m.getAttribute('_arigzw');
       const V = m.getAttribute('_apivot');
       const M = m.getAttribute('_amat');
+      const C = m.getAttribute('_acol')?.itemSize === 3 ? m.getAttribute('_acol') : null;
+      const coat = SPEC[sp].coat;
       for (let i = 0; i < P.count; i++) {
         const o = v0 + i;
         pos.set([P.getX(i), P.getY(i), P.getZ(i)], o * 3);
@@ -1059,6 +1065,12 @@ function modelledFauna(sets: THREE.InstancedBufferGeometry[][]): void {
         rig.set([R.getX(i), R.getY(i), W.getX(i), W.getY(i)], o * 4);
         piv.set([V.getX(i), V.getY(i), V.getZ(i)], o * 3);
         mp.set([M.getX(i), sp], o * 2);
+        if (C) {
+          // the coat materials (0, 1, 2, 5) relative to the species' coat; horn, hoof and eye as they are
+          const mat = Math.round(M.getX(i));
+          const rel = mat <= 2 || mat === 5;
+          for (let k = 0; k < 3; k++) col[o * 3 + k] = rel ? C.getComponent(i, k) / coat[k] : C.getComponent(i, k);
+        }
       }
       const I = m.getIndex();
       if (I) for (let k = 0; k < I.count; k++) idx[i0 + k] = I.getX(k) + v0;
@@ -1071,6 +1083,7 @@ function modelledFauna(sets: THREE.InstancedBufferGeometry[][]): void {
       ['aRig', new THREE.BufferAttribute(rig, 4)],
       ['aPivot', new THREE.BufferAttribute(piv, 3)],
       ['aMP', new THREE.BufferAttribute(mp, 2)],
+      ['aCol', new THREE.BufferAttribute(col, 3)],
     ];
     const index = new THREE.BufferAttribute(idx, 1);
     for (const geos of sets) splitSpecies(geos, attrs, index);
@@ -1115,11 +1128,9 @@ function splitSpecies(geos: THREE.InstancedBufferGeometry[], attrs: Array<[strin
 function faunaTargets(): THREE.InstancedBufferGeometry[] {
   const base = faunaGeometry();
   const geos = Array.from({ length: SPECIES }, () => new THREE.InstancedBufferGeometry());
-  splitSpecies(
-    geos,
-    FAUNA_ATTRS.map((name) => [name, base.getAttribute(name)]),
-    base.getIndex(),
-  );
+  // the built animals have no baked hide: aCol.x < 0 has the shader use the coat
+  const noCol = new THREE.BufferAttribute(new Float32Array(base.getAttribute('position').count * 3).fill(-1), 3);
+  splitSpecies(geos, [...FAUNA_ATTRS.map((name): [string, THREE.BufferAttribute | THREE.InterleavedBufferAttribute] => [name, base.getAttribute(name)]), ['aCol', noCol]], base.getIndex());
   modelledFauna([geos]);
   return geos;
 }
@@ -1170,6 +1181,7 @@ const vert = /* glsl */ `
 attribute vec4 aRig;
 attribute vec3 aPivot;
 attribute vec2 aMP;
+attribute vec3 aCol;  // baked hide colour (relative to the coat for the coat materials), x < 0: none
 attribute vec4 iPos;  // xyz, yaw
 attribute vec4 iUp;   // up (xyz), head turn (w)
 attribute vec4 iMot;  // gait phase, gait (0 still .. 1 walk .. 2 full run), pose (head down), scale
@@ -1291,6 +1303,7 @@ void main() {
   else if (m < 3.5) c = vec3(0.13, 0.11, 0.1);
   else if (m < 4.5) c = vec3(0.05, 0.04, 0.04);
   else c = coat * vec3(1.08, 0.82, 0.76);
+  if (aCol.x >= 0.0) c = (m < 2.5 || m > 4.5) ? min(aCol * coat, vec3(1.0)) : aCol;
   vCol = c;
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }

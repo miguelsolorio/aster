@@ -370,13 +370,17 @@ function animalGeometry(): { geo: THREE.InstancedBufferGeometry; tris: number } 
     true,
     true,
   );
-  return { geo: b.geometry(), tris: b.tris };
+  const geo = b.geometry();
+  // no hide colour of its own (aCol 0): the coat colours stand
+  geo.setAttribute('aCol', new THREE.Float32BufferAttribute(new Float32Array(geo.getAttribute('position').count * 3), 3));
+  return { geo, tris: b.tris };
 }
 
 /**
  * The modelled camel (tools/blender/camel.py writes public/art/camel.glb), swapped into this
  * geometry in place of animalGeometry()'s when it arrives. Same attributes, same meaning: the file
- * carries aRig as two pairs (_arig, _arigzw), aPivot and aMP (material, load part). The instanced
+ * carries aRig as two pairs (_arig, _arigzw), aPivot and aMP (material, load part), and may carry
+ * _acol, the hide's own colour (tools/tripo/camel_convert.py), which the shader tints by the coat. The instanced
  * attributes are left as they are. Without the file, or with any attribute missing, the built
  * camel stays.
  */
@@ -401,18 +405,21 @@ function modelledCamel(geo: THREE.InstancedBufferGeometry): void {
     const W = m.getAttribute('_arigzw');
     const V = m.getAttribute('_apivot');
     const M = m.getAttribute('_amp');
+    const C = m.getAttribute('_acol')?.itemSize === 3 ? m.getAttribute('_acol') : null;
     const n = P.count;
     const pos = new Float32Array(n * 3);
     const nrm = new Float32Array(n * 3);
     const rig = new Float32Array(n * 4);
     const piv = new Float32Array(n * 3);
     const mp = new Float32Array(n * 2);
+    const col = new Float32Array(n * 3);
     for (let i = 0; i < n; i++) {
       pos.set([P.getX(i), P.getY(i), P.getZ(i)], i * 3);
       nrm.set([N.getX(i), N.getY(i), N.getZ(i)], i * 3);
       rig.set([R.getX(i), R.getY(i), W.getX(i), W.getY(i)], i * 4);
       piv.set([V.getX(i), V.getY(i), V.getZ(i)], i * 3);
       mp.set([M.getX(i), M.getY(i)], i * 2);
+      if (C) col.set([C.getX(i), C.getY(i), C.getZ(i)], i * 3);
     }
     const idx = n > 65535 ? new Uint32Array(I.count) : new Uint16Array(I.count);
     for (let k = 0; k < I.count; k++) idx[k] = I.getX(k);
@@ -421,6 +428,7 @@ function modelledCamel(geo: THREE.InstancedBufferGeometry): void {
     geo.setAttribute('aRig', new THREE.BufferAttribute(rig, 4));
     geo.setAttribute('aPivot', new THREE.BufferAttribute(piv, 3));
     geo.setAttribute('aMP', new THREE.BufferAttribute(mp, 2));
+    geo.setAttribute('aCol', new THREE.BufferAttribute(col, 3));
     geo.setIndex(new THREE.BufferAttribute(idx, 1));
   });
 }
@@ -676,6 +684,7 @@ const animalVert = /* glsl */ `
 attribute vec4 aRig;
 attribute vec3 aPivot;
 attribute vec2 aMP;
+attribute vec3 aCol; // the hide's own colour, its mean COATS[0] (0 where it has none)
 attribute vec4 iPos;
 attribute vec4 iUp;
 attribute vec4 iMot;
@@ -777,6 +786,7 @@ void main() {
   vL = position * sc;
   vG = step(aMP.x, 3.5);
   vCol = matColor(aMP.x, iCoat.rgb, iLoad.rgb);
+  if (aMP.x < 0.5 && aCol.r + aCol.g + aCol.b > 0.001) vCol = aCol * iCoat.rgb / vec3(0.62, 0.5, 0.36);
   vEm = step(11.5, aMP.x);
   if (fringe) vCol *= 1.0 - 0.22 * aRig.z;
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
