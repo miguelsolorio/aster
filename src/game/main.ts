@@ -58,6 +58,8 @@ import { almanacLines, festival, flood, market, migration, migrationBearing, mon
 import { CONSTELLATIONS, NAIL, bloodMoon, comet, dayOf, eclipse, moonPhase, nextLesson, nightOf, shower } from '../world/sky';
 import { CITY_CELL } from '../city/placement';
 import { bedGeometry, hearthGeometry, solidMaterial } from './equipment';
+import { lateProgramWatch, warmObjects, warmUp } from '../render/warm';
+import { Uploader } from '../render/upload';
 
 /** Where a wreck lies, and the way her keel runs (a site's yaw). */
 type Wreck = { x: number; z: number; rot: number };
@@ -72,6 +74,9 @@ const uiHost = document.getElementById('ui') as HTMLElement;
 function start() {
   const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(1);
+  // Checking each program's link log makes the link finish there and then (a long stall on a
+  // phone); a shader that fails to build still shows as an error in development.
+  renderer.debug.checkShaderErrors = import.meta.env.DEV;
   const canvas = renderer.domElement;
   canvasHost.appendChild(canvas);
 
@@ -297,6 +302,21 @@ function start() {
       cities.setFocus(x, z);
     }
   }
+  // (testing) ?approach=<m> starts you that many metres out from the edge of the nearest city, facing
+  // its centre, so walking forward brings it in (from 1700 its full detail appears in about 20 s).
+  if (import.meta.env.DEV && qs.has('approach')) {
+    const p = player.state.pos;
+    const c = world.cities.near(p.x, p.z)[0];
+    if (c) {
+      const out = Number(qs.get('approach')) || 1700;
+      const a = Math.atan2(p.z - c.cz, p.x - c.cx);
+      const x = c.cx + Math.cos(a) * (c.radius + out);
+      const z = c.cz + Math.sin(a) * (c.radius + out);
+      player.place(x, z);
+      player.facing = Math.atan2(c.cx - x, c.cz - z);
+      cities.setFocus(x, z);
+    }
+  }
   const splash = new Splash(u);
   const wildlife = new Wildlife(world, u);
   const caravans = new Caravans(world, world.cities, cities.routes, u);
@@ -515,6 +535,13 @@ function start() {
     stillDrawn = false;
   }
   window.addEventListener('resize', resize);
+
+  // ---- sending things to the GPU ahead of need: a city's full detail a mesh a frame before it is shown
+  const uploader = new Uploader();
+  cities.warm = { texture: (t) => renderer.initTexture(t), upload: (o) => uploader.add(o) };
+  cities.onStage = (c) => people.prepare(c);
+  /** (development) Reports programs linked after the warm-up: see warm.ts. */
+  let lateWatch: (() => void) | null = null;
 
   // ---- audio and interface
   const audio = new AudioEngine();
@@ -3149,11 +3176,27 @@ function start() {
     stillDrawn = resting;
     update(still || ui.state === 'photo' ? 0 : dt);
     perf?.begin();
+    uploader.before();
     render();
+    uploader.after();
     perf?.end(now);
+    lateWatch?.();
     if (ui.state === 'playing' && !mapOpen) auto.frame(real);
   }
   requestAnimationFrame(tick);
+
+  // Every shader the game can draw is compiled while the title card is up (see warm.ts): after the
+  // first frame is on screen, and the card stays until it is done (or has taken too long).
+  warmObjects(scene, postScene);
+  requestAnimationFrame(() =>
+    setTimeout(() => {
+      const done = warmUp(renderer, camera, scene, rt).then((r) => {
+        if (import.meta.env.DEV || perf) console.info(`[warm] ${r.objects} objects, programs ${r.before} -> ${r.after} in ${r.ms} ms${r.timedOut ? ' (timed out)' : ''}`);
+        if (import.meta.env.DEV) lateWatch = lateProgramWatch(renderer, scene);
+      });
+      ui.holdUntil(done);
+    }, 0),
+  );
 }
 
 try {

@@ -1800,6 +1800,21 @@ export class People {
     this.density = clamp(d, 0, 1);
   }
 
+  /** Works out a city's streets for its people ahead of its being entered (see setCity), off the frame it appears in. */
+  prepare(city: { site: CitySite; plan: CityPlan }) {
+    const c = this.cache.get(city.site.id);
+    if (c && c.plan === city.plan) return;
+    this.cache.set(city.site.id, new CityData(city.site, city.plan));
+    if (this.cache.size > 3) {
+      for (const k of this.cache.keys()) {
+        if (k !== city.site.id && k !== this.cityId) {
+          this.cache.delete(k);
+          break;
+        }
+      }
+    }
+  }
+
   setCity(city: { site: CitySite; plan: CityPlan } | null) {
     const id = city ? city.site.id : -1;
     if (id === this.cityId) return;

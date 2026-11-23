@@ -34,6 +34,8 @@ const SCENARIOS = {
   stepped: { query: '?settle=stepped-city' },
   cavern: { query: '?cavern', hold: 'w' },
   night: { query: '?day=0.95&tools=chart', hold: 'w' },
+  // 1.7 km out from a city's edge, walking in: the full city appears about 12 s into the window
+  cityApproach: { query: '?approach=1700&day=0.45', hold: 'w' },
 };
 const names = opt('scenarios', Object.keys(SCENARIOS).join(',')).split(',').filter(Boolean);
 for (const n of names) if (!SCENARIOS[n]) fail(`unknown scenario "${n}" (have ${Object.keys(SCENARIOS).join(', ')})`);

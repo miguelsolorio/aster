@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Uniforms } from '../../game/contract';
+import { warmObject } from '../../render/warm';
 import { Glows, Writer, layoutOf } from '../build';
 import { CITY_SHADOW_GLSL } from '../cityGlsl';
 import { loadModel, modelGeometry } from '../../render/art';
@@ -2050,3 +2051,8 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     },
   };
 };
+
+/** Samples of what this draws beyond the shared city materials, for the shader warm-up (see render/warm.ts). */
+export function warmFurniture(uniforms: Uniforms): THREE.Object3D[] {
+  return [warmObject(createFlexMaterial(uniforms), { normals: true })];
+}

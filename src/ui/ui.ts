@@ -823,8 +823,31 @@ export class UI {
     else if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
   }
 
+  /**
+   * Keeps the title card up until `p` settles (the shaders are compiling): a tap, a key or the
+   * card's own timer then only asks for the start, which follows as soon as it is done.
+   */
+  holdUntil(p: Promise<unknown>): void {
+    this.holding = true;
+    const go = () => {
+      this.holding = false;
+      if (this.beginAsked) {
+        this.beginAsked = false;
+        this.begin();
+      }
+    };
+    p.then(go, go);
+  }
+
+  private holding = false;
+  private beginAsked = false;
+
   private begin(): void {
     if (this._state !== 'title') return;
+    if (this.holding) {
+      this.beginAsked = true;
+      return;
+    }
     if (this.introPending) {
       this.setState('intro');
       this.introBtn.focus({ preventScroll: true });

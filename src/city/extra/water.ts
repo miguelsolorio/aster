@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import type { Uniforms } from '../../game/contract';
+import { warmObject } from '../../render/warm';
 import { FOOT, Writer, cylinder, annulus, dome, finial, polyCap, taper } from '../build';
 import { MAT, createMasonryMaterial } from '../cityShaders';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
@@ -1157,4 +1158,9 @@ function aqueduct(
   // reads local y as height above the plateau for its dust line)
   for (const o of [w, far]) for (let v = 0; v < o.nv; v++) o.pos[v * 3 + 1] -= base;
   return { w, far, base };
+}
+
+/** Samples of what this draws beyond the shared city materials, for the shader warm-up (see render/warm.ts). */
+export function warmWater(uniforms: Uniforms): THREE.Object3D[] {
+  return [warmObject(createFlowMaterial(uniforms), { normals: false })];
 }

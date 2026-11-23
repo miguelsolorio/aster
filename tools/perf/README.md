@@ -13,8 +13,8 @@ node tools/perf/run.mjs [--throttle 8] [--seconds 20] [--scenarios still,run,boa
 - Output: a table on stdout, `<out>/<scenario>.json` (frame times, samples), `<out>/summary.json` (all rows, git SHA, date) and a final screenshot. `--trace` adds `<scenario>.trace.json` and prints the top self-time functions inside frames over 33 ms.
 - `baseline.json` is the committed summary to compare later phases against (same `--throttle`, same machine).
 
-Scenarios: `still` (`?day=0.45`), `run` (hold W), `board` (`?tools=board`, riding, hold W), `city` (`?miner`), `stepped` (`?settle=stepped-city`), `cavern` (`?cavern`, 1 km short of an open cavern, hold W), `night` (`?day=0.95&tools=chart`, hold W).
-`?cavern` is dev-only, like `?deep`. Keyboard drives the player fine under touch emulation; only the board toggle needs the on-screen button.
+Scenarios: `still` (`?day=0.45`), `run` (hold W), `board` (`?tools=board`, riding, hold W), `city` (`?miner`), `stepped` (`?settle=stepped-city`), `cavern` (`?cavern`, 1 km short of an open cavern, hold W), `night` (`?day=0.95&tools=chart`, hold W), `cityApproach` (`?approach=1700&day=0.45`: 1.7 km out from the nearest city's edge facing it, hold W; its full detail appears about 15 s into the window).
+`?cavern` and `?approach=<metres from the edge>` are dev-only, like `?deep`. Keyboard drives the player fine under touch emulation; only the board toggle needs the on-screen button.
 
 ## ?perf overlay
 
