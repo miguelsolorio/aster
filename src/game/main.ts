@@ -28,6 +28,7 @@ import { UI } from '../ui/ui';
 import { TouchControls, type TouchMode } from './touch';
 import { installTouchGuards } from './guards';
 import { AutoQuality, QUALITY, applyQuality, defaultTier } from './quality';
+import { Task, budgetFor, frameBudget } from '../world/budget';
 import { createPerfHud } from './perfHud';
 import { postFrag, postVert } from '../render/shaders';
 import { gameSkyFrag, gameSkyVert } from '../render/gameSky';
@@ -1688,6 +1689,8 @@ function start() {
   // ---- the star chart: at night one line of stars stands over the nearest kind of place not yet found.
   let chartScan = 0;
   let chartAt: { x: number; z: number } | null = null;
+  // (worked out over a few frames on the build budget: the search reaches 12 km, and new ground is dear)
+  let chartTask: Task<{ x: number; z: number } | null> | null = null;
 
   // ---- the map: the ground seen so far in ink and wash, and a round over each errand.
   const inkS = { h: 0, rock: 0, salt: 0, green: 0 };
@@ -2532,7 +2535,14 @@ function start() {
       chartScan -= dt;
       if (chartScan <= 0) {
         chartScan = 2.5;
-        chartAt = save.has('chart') && day.night > 0.3 ? discoveries.nearestUnfound(st.pos.x, st.pos.z, new Set<string>(save.data.found), 12000) : null;
+        if (!(save.has('chart') && day.night > 0.3)) {
+          chartTask = null;
+          chartAt = null;
+        } else chartTask ??= new Task(discoveries.unfoundJob(st.pos.x, st.pos.z, new Set<string>(save.data.found), 12000));
+      }
+      if (chartTask?.run()) {
+        chartAt = chartTask.value ?? null;
+        chartTask = null;
       }
       const want = chartAt && !deepIn ? smooth(0.5, 0.95, day.night) : 0;
       u.uChart.value += (want - (u.uChart.value as number)) * (1 - Math.exp(-dt * 1.5));
@@ -3147,6 +3157,8 @@ function start() {
     const still = frozen || resting;
     if (still && stillDrawn && !frozen) return;
     stillDrawn = resting;
+    // what this frame can give to building the world (see world/budget.ts)
+    frameBudget.begin(budgetFor(auto.tier));
     update(still || ui.state === 'photo' ? 0 : dt);
     perf?.begin();
     render();

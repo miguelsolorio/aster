@@ -10,6 +10,7 @@ import { Glows, Writer, doorHole, faceQuad, polyCap, taper, wallFace } from './b
 import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, trackViewport, type CutUniforms } from './cityShaders';
 import { ceilOf, storeysOf } from './furnish';
 import { rectFaces, type Face } from './rooms';
+import { frameBudget, type Job } from '../world/budget';
 import type { CityPlan, Piece, Room, RoomStair } from './types';
 
 /** Rooms nearer than this (metres, city-local) get their insides; further than OUT they lose them. */
@@ -232,6 +233,91 @@ export function writeVeil(w: Writer, r: Room): void {
   if (h) w.quad(h.x0, r.ceil, h.z0, h.x1, r.ceil, h.z0, h.x1, r.ceil, h.z1, h.x0, r.ceil, h.z1, 0, 1, 0);
 }
 
+/** What one room (its inside, or its veil) writes, kept so a change only writes the rooms that are new. */
+interface Seg {
+  pos: Float32Array;
+  nrm: Int8Array;
+  info: Uint8Array;
+  uvs: Uint8Array;
+  idx: Uint32Array;
+}
+
+/** What `fill` wrote into a fresh writer, trimmed to size. */
+function segOf(fill: (w: Writer) => void, nv: number, ni: number): Seg {
+  const w = new Writer(nv, ni);
+  fill(w);
+  return {
+    pos: w.pos.slice(0, w.nv * 3),
+    nrm: w.nrm.slice(0, w.nv * 3),
+    info: w.info.slice(0, w.nv * 4),
+    uvs: w.uvs.slice(0, w.nv * 2),
+    idx: w.idx.slice(0, w.ni),
+  };
+}
+
+/** Vertices copied between yields while merging. */
+const MERGE_STEP = 6000;
+
+/**
+ * The geometry one writer would have made writing the segments' rooms one after another (as
+ * Writer.geometry gives it), as a job: each room writes from a clean slate (it sets what it draws
+ * with first), so its vertices are the same wherever it starts, and only its indices move up by
+ * the vertices before it.
+ */
+function* merged(segs: readonly Seg[]): Generator<void, THREE.BufferGeometry | null> {
+  let nv = 0;
+  let ni = 0;
+  for (const g of segs) {
+    nv += g.pos.length / 3;
+    ni += g.idx.length;
+  }
+  if (ni === 0) return null;
+  const pos = new Float32Array(nv * 3);
+  const nrm = new Int8Array(nv * 3);
+  const info = new Uint8Array(nv * 4);
+  const uvs = new Uint8Array(nv * 2);
+  const idx = new Uint32Array(ni);
+  let v = 0;
+  let i = 0;
+  let since = 0;
+  for (const g of segs) {
+    const n = g.pos.length / 3;
+    pos.set(g.pos, v * 3);
+    nrm.set(g.nrm, v * 3);
+    info.set(g.info, v * 4);
+    uvs.set(g.uvs, v * 2);
+    for (let k = 0; k < g.idx.length; k++) idx[i + k] = g.idx[k] + v;
+    v += n;
+    i += g.idx.length;
+    since += n;
+    if (since >= MERGE_STEP) {
+      since = 0;
+      yield;
+    }
+  }
+  // the bounds, as Writer.geometry sets them
+  let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
+  for (let k = 0; k < pos.length; k += 3) {
+    const x = pos[k], y = pos[k + 1], z = pos[k + 2];
+    if (x < x0) x0 = x;
+    if (x > x1) x1 = x;
+    if (y < y0) y0 = y;
+    if (y > y1) y1 = y;
+    if (z < z0) z0 = z;
+    if (z > z1) z1 = z;
+    if (k % (MERGE_STEP * 6) === 0 && k > 0) yield;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(nrm, 3, true));
+  geo.setAttribute('aInfo', new THREE.BufferAttribute(info, 4, false));
+  geo.setAttribute('aUv', new THREE.BufferAttribute(uvs, 2, true));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.boundingBox = new THREE.Box3(new THREE.Vector3(x0, y0, z0), new THREE.Vector3(x1, y1, z1));
+  geo.boundingSphere = geo.boundingBox.getBoundingSphere(new THREE.Sphere());
+  return geo;
+}
+
 export class Interiors {
   /** City-local: add it to the near city's group. */
   readonly group = new THREE.Group();
@@ -240,8 +326,16 @@ export class Interiors {
   private veil: THREE.Mesh | null = null;
   private lights: THREE.Mesh | null = null;
   private readonly glowMat: THREE.ShaderMaterial;
+  /** The rooms whose insides are drawn (or are being written, while `job` runs). */
   private built = new Set<number>();
+  /** The set update() fills each time, swapped with built when it differs (so none is made a frame). */
+  private spare = new Set<number>();
   private first = true;
+  /** The insides written so far, by room; and every veil written so far. */
+  private readonly rooms = new Map<number, Seg>();
+  private readonly veils = new Map<number, Seg>();
+  /** Writing the rooms that came into reach, a room at a time on the frame budget, then the meshes. */
+  private job: Job<void> | null = null;
 
   constructor(
     private readonly plan: CityPlan,
@@ -254,12 +348,17 @@ export class Interiors {
     this.glowMat = createGlowMaterial(uniforms, true, cut);
   }
 
-  /** Brings the rooms near local (x, z) in and lets the far ones go. Cheap when nothing changes. */
+  /**
+   * Brings the rooms near local (x, z) in and lets the far ones go. Cheap when nothing changes;
+   * when something does, the rooms new to it are written on the frame budget (see world/budget.ts)
+   * and the meshes swapped once all are, so the rooms come in over a few frames, not in one.
+   */
   update(x: number, z: number): void {
     const rooms = this.plan.rooms;
     if (rooms.length === 0) return;
     let changed = this.first;
-    const want = new Set<number>();
+    const want = this.spare;
+    want.clear();
     for (let k = 0; k < rooms.length; k++) {
       const r = rooms[k];
       const dx = Math.max(r.x0 - x, 0, x - r.x1);
@@ -271,19 +370,53 @@ export class Interiors {
         if (!had) changed = true;
       } else if (had) changed = true;
     }
-    if (!changed) return;
-    this.first = false;
-    this.built = want;
-    const w = new Writer(Math.max(64, want.size * 120), Math.max(128, want.size * 200));
+    if (changed) {
+      this.first = false;
+      this.spare = this.built;
+      this.built = want;
+      // (what is still being written for the old set carries on into the new one: the rooms already written are kept)
+      this.job = this.write(want);
+    }
+    if (this.job && frameBudget.run(this.job)) this.job = null;
+  }
+
+  /** The job: writes what `want` lacks, a room at a time, then makes the meshes from all of it. */
+  private *write(want: ReadonlySet<number>): Generator<void, void> {
+    const rooms = this.plan.rooms;
+    for (const k of want) {
+      if (this.rooms.has(k)) continue;
+      this.rooms.set(k, segOf((w) => writeRoom(w, this.plan, rooms[k]), 120, 200));
+      yield;
+    }
+    // (a veil is a quad or two: many to a step)
+    let n = 0;
+    for (let k = 0; k < rooms.length; k++) {
+      if (want.has(k) || this.veils.has(k)) continue;
+      this.veils.set(k, segOf((v) => writeVeil(v, rooms[k]), 4, 6));
+      if (++n % 64 === 0) yield;
+    }
+    yield;
+    // what was written, in the order the rooms are numbered (the order one writer would have written them)
+    const inner: Seg[] = [];
+    const veil: Seg[] = [];
     const glows = new Glows();
     for (const k of want) {
-      writeRoom(w, this.plan, rooms[k]);
+      const seg = this.rooms.get(k);
+      if (seg) inner.push(seg);
       for (const c of rooms[k].candles) glows.add(c.x, c.y, c.z, 0.45, GLOW.lamp, c.seed, 1.0);
     }
-    const v = new Writer(Math.max(16, (rooms.length - want.size) * 4), Math.max(32, (rooms.length - want.size) * 6));
-    for (let k = 0; k < rooms.length; k++) if (!want.has(k)) writeVeil(v, rooms[k]);
-    this.inner = this.swap(this.inner, w.geometry(), 'city-interiors-rooms');
-    this.veil = this.swap(this.veil, v.geometry(), 'city-interiors-veils');
+    for (let k = 0; k < rooms.length; k++) {
+      const seg = want.has(k) ? undefined : this.veils.get(k);
+      if (seg) veil.push(seg);
+    }
+    // the rooms let go of are forgotten (they are written again if they come back)
+    for (const k of this.rooms.keys()) if (!want.has(k)) this.rooms.delete(k);
+    const ig = yield* merged(inner);
+    const vg = yield* merged(veil);
+    yield;
+    // (the insides and the veils change together, so no doorway is ever both or neither)
+    this.inner = this.swap(this.inner, ig, 'city-interiors-rooms');
+    this.veil = this.swap(this.veil, vg, 'city-interiors-veils');
     const old = this.lights;
     if (old) {
       this.group.remove(old);
@@ -323,6 +456,9 @@ export class Interiors {
       this.lights = null;
     }
     this.built.clear();
+    this.rooms.clear();
+    this.veils.clear();
+    this.job = null;
     this.first = true;
     this.mat.dispose();
     this.glowMat.dispose();
