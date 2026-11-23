@@ -250,6 +250,7 @@ export function stormUniforms(u: Uniforms): void {
 
 const centre = new THREE.Vector2();
 const dimmed = new THREE.Vector3();
+const peakScratch: { x: number; z: number; r: number }[] = [];
 
 /**
  * Keeps the storm's uniforms in step with the weather, and takes the sun off the ground for
@@ -301,7 +302,9 @@ export function updateStorm(
       continue;
     }
     // the mountains this one is passing: the nearest few to its middle
-    const peaks = [...peaksAt(centre.x, centre.y, Math.hypot(s.width, s.depth) / 2 + HOLE_BAND)];
+    const peaks = peakScratch;
+    peaks.length = 0;
+    for (const p of peaksAt(centre.x, centre.y, Math.hypot(s.width, s.depth) / 2 + HOLE_BAND)) peaks.push(p);
     const cx = centre.x;
     const cz = centre.y;
     peaks.sort((p, q) => Math.hypot(p.x - cx, p.z - cz) - p.r - (Math.hypot(q.x - cx, q.z - cz) - q.r));

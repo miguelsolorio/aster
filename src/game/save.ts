@@ -459,7 +459,32 @@ export class Save {
 
   /** Write what is held now: the page is going away. */
   flush(): void {
-    this.write();
+    this.cancelIdle();
+    this.writeNow();
+  }
+
+  /**
+   * Hold writes back and make them in one go when the browser is idle (or after a moment), however many
+   * changes came in meanwhile. Off by default (and in tests): every change is written at once.
+   */
+  deferWrites(on = true): void {
+    this.deferred = on;
+  }
+  /** Progress was cleared on purpose: nothing held may be written back. */
+  discard(): void {
+    this.cancelIdle();
+    this.dead = true;
+  }
+  private dead = false;
+  private deferred = false;
+  private idleHandle = 0;
+  private idleIsCallback = false;
+
+  private cancelIdle(): void {
+    if (!this.idleHandle) return;
+    if (this.idleIsCallback) (window as unknown as { cancelIdleCallback: (h: number) => void }).cancelIdleCallback(this.idleHandle);
+    else clearTimeout(this.idleHandle);
+    this.idleHandle = 0;
   }
 
   /** The wanderer is in the thick of a storm at this clock. */
@@ -505,6 +530,27 @@ export class Save {
   }
 
   private write(): void {
+    if (!this.deferred) {
+      this.writeNow();
+      return;
+    }
+    if (this.idleHandle) return;
+    const run = () => {
+      this.idleHandle = 0;
+      this.writeNow();
+    };
+    const w = typeof window !== 'undefined' ? (window as unknown as { requestIdleCallback?: (f: () => void, o?: { timeout: number }) => number }) : null;
+    if (w?.requestIdleCallback) {
+      this.idleIsCallback = true;
+      this.idleHandle = w.requestIdleCallback(run, { timeout: 3000 });
+    } else {
+      this.idleIsCallback = false;
+      this.idleHandle = window.setTimeout(run, 400);
+    }
+  }
+
+  private writeNow(): void {
+    if (this.dead) return;
     try {
       localStorage.setItem(KEY, JSON.stringify(this.data));
     } catch {
