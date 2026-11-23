@@ -91,7 +91,7 @@ float cvn(vec2 p) {
 `;
 
 const masonryVert = /* glsl */ `
-attribute vec4 aInfo; // x material id, y tint 0..255, z window seed 0..255 (0 = never lit), w stripes / sway
+attribute vec4 aInfo; // x material id, y tint 0..255, z window seed 0..255 (0 = never lit; wood, plants: baked hue, 0 = none), w stripes / sway
 attribute vec2 aUv;
 uniform float uTime;
 uniform vec2 uWind;
@@ -249,8 +249,15 @@ void main() {
     li = mix(uRockLit, uLit, k) * 1.04;
     masonry = 1.0;
   } else if (mat < 3.5) {     // wood
-    sh = uShade * vec3(0.55, 0.45, 0.38) * (0.85 + 0.3 * tint);
-    li = uLit * vec3(0.52, 0.40, 0.31) * (0.85 + 0.3 * tint);
+    if (seed > 0.002) {
+      // baked colour (the fan palms, tools/tripo/palm_convert.py): seed picks the hue, tint the value
+      vec3 hue = mix(vec3(0.5, 0.42, 0.36), vec3(0.7, 0.42, 0.2), seed) * (0.7 + 0.6 * tint);
+      sh = uShade * hue * vec3(1.06, 1.125, 1.226);
+      li = uLit * hue;
+    } else {
+      sh = uShade * vec3(0.55, 0.45, 0.38) * (0.85 + 0.3 * tint);
+      li = uLit * vec3(0.52, 0.40, 0.31) * (0.85 + 0.3 * tint);
+    }
   } else if (mat < 4.5) {     // dark opening
     sh = uShade * 0.16 + uTop * 0.015;
     li = uShade * 0.24 + uTop * 0.02;
@@ -264,9 +271,16 @@ void main() {
     sh = mix(d * uShade, d * lum(uShade), 0.5) * 1.15;
     li = mix(d * uLit, d * lu, 0.5) * 1.12;
   } else if (mat < 6.5) {     // plant
-    float k = 0.8 + 0.4 * tint;
-    sh = uShade * vec3(0.42, 0.52, 0.34) * k;
-    li = uLit * vec3(0.46, 0.6, 0.3) * k;
+    if (seed > 0.002) {
+      // baked colour, as for wood: seed from fresh yellow-green to deep green, tint the value
+      vec3 hue = mix(vec3(0.5, 0.75, 0.12), vec3(0.2, 0.55, 0.16), seed) * (0.6 + 0.8 * tint);
+      sh = uShade * hue * vec3(0.913, 0.867, 1.133);
+      li = uLit * hue;
+    } else {
+      float k = 0.8 + 0.4 * tint;
+      sh = uShade * vec3(0.42, 0.52, 0.34) * k;
+      li = uLit * vec3(0.46, 0.6, 0.3) * k;
+    }
   } else if (mat < 7.5) {     // lantern glass
     sh = uShade * 0.5;
     li = uLit * 0.7;

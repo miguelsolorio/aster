@@ -3,6 +3,10 @@
     blender --background --python tools/blender/props.py                   # write the .glb
     blender --background --python tools/blender/props.py -- --preview DIR  # and render each model
 
+The shipped props.glb is written by tools/tripo/palm_convert.py, which loads this file (main() does
+not run then), keeps every model below but the palms and puts Tripo's fan palm in their place; run
+that, not this, to rebuild it. Running this alone writes the hand-made date palms below.
+
 Everything is built in the game's own frame (metres, +Y up) and turned into Blender's Z-up frame
 only when the mesh is made, so the exporter's +Y-up conversion gives back exactly these numbers.
 No materials, no normals (the game works them out), no texture coordinates.
@@ -643,4 +647,5 @@ def main():
         preview(ms, argv[argv.index("--preview") + 1])
 
 
-main()
+if __name__ == "__main__":
+    main()

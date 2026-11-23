@@ -56,17 +56,21 @@ const byte = (s: number): number => clamp(Math.round(s * 255), 0, 255);
 
 // ------------------------------------------------------------------ modelled plants
 //
-// tools/blender/props.py writes public/art/props.glb: a date palm (a ringed trunk, crowns of
-// arching fronds with their leaflets cut in, drooping dead fronds, date clusters) and layered
-// shrubs. Until it has loaded, and wherever it cannot be had, the procedural plants below are
+// tools/tripo/palm_convert.py writes public/art/props.glb: the fan palm (Tripo's, decimated: a
+// slim trunk, three variants of a crown of pleated fans, a skirt of dry leaves; its texture baked
+// to a colour per vertex) beside tools/blender/props.py's layered shrubs. Until it has loaded, and wherever it cannot be had, the procedural plants below are
 // drawn. A city built before it arrives has its trees rebuilt from the model once it does; its
 // shrubs stay as they were built. Every vertex carries _info: material id, tint 0..1 and sway
-// 0..1 (see props.py), which the writers below turn into this file's own aInfo ranges.
+// 0..1 (see props.py), which the writers below turn into this file's own aInfo ranges; the palms
+// also carry _hue 0..1, their baked colour's hue, written as aInfo.z (the masonry shader's seed,
+// which it reads as a hue for wood and plants; 0, as everything else writes, is no hue).
 
 interface Model {
   pos: Float32Array;
   nrm: Float32Array;
   info: Float32Array;
+  /** The baked hue 0..1 per vertex (palms), or null. */
+  hue: Float32Array | null;
   index: ArrayLike<number>;
 }
 
@@ -74,7 +78,8 @@ interface Modelled {
   trunk: Model;
   crowns: Model[];
   dead: Model;
-  dates: Model;
+  /** Date clusters: none for the fan palm (props.glb has no PalmDates). */
+  dates: Model | null;
   thorny: Model[];
   leafy: Model[];
 }
@@ -85,7 +90,6 @@ let modelLoad: Promise<Modelled | null> | null = null;
 /** The reference palm the model was drawn for: trunk top (boot base) and frond origin. */
 const REF_TOP = 9.5;
 const REF_FROND = REF_TOP + 0.55;
-const REF_R0 = 0.12 + 0.011 * 10;
 const REF_RB = 0.95 + 0.11 * 10;
 
 function modelOf(gltf: Parameters<typeof modelGeometry>[0], name: string): Model | null {
@@ -99,8 +103,14 @@ function modelOf(gltf: Parameters<typeof modelGeometry>[0], name: string): Model
     pos: Float32Array.from(g.getAttribute('position').array),
     nrm: Float32Array.from(g.getAttribute('normal').array),
     info: Float32Array.from(info.array),
+    hue: hueOf(g),
     index,
   };
+}
+
+function hueOf(g: THREE.BufferGeometry): Float32Array | null {
+  const a = g.getAttribute('_hue');
+  return a && a.itemSize === 1 ? Float32Array.from(a.array) : null;
 }
 
 /** Starts loading the modelled plants (once); resolves to them, or null without the file. */
@@ -116,7 +126,7 @@ function loadPlants(): Promise<Modelled | null> {
       const crowns = [0, 1, 2].map((i) => get(`PalmCrown${i}`)).filter((m): m is Model => !!m);
       const thorny = [0, 1, 2].map((i) => get(`Shrub${i}`)).filter((m): m is Model => !!m);
       const leafy = [0, 1].map((i) => get(`Bush${i}`)).filter((m): m is Model => !!m);
-      if (!trunk || !dead || !dates || crowns.length === 0 || thorny.length === 0 || leafy.length === 0) return null;
+      if (!trunk || !dead || crowns.length === 0 || thorny.length === 0 || leafy.length === 0) return null;
       MODELLED = { trunk, crowns, dead, dates, thorny, leafy };
       return MODELLED;
     });
@@ -154,12 +164,13 @@ function rewind(w: Writer): void {
 /**
  * Writes a model's triangles into w, each vertex placed by `put` (which writes the world
  * position to out[0..2] and returns nothing) and its normal turned by yaw (c, s). `look` sets
- * w.mat, w.tint and w.extra for a vertex from its _info.
+ * w.mat, w.tint and w.extra for a vertex from its _info; w.seed is its baked hue (0 without).
  */
 function stamp(
   w: Writer, m: Model, c: number, s: number,
   put: (x: number, y: number, z: number, out: number[]) => void,
   look: (mat: number, tint: number, sway: number) => void,
+  dh = 0,
 ): void {
   const nv = m.pos.length / 3;
   w.reserve(nv, m.index.length);
@@ -169,11 +180,13 @@ function stamp(
     const p = i * 3;
     put(m.pos[p], m.pos[p + 1], m.pos[p + 2], o);
     look(m.info[p], m.info[p + 1], m.info[p + 2]);
+    w.seed = m.hue ? clamp(Math.round(m.hue[i] * 255) + (w.mat === MAT.plant ? dh : 0), 1, 255) : 0;
     const nx = m.nrm[p], nz = m.nrm[p + 2];
     w.vert(o[0], o[1], o[2], nx * c - nz * s, m.nrm[p + 1], nx * s + nz * c, 0.5, m.info[p + 2]);
   }
   const I = m.index;
   for (let t = 0; t < I.length; t += 3) w.index3(base + I[t], base + I[t + 1], base + I[t + 2]);
+  w.seed = 0;
 }
 
 /** A small hash of a position, 0..1, so a modelled tree is the same whenever it is built. */
@@ -185,7 +198,7 @@ function hashXZ(x: number, z: number, salt: number): number {
 }
 
 /**
- * The modelled date palm of height h at (x, y, z), the same size as tree() draws and bending the
+ * The modelled fan palm of height h at (x, y, z), the same size as tree() draws and bending the
  * same way: the trunk stretched to its height, its radius and crown scaled by it. Returns the
  * height of the trunk top above y.
  */
@@ -199,7 +212,7 @@ function modelledTree(w: Writer, M: Modelled, x: number, y: number, z: number, h
   const lean = (0.03 + r() * 0.06) * h;
   const bend = (r() - 0.5) * 0.1 * h;
   const top = h - 0.5;
-  const kr = (0.12 + 0.011 * h) / REF_R0;
+  const kr = h / 10; // the fan palm's trunk keeps its girth to height
   const yaw = r() * TAU;
   const c = Math.cos(yaw), s = Math.sin(yaw);
   const bark = 70 + Math.floor(r() * 70);
@@ -231,9 +244,9 @@ function modelledTree(w: Writer, M: Modelled, x: number, y: number, z: number, h
     w.tint = clamp(Math.round(tint * 255 + (mat === MAT.plant ? green : 0)), 0, 255);
     w.extra = mat === MAT.cloth ? 0 : byte(sTop + (rim - sTop) * sway); // cloth reads aInfo.w as stripes
   };
-  if (r() < 0.25 + 0.03 * h) stamp(w, M.dead, c, s, crownAt, look);
-  if (h > 8 && r() < 0.6) stamp(w, M.dates, c, s, crownAt, look);
-  stamp(w, M.crowns[Math.floor(r() * M.crowns.length)], c, s, crownAt, look);
+  if (r() < 0.6 + 0.03 * h) stamp(w, M.dead, c, s, crownAt, look); // the dry skirt, on most
+  if (h > 8 && r() < 0.6 && M.dates) stamp(w, M.dates, c, s, crownAt, look);
+  stamp(w, M.crowns[Math.floor(r() * M.crowns.length)], c, s, crownAt, look, Math.round((r() - 0.5) * 60)); // greener or yellower
   w.extra = 0;
   return top + 0.85;
 }
@@ -907,14 +920,16 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
           if ((x - tx[k]) ** 2 + (z - tz[k]) ** 2 < d * d) return false;
         }
       }
-    // the crown must clear the roofs it spreads over
-    const cr = 0.3 * h;
+    // the crown must clear the roofs it spreads over: the modelled fan crown reaches about
+    // 1.8 + 0.21 h out and is held up (its leaves no lower than the frond origin beyond half
+    // its reach), the dry skirt hangs under a metre below it near the trunk
+    const cr = 1.8 + 0.21 * h;
     let roof = 0;
     for (let k = 0; k < 8; k++) {
       const a = (k / 8) * TAU;
       roof = Math.max(roof, ctx.roofAt(x + Math.cos(a) * cr, z + Math.sin(a) * cr), ctx.roofAt(x + Math.cos(a) * cr * 0.45, z + Math.sin(a) * cr * 0.45));
     }
-    if (roof > h - 3) h = roof + 3;
+    if (roof > h - 2) h = roof + 2;
     if (h > 14) return false;
     const g = ctx.groundAt(x, z);
     if (!flat(x, z, g)) return false;
@@ -1225,7 +1240,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   near.userData.triangles = tris;
   // crowns that shade the ground under them (read by Cities into the city map)
   const crowns: number[] = [];
-  for (let i = 0; i < tx.length; i++) crowns.push(tx[i], tz[i], 1.2 + 0.22 * th[i]);
+  for (let i = 0; i < tx.length; i++) crowns.push(tx[i], tz[i], 1.8 + 0.21 * th[i]);
   near.userData.crowns = crowns;
   near.userData.counts = { trees: tx.length, shrubs: nShrubs, reeds: nReeds, vines: nVines, pots: nPots };
 
