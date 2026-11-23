@@ -8,6 +8,7 @@ import type { GLTF } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { loadModel, modelGeometry } from '../render/art';
 import type { SettlementKind } from './settlementKinds';
 import type { FolkMark, FolkRole } from './villagers';
+import { finish } from './budget';
 
 type RGB = [number, number, number];
 
@@ -633,9 +634,10 @@ function ring(c: SiteCtx, k: Kit, u: number, y: number, v: number, r: number, b:
 // ------------------------------------------------------------------ the ten places
 
 /** Black tents round one deep well, on open sand. Six people, and nobody else for a day's walk. */
-function buildWellCamp(c: SiteCtx, k: Kit): void {
+function* buildWellCamp(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 26;
   well(c, k, 0, 0);
+  yield;
   k.torch(c, 3.4, -1.2, 1.3);
   const a0 = c.rng() * TAU;
   const n = 4;
@@ -645,7 +647,9 @@ function buildWellCamp(c: SiteCtx, k: Kit): void {
     const d = c.r(12.5, 15.5);
     tent(c, k, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, 1, i % 2 ? 7.5 : 9);
     if (i % 2 === 0) jars(c, k, Math.cos(a + 0.42) * (d - 3), Math.sin(a + 0.42) * (d - 3), 3, 0.8);
+    yield;
   }
+  yield;
   const fu = Math.cos(open) * 7.5;
   const fv = Math.sin(open) * 7.5;
   fire(c, k, fu, fv);
@@ -673,7 +677,7 @@ function buildWellCamp(c: SiteCtx, k: Kit): void {
 }
 
 /** An observatory on a lone hilltop: a dome with a slit in it, a brass ring on a tower, four houses down the slope. */
-function buildStarHouse(c: SiteCtx, k: Kit): void {
+function* buildStarHouse(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 32;
   const wt = c.r(0.98, 1.06);
   const g0 = c.g(0, 0);
@@ -691,6 +695,7 @@ function buildStarHouse(c: SiteCtx, k: Kit): void {
   for (let i = 0; i < 5; i++) {
     const t = 0.25 + i * 0.26; // from near the zenith down toward the rim
     bit(c, k, Math.cos(sa) * Math.sin(t) * 5.25, g0 + 4.6 + Math.cos(t) * 4.85, Math.sin(sa) * Math.sin(t) * 5.25, 1.5, 0.3, 1.0, sa, 0, -t);
+    yield;
   }
   // the door, on the side away from the slit, three steps up
   const da = sa + Math.PI + 0.5;
@@ -726,6 +731,7 @@ function buildStarHouse(c: SiteCtx, k: Kit): void {
     const a = da + 0.75 + i * 1.18 + c.r(-0.12, 0.12);
     const d = c.r(19, 24);
     k.house(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, 1, c.r(5.4, 6.8), c.r(4.4, 5.4), c.r(2.7, 3.2), wt * c.r(0.96, 1.05));
+    yield;
   }
   // stepping stones down from the door, and a stone bench that looks out over the sand
   c.stone.set(0.98, 0.93, 0.84, 0, 0.05);
@@ -734,7 +740,9 @@ function buildStarHouse(c: SiteCtx, k: Kit): void {
   for (let d = 8.6; d < 27; d += 1.8) {
     const a = da + Math.sin(d * 0.3) * 0.06;
     c.prim(k.BIT, Math.cos(a) * d, c.g(Math.cos(a) * d, Math.sin(a) * d) + 0.03, Math.sin(a) * d, c.r(1.0, 1.4), 0.16, c.r(0.9, 1.3), c.rng() * 6);
+    yield;
   }
+  yield;
   c.solid = keep;
   const ba = da - 1.0;
   const bu = Math.cos(ba) * 12.5;
@@ -750,7 +758,9 @@ function buildStarHouse(c: SiteCtx, k: Kit): void {
   for (let i = 0; i < 3; i++) {
     const a = ga + (i / 3) * TAU;
     bit(c, k, gu + Math.cos(a) * 0.4, gg + 0.7, gv + Math.sin(a) * 0.4, 0.07, 1.6, 0.07, a, 0, 0.5);
+    yield;
   }
+  yield;
   c.stone.set(BRASS[0], BRASS[1], BRASS[2], 1, 0);
   bit(c, k, gu + Math.cos(ga) * 0.2, gg + 1.6, gv + Math.sin(ga) * 0.2, 2.2, 0.2, 0.2, ga, 0, 0.3);
   // who is here: the old stargazer at the glass, two on the bench, one at the door, the maker at the tower, an apprentice
@@ -765,13 +775,14 @@ function buildStarHouse(c: SiteCtx, k: Kit): void {
 }
 
 /** Shallow pools of pink, white and green out on a pan, salt stacked in blocks, and a row of low houses with their backs to the wind. */
-function buildSaltWorks(c: SiteCtx, k: Kit): void {
+function* buildSaltWorks(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 62;
   const wt = c.r(1.02, 1.1);
   const n = 8;
   for (let i = 0; i < n; i++) {
     const hu = (i - (n - 1) / 2) * 9.4 + c.r(-0.6, 0.6);
     k.house(c, hu, -24 + c.r(-1, 1), 0, 1, c.r(6.2, 7.6), c.r(4.6, 5.4), c.r(2.3, 2.7), wt * c.r(0.97, 1.04));
+    yield;
   }
   // the pools: a grid of them, each behind a low crust of its own salt
   const POOLS: RGB[] = [[1.28, 0.8, 0.76], [1.32, 1.3, 1.26], [0.64, 1.02, 0.92], [1.02, 0.82, 1.06], [1.3, 1.02, 0.78], [0.72, 0.96, 1.08]];
@@ -795,7 +806,9 @@ function buildSaltWorks(c: SiteCtx, k: Kit): void {
         for (let q = 0; q < 4; q++) c.prim(k.PEBBLE, pu - pw * 0.3 + q * pw * 0.2, g + 0.3, pv + c.r(-3, 3), 0.7, 0.34, 0.7, c.rng() * 6);
       }
     }
+    yield;
   }
+  yield;
   c.solid = keep;
   // the stacks, by the houses, where the tallyman can see them
   const stack = (su: number, sv: number, rows: number): void => {
@@ -818,6 +831,7 @@ function buildSaltWorks(c: SiteCtx, k: Kit): void {
   c.stone.set(1.36, 1.35, 1.32, 1, 0.03);
   for (let i = 0; i < 3; i++) c.prim(k.BOX, -14.8 + i * 0.9, sg + 0.62, -3 + i * 0.28, 0.85, 0.55, 1.2, -0.3);
   k.cart(c, 24, -6, 2.2);
+  yield;
   wood(c, 1.15);
   for (const [ru, rv, ra] of [[-6, 3.6, 0.3], [9, 18.6, -0.4], [21, 3.6, 0.5]] as const) bit(c, k, ru, c.g(ru, rv) + 1.0, rv, 0.07, 2.3, 0.07, 0, ra * 0.4, ra);
   pennant(c, k, -38, c.g(-38, -20), -20, 8, UNDYED);
@@ -840,7 +854,7 @@ function buildSaltWorks(c: SiteCtx, k: Kit): void {
 }
 
 /** Three beehive kilns that glow from dusk, racks of glass that catch the light, and the houses of the people who blow it. */
-function buildGlassKilns(c: SiteCtx, k: Kit): void {
+function* buildGlassKilns(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 44;
   const wt = c.r(0.98, 1.06);
   // the kilns stand in an arc, their mouths to the yard
@@ -851,6 +865,7 @@ function buildGlassKilns(c: SiteCtx, k: Kit): void {
     const R = i === 1 ? 3.7 : 3.1;
     kiln(c, k, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI, R, wt);
     mouths.push([Math.cos(a) * (d - R - 1.6), Math.sin(a) * (d - R - 1.6)]);
+    yield;
   }
   // racks of glass set out to cool: it holds the light by day and by night
   const GLASS: RGB[] = [[1, 1, 1], [3.1, 0.82, 0.24], [0.62, 0.74, 1.22], [2.2, 1.02, 0.9]];
@@ -887,6 +902,7 @@ function buildGlassKilns(c: SiteCtx, k: Kit): void {
     const tn = pickOf(c, GLASS);
     c.stone.set(tn[0], tn[1], tn[2], 4, 0);
     bit(c, k, 0.5 + Math.cos(0.4) * (i - 1.5) * 0.7, bg + 1.12, 0.5 + Math.sin(0.4) * (i - 1.5) * 0.7, 0.2, 0.44, 0.2, i);
+    yield;
   }
   // a heap of the pale sand they melt, and baskets for carrying it
   c.stone.set(1.3, 1.26, 1.14, 1, 0.1);
@@ -901,8 +917,11 @@ function buildGlassKilns(c: SiteCtx, k: Kit): void {
     const a = -1.5 + (i / 8) * 3.0 + c.r(-0.06, 0.06);
     const d = (i % 2 ? 31 : 24.5) + c.r(-1, 1);
     k.house(c, Math.cos(a) * d, Math.sin(a) * d, a + Math.PI / 2, 1, c.r(5.6, 7.2), c.r(4.4, 5.6), c.r(2.7, 3.3), wt * c.r(0.96, 1.05));
+    yield;
   }
+  yield;
   well(c, k, 15, 0);
+  yield;
   k.torch(c, 12, 5.5, 1.4);
   k.torch(c, -4, -17, 1.4);
   pennant(c, k, 0, c.g(0, -22), -22, 8, SAFFRON);
@@ -922,7 +941,7 @@ function buildGlassKilns(c: SiteCtx, k: Kit): void {
 }
 
 /** Houses stacked against a rock face under a great overhang, pots drying along the lip, and ladders. +u is up the slope. */
-function buildLedge(c: SiteCtx, k: Kit): void {
+function* buildLedge(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 50;
   const wt = c.r(0.96, 1.04);
   // three rows, each standing on the ground behind the roofs of the one below
@@ -935,6 +954,7 @@ function buildLedge(c: SiteCtx, k: Kit): void {
       row.push(hut(c, k, 5 + r * 7.2 + c.r(-0.4, 0.4), hv, Math.PI / 2, 1, c.r(5.6, 7), c.r(4.6, 5.4), c.r(2.9, 3.5), wt * c.r(0.95, 1.05)));
     }
     rows.push(row);
+    yield;
   }
   // ladders: from the ground to the first roofs, and from roof to the door above
   for (let r = 0; r < 2; r++) {
@@ -944,6 +964,7 @@ function buildLedge(c: SiteCtx, k: Kit): void {
       const p1 = up.at(0, 2.9);
       ladder(c, k, p0[0], c.g(p0[0], p0[1]), p0[1], p1[0], up.floor + 0.2, p1[1]);
     }
+    yield;
   }
   // the overhang: slabs of the rock itself, bedded in the slope behind and held up at either end
   const top = c.g(24, 0);
@@ -958,6 +979,7 @@ function buildLedge(c: SiteCtx, k: Kit): void {
     c.stone.set(0.98, 0.96, 0.94, 0, 0.7);
     c.prim(k.BLOB, 17, c.g(17, s * 28) + (roofY - c.g(17, s * 28)) / 2, s * 28, 6.5, (roofY - c.g(17, s * 28)) / 2 + 3.5, 5, s);
     c.prim(k.BLOB, 25, c.g(25, s * 25) + 3, s * 25, 8, roofY - c.g(25, s * 25) + 2, 6, s * 2);
+    yield;
   }
   // the lip: a low wall along the front, and the day's pots drying on it
   footing(c, wt);
@@ -965,7 +987,9 @@ function buildLedge(c: SiteCtx, k: Kit): void {
     if (i === 0) continue; // the way in
     const lv = i * 4.4;
     c.prim(k.BOX, 0, c.g(0, lv) + 0.2, lv, 0.6, 1.2, 4.5);
+    yield;
   }
+  yield;
   const keep = c.solid;
   c.solid = false;
   for (let i = 0; i < 26; i++) {
@@ -974,15 +998,20 @@ function buildLedge(c: SiteCtx, k: Kit): void {
     const s = c.r(0.22, 0.4);
     c.stone.set(0.86 + c.r(-0.08, 0.1), 0.48, 0.3, 2, 0.03);
     c.prim(k.PEBBLE, 0, c.g(0, lv) + 0.8 + s, lv, s, s * 1.25, s, c.rng() * 6);
+    yield;
   }
+  yield;
   c.solid = keep;
   // down on the sand: the kiln, the clay, and the tower that watches the way up
   kiln(c, k, -13, 15, Math.PI * 0.75, 2.5, wt);
+  yield;
   c.stone.set(0.74, 0.44, 0.3, 2, 0.12);
   c.prim(k.BLOB, -9, c.g(-9, 21) - 0.1, 21, 2.6, 0.9, 2.2, 1);
   jars(c, k, -8, 11, 6, 2.2);
   k.tower(c, 3, -31, Math.PI / 2, c.r(9.5, 11.5), wt);
+  yield;
   well(c, k, -11, -8);
+  yield;
   awning(c, k, -9.5, 1.5, 0.2, 4, 3, pickOf(c, [MADDER, SAFFRON]));
   k.torch(c, -2.4, 3.6, 1.4);
   k.torch(c, -2.4, -3.6, 1.4);
@@ -1003,7 +1032,7 @@ function buildLedge(c: SiteCtx, k: Kit): void {
 }
 
 /** Houses along the deck of a stone bridge, a gate at each end, fish drying and boats tied up below. +u runs across the river. */
-function buildBridge(c: SiteCtx, k: Kit): void {
+function* buildBridge(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 52;
   const wt = c.r(0.98, 1.06);
   const bed = c.g(0, 0);
@@ -1020,6 +1049,7 @@ function buildBridge(c: SiteCtx, k: Kit): void {
     // the springing of the arches, corbelled out under the deck
     mud(c, wt * 0.93);
     for (const s of [-1, 1]) for (let i = 0; i < 3; i++) c.prim(k.BOX, pu + s * (2.2 + i * 1.3), D - 1.55 - i * 0.02 + i * 0.12 - 0.3, 0, 1.4, 0.8 - i * 0.2, W - 0.4);
+    yield;
   }
   // abutments, and the stairs up from either bank
   for (const s of [-1, 1]) {
@@ -1046,6 +1076,7 @@ function buildBridge(c: SiteCtx, k: Kit): void {
     bit(c, k, s * 29.5, bank + 4.7, 0, 0.22, 0.3, 0.22);
     c.glow(s * 29.5, bank + 4.7, 0, 3.2);
     pennant(c, k, s * 29.5, bank + 7.3, s * 4.6 * 1, 3.4, MADDER, s > 0 ? 0 : Math.PI);
+    yield;
   }
   // the houses on the deck: a row down each side, a lane between, each hanging a little out over the water
   for (const side of [-1, 1]) {
@@ -1056,6 +1087,7 @@ function buildBridge(c: SiteCtx, k: Kit): void {
       if (Math.abs(hu + w / 2) > 2.4 || side < 0) hut(c, k, hu + w / 2, side * (W / 2 - d / 2 + 0.7), 0, -side, w, d, c.r(2.7, 4.9), wt * c.r(0.95, 1.06), D);
       hu += w + c.r(0.5, 1.4);
     }
+    yield;
   }
   // a rail across the gap left for looking at the river
   wood(c);
@@ -1092,7 +1124,9 @@ function buildBridge(c: SiteCtx, k: Kit): void {
     bit(c, k, bu, bg + 0.66, bv, 1.5, 0.08, 4.6, 0.25 * s + Math.PI / 2 - Math.PI / 2);
     bit(c, k, bu, bg + 1.9, bv, 0.09, 2.6, 0.09);
     k.torch(c, s * 27, s * -7.6, 1.4);
+    yield;
   }
+  yield;
   jars(c, k, 25, 9, 4, 1.4);
   bales(c, k, -25.5, -9.5, 0.4, 4);
   // who is here: the toll keeper at one gate, river folk on the deck and the banks, fish driers at the racks, children
@@ -1115,7 +1149,7 @@ function buildBridge(c: SiteCtx, k: Kit): void {
 }
 
 /** One great walled house half way along a route: a gate you could ride a camel through, a yard, stables, a lamp over the door all night. +u faces the road. */
-function buildCaravanserai(c: SiteCtx, k: Kit): void {
+function* buildCaravanserai(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 44;
   const wt = c.r(1.0, 1.08);
   const R = 21; // half the square
@@ -1157,6 +1191,7 @@ function buildCaravanserai(c: SiteCtx, k: Kit): void {
     dark(c);
     for (const y of [4, 7.4]) bit(c, k, a * (R + 2.45 * (a > 0 ? 1 : 1)), g + y, b * R, 0.14, 1.3, 0.45);
     if (a > 0) pennant(c, k, a * R, g + 10.6, b * R, 4.4, b > 0 ? MADDER : TEAL);
+    yield;
   }
   // the gate: two pylons taller than the wall, the arch between them, and the lamp that burns all night
   const gg = c.g(R, 0);
@@ -1164,7 +1199,9 @@ function buildCaravanserai(c: SiteCtx, k: Kit): void {
     mud(c, wt * 1.03);
     c.prim(k.SLAB, R + 0.3, gg + 4.4, s * 4.5, 3.4, 9.6, 3.4);
     k.merlons(c, R + 0.3, s * 4.5, gg + 9, 3, 3, 0, 1);
+    yield;
   }
+  yield;
   mud(c, wt * 1.03);
   c.prim(k.BOX, R + 0.3, gg + 7.1, 0, 2.2, 2.8, 6.4);
   c.prim(k.BOX, R + 0.3, gg + 5.5, -2.4, 2.0, 0.9, 1.2, 0, 0.6);
@@ -1204,10 +1241,12 @@ function buildCaravanserai(c: SiteCtx, k: Kit): void {
   lean(-R + 6, -R, R - 4, -R, [0, 1]);
   lean(-R + 6, R, R - 4, R, [0, -1]);
   hut(c, k, -R + 4.6, 0, Math.PI / 2, -1, 26, 6.4, 5.9, wt * 1.02);
+  yield;
   mud(c, wt * 1.06);
   c.prim(k.BLOB, -R + 4.6, c.g(-R + 4.6, 0) + 6.1, 0, 3.4, 2.8, 3.4, 0.4);
   // the yard: the well, a trough, a fire, the day's loads set down
   well(c, k, 2, -2);
+  yield;
   wood(c);
   c.prim(k.BOX, 6.5, c.g(6.5, -9) + 0.3, -9, 4.2, 0.55, 0.9, -0.2);
   fire(c, k, -5, 6.5, 1.1);
@@ -1215,12 +1254,17 @@ function buildCaravanserai(c: SiteCtx, k: Kit): void {
   bales(c, k, -3, -11, 1.4, 4);
   jars(c, k, 12, 13.5, 5, 1.6);
   k.hay(c, 13, -14.5, 1.3);
+  yield;
   k.hay(c, 10.6, -15.6, 1.0);
+  yield;
   k.cart(c, -8, -5.5, 2.4);
+  yield;
   for (const s of [-1, 1]) bit(c, k, 13, c.g(13, s * 6) + 0.6, s * 6, 0.14, 1.2, 0.14);
   // outside: palms either side of the gate, and bales waiting for the morning
   k.palm(c, R + 9, 12.5, 1);
+  yield;
   k.palm(c, R + 8, -13, 4);
+  yield;
   bales(c, k, R + 6, -6.5, 1.2, 3);
   k.torch(c, R + 12, 5, 1.5);
   // who is here: the innkeeper just inside the gate, guards outside it, stable hands, and whoever is on the road this week
@@ -1243,7 +1287,7 @@ function buildCaravanserai(c: SiteCtx, k: Kit): void {
 }
 
 /** Three rows of houses on a slope, cloth drying on lines between every roof, and a honeycomb of dye vats at the bottom. +u is up the slope. */
-function buildDyersTown(c: SiteCtx, k: Kit): void {
+function* buildDyersTown(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 72;
   const wt = c.r(1.0, 1.08);
   const rows: SiteHouse[][] = [];
@@ -1265,6 +1309,7 @@ function buildDyersTown(c: SiteCtx, k: Kit): void {
       );
     }
     rows.push(row);
+    yield;
   }
   // cloth on lines: along each row from roof to roof, and up the hill from one row to the next
   for (let r = 0; r < 3; r++) {
@@ -1286,6 +1331,7 @@ function buildDyersTown(c: SiteCtx, k: Kit): void {
       const p1 = b.at(c.r(-1.5, 1.5), 1.4);
       clothLine(c, k, p0[0], a.top, p0[1], p1[0], b.top, p1[1], DYES, 1.25);
     }
+    yield;
   }
   // the vats: three rows of stone rings, each brimming with one colour
   const vat: [number, number][] = [];
@@ -1302,6 +1348,7 @@ function buildDyersTown(c: SiteCtx, k: Kit): void {
       c.prim(k.CYL, vu, g + 0.5, vv, 1.42, 0.14, 1.42);
       vat.push([vu, vv]);
     }
+    yield;
   }
   // tall frames by the vats, hung with the longest lengths
   for (const fv of [-27, -24, 24, 27]) {
@@ -1315,6 +1362,7 @@ function buildDyersTown(c: SiteCtx, k: Kit): void {
       const drop = c.r(2.6, 3.8);
       bit(c, k, fu - 2.2 + i * 1.5, g + 4.45 - drop / 2, fv, 1.3, drop, 0.05);
     }
+    yield;
   }
   // the spring they wash in, below the vats, with a rim of stones
   const su = -25;
@@ -1324,12 +1372,17 @@ function buildDyersTown(c: SiteCtx, k: Kit): void {
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * TAU;
     c.prim(k.BOX, su + Math.cos(a) * 3.7, sy, Math.sin(a) * 3.7, 2.0, 0.7, 0.8, -a - Math.PI / 2);
+    yield;
   }
+  yield;
   k.palm(c, su - 5, 4, 2);
+  yield;
   k.palm(c, su - 4, -5.5, 5);
+  yield;
   awning(c, k, 1.5, -9, Math.PI / 2, 4.4, 3.2, MAGENTA);
   awning(c, k, 1.5, 9, Math.PI / 2, 4.4, 3.2, SAFFRON);
   k.cart(c, -1, -18, 0.6);
+  yield;
   k.torch(c, 3.5, 2.6, 1.5);
   k.torch(c, 3.5, -2.6, 1.5);
   k.torch(c, -4, 21, 1.4);
@@ -1358,7 +1411,7 @@ function buildDyersTown(c: SiteCtx, k: Kit): void {
 }
 
 /** A town on a flat plain with no water in sight: it comes in underground, along a line of well mounds, and wind towers and an ice house keep the place cool. */
-function buildWindTowers(c: SiteCtx, k: Kit): void {
+function* buildWindTowers(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 100;
   const wt = c.r(1.0, 1.08);
   // four blocks of houses round a square, a street each way between them
@@ -1379,6 +1432,7 @@ function buildWindTowers(c: SiteCtx, k: Kit): void {
         }
       }
     }
+    yield;
   }
   // the square: the basin the water comes up in, palms, stalls
   const by = c.g(0, 0) + 0.25;
@@ -1387,14 +1441,20 @@ function buildWindTowers(c: SiteCtx, k: Kit): void {
   for (let i = 0; i < 14; i++) {
     const a = (i / 14) * TAU;
     c.prim(k.BOX, Math.cos(a) * 4.8, by - 0.05, Math.sin(a) * 4.8, 2.2, 0.9, 0.9, -a - Math.PI / 2);
+    yield;
   }
+  yield;
   for (const [pu, pv, la] of [[6.6, 5.4, 1], [-6.2, 5.8, 3], [5.6, -6.4, 5], [-6, -5.6, 0.5]] as const) k.palm(c, pu, pv, la);
+  yield;
   awning(c, k, 3.6, 10.5, 0, 4.4, 3, SAFFRON);
   awning(c, k, -9.5, 2.4, Math.PI / 2, 4.2, 3, MADDER);
   awning(c, k, -3.4, -10.5, 0, 4.4, 3, TEAL);
   k.bunting(c, 44, -3.4, 44, 3.4, 4.6);
+  yield;
   k.bunting(c, 20, -3.4, 20, 3.4, 4.6);
+  yield;
   k.bunting(c, -3.4, 22, 3.4, 22, 4.6);
+  yield;
   for (const [tu, tv] of [[8, 3.6], [-8, -3.6], [30, 3.6], [-30, -3.6], [3.6, 30], [-3.6, -30]] as const) k.torch(c, tu, tv, 1.5);
   // the water's road in: the line of shafts out across the plain, each with its ring of spoil, and the last stretch open to the sky
   const keep = c.solid;
@@ -1405,7 +1465,9 @@ function buildWindTowers(c: SiteCtx, k: Kit): void {
     c.prim(k.BLOB, mu, g - 0.2, 0, 3.4, 1.3, 3.4, i);
     dark(c);
     bit(c, k, mu, g + 1.02, 0, 1.5, 0.2, 1.5, i * 0.7);
+    yield;
   }
+  yield;
   c.stone.set(1.0, 0.97, 0.9, 0, 0.05);
   for (let t = -47; t < -5; t += 3) {
     for (const s of [-1, 1]) c.prim(k.BOX, t + 1.5, c.g(t + 1.5, 0) + 0.12, s * 0.9, 3.05, 0.5, 0.45);
@@ -1414,6 +1476,7 @@ function buildWindTowers(c: SiteCtx, k: Kit): void {
     c.prim(k.BIT, t + 1.5, c.g(t + 1.5, 0) + 0.2, 0, 3.05, 0.08, 1.4);
     c.stone.set(1.0, 0.97, 0.9, 0, 0.05);
     c.solid = keep;
+    yield;
   }
   // the ice house: a stepped cone over a pit, and the long wall that keeps the winter sun off the freezing pond
   const iu = 62;
@@ -1423,7 +1486,9 @@ function buildWindTowers(c: SiteCtx, k: Kit): void {
     const r = 9.4 - i * 1.0;
     mud(c, wt * (0.98 + (i % 2) * 0.04));
     c.prim(k.CYL, iu, ig + 0.4 + i * 1.5, iv, r, 1.6, r);
+    yield;
   }
+  yield;
   mud(c, wt * 1.04);
   c.prim(k.CONE, iu, ig + 14.7, iv, 0.9, 2.2, 0.9);
   dark(c);
@@ -1432,7 +1497,9 @@ function buildWindTowers(c: SiteCtx, k: Kit): void {
     const wu = iu - 30 + i * 5.2;
     mud(c, wt * 0.98);
     c.prim(k.BOX, wu, c.g(wu, iv + 17) + 3.2, iv + 17, 5.3, 7.6, 1.2);
+    yield;
   }
+  yield;
   c.stone.set(1.3, 1.34, 1.38, 1, 0);
   bit(c, k, iu - 12, c.g(iu - 12, iv + 22) + 0.06, iv + 22, 30, 0.1, 6.5);
   // who is here: a water warden at the head of the channel, townsfolk in the square and the streets, sellers, ice cutters, children
@@ -1462,7 +1529,7 @@ function buildWindTowers(c: SiteCtx, k: Kit): void {
 }
 
 /** A city built up in five tiers to a gold dome, with a stair straight up the front of it. +u is the side the gate is on. */
-function buildSteppedCity(c: SiteCtx, k: Kit): void {
+function* buildSteppedCity(c: SiteCtx, k: Kit): Generator<void, void> {
   c.foot = 118;
   const wt = c.r(1.0, 1.07);
   const HALF = [90, 71, 54, 38, 23]; // half the width of each tier
@@ -1496,6 +1563,7 @@ function buildSteppedCity(c: SiteCtx, k: Kit): void {
       }
       footing(c, wt * 1.02);
     }
+    yield;
   }
   // the stair: one flight to each tier, straight up the front
   for (let t = 1; t <= 4; t++) {
@@ -1510,6 +1578,7 @@ function buildSteppedCity(c: SiteCtx, k: Kit): void {
       c.prim(k.BOX, HALF[t] + 6, yOf(t - 1) + STEP / 2 - 0.3, s * 3.8, 12, STEP + 0.6, 1.2, 0, 0, 0);
       k.torch(c, HALF[t] + 12.8, s * 4.4, 1.5);
     }
+    yield;
   }
   // the houses: a row round each tier, doors to the edge, the rows broken where the stair comes up
   const ring = (t: number, inner: number, outer: number): void => {
@@ -1544,7 +1613,9 @@ function buildSteppedCity(c: SiteCtx, k: Kit): void {
   c.prim(k.BOX, -3, ty + 4.2, 0, 22, 8.4, 18);
   c.prim(k.BOX, -3, ty + 8.6, 0, 22.6, 0.7, 18.6);
   k.merlons(c, -3, 0, ty + 8.95, 22.6, 18.6, 1, 0);
+  yield;
   k.merlons(c, -3, 0, ty + 8.95, 22.6, 18.6, 0, 1);
+  yield;
   mud(c, wt * 1.02);
   c.prim(k.CYL, -3, ty + 10.2, 0, 7.2, 2.6, 7.2);
   c.stone.set(GOLD[0], GOLD[1], GOLD[2], 1, 0.02);
@@ -1559,7 +1630,9 @@ function buildSteppedCity(c: SiteCtx, k: Kit): void {
   c.prim(k.SLAB, -15, ty + 13, -14, 5.2, 26, 5.2);
   c.prim(k.BOX, -15, ty + 26.1, -14, 5.4, 0.6, 5.4);
   k.merlons(c, -15, -14, ty + 26.4, 5.4, 5.4, 1, 0);
+  yield;
   k.merlons(c, -15, -14, ty + 26.4, 5.4, 5.4, 0, 1);
+  yield;
   c.stone.set(GOLD[0], GOLD[1], GOLD[2], 1, 0.02);
   c.prim(k.CONE, -15, ty + 28.6, -14, 2.1, 4.4, 2.1, Math.PI / 4);
   flame(c);
@@ -1597,7 +1670,9 @@ function buildSteppedCity(c: SiteCtx, k: Kit): void {
     k.merlons(c, a * W, b * W, g + 10.95, 6.4, 6.4, 1, 0);
     k.merlons(c, a * W, b * W, g + 10.95, 6.4, 6.4, 0, 1);
     pennant(c, k, a * W, g + 11.2, b * W, 4.6, CRIMSON, a > 0 ? 0 : Math.PI);
+    yield;
   }
+  yield;
   const gg = c.g(W, 0);
   for (const s of [-1, 1]) {
     mud(c, wt * 1.03);
@@ -1611,7 +1686,9 @@ function buildSteppedCity(c: SiteCtx, k: Kit): void {
     k.torch(c, W + 5, s * 4.6, 1.7);
     k.palm(c, W + 13, s * 13, s + 2);
     k.palm(c, W + 21, s * 9.5, s + 4);
+    yield;
   }
+  yield;
   mud(c, wt * 1.03);
   c.prim(k.BOX, W + 0.4, gg + 9.3, 0, 3, 3.6, 9.4);
   c.prim(k.BOX, W + 0.4, gg + 7.1, -3.4, 2.6, 1.2, 1.6, 0, 0.6);
@@ -1631,6 +1708,7 @@ function buildSteppedCity(c: SiteCtx, k: Kit): void {
   bales(c, k, W - 5, -4.4, 1.5, 5);
   jars(c, k, W - 12, 13, 5, 1.6);
   well(c, k, HALF[1] + 13.5, 16);
+  yield;
   // who is here: the scribe at the gate, guards, citizens up and down the tiers, pilgrims, the high families at the top
   const GUARD: RGB = [0.62, 0.1, 0.12];
   const PURPLE: RGB = [0.36, 0.16, 0.48];
@@ -1659,18 +1737,46 @@ function buildSteppedCity(c: SiteCtx, k: Kit): void {
   person(c, 16.4, 8, 30, 12, WHITE, { y: ty });
 }
 
-/** Builds a settlement of the given kind in the site's frame. */
+/** Builds a settlement of `kind` in the frame of `c`, all at once. */
 export function buildSettlement(kind: SettlementKind, c: SiteCtx, k: Kit): void {
+  finish(buildSettlementJob(kind, c, k));
+}
+
+/**
+ * buildSettlement as a job (see budget.ts): it yields between the houses, palms and other parts,
+ * so a big place is built over a few frames. Each part keeps nothing over a yield but its
+ * locals and the site's own context, so it comes out the same however it is stepped; and it is
+ * built throughout with the modelled pieces, or throughout without, as things stood when it
+ * began, even if they finish loading while it is under way.
+ */
+export function* buildSettlementJob(kind: SettlementKind, c: SiteCtx, k: Kit): Generator<void, void> {
+  const models = MODELS;
+  const job = buildKind(kind, c, k);
+  for (;;) {
+    const now = MODELS;
+    MODELS = models;
+    let done: boolean | undefined;
+    try {
+      done = job.next().done;
+    } finally {
+      MODELS = now;
+    }
+    if (done) return;
+    yield;
+  }
+}
+
+function* buildKind(kind: SettlementKind, c: SiteCtx, k: Kit): Generator<void, void> {
   switch (kind) {
-    case 'well-camp': buildWellCamp(c, k); break;
-    case 'star-house': buildStarHouse(c, k); break;
-    case 'salt-works': buildSaltWorks(c, k); break;
-    case 'glass-kilns': buildGlassKilns(c, k); break;
-    case 'ledge': buildLedge(c, k); break;
-    case 'bridge': buildBridge(c, k); break;
-    case 'caravanserai': buildCaravanserai(c, k); break;
-    case 'dyers-town': buildDyersTown(c, k); break;
-    case 'wind-towers': buildWindTowers(c, k); break;
-    case 'stepped-city': buildSteppedCity(c, k); break;
+    case 'well-camp': yield* buildWellCamp(c, k); break;
+    case 'star-house': yield* buildStarHouse(c, k); break;
+    case 'salt-works': yield* buildSaltWorks(c, k); break;
+    case 'glass-kilns': yield* buildGlassKilns(c, k); break;
+    case 'ledge': yield* buildLedge(c, k); break;
+    case 'bridge': yield* buildBridge(c, k); break;
+    case 'caravanserai': yield* buildCaravanserai(c, k); break;
+    case 'dyers-town': yield* buildDyersTown(c, k); break;
+    case 'wind-towers': yield* buildWindTowers(c, k); break;
+    case 'stepped-city': yield* buildSteppedCity(c, k); break;
   }
 }
