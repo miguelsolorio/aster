@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import type { Uniforms } from '../game/contract';
 import type { DesertWorld } from '../world/surface';
 import { MAX_SITES } from './cityGlsl';
-import { buildCity, type CityMeshes } from './build';
+import { type ArchKit, buildCity, cityData, detailData, loadArchitecture, type CityMeshes } from './build';
 import { planCity } from './plan';
 import { PlanAhead, type CityPrep } from './planAhead';
 import type { CityKind, CityPlan, CitySite } from './types';
@@ -122,6 +122,27 @@ export class Cities {
     u.uCityRect = { value: new THREE.Vector4() };
     u.uCityGround = { value: 0 };
     warmSource(() => cityWarmSamples(u));
+    // the modelled details: to the plan worker once they have loaded, for the cities it builds next
+    void loadArchitecture().then((kit) => {
+      this.kit = kit;
+      if (kit) this.plans.setKit(kit);
+    });
+  }
+
+  /** The modelled details, once loaded (see build.ts). */
+  private kit: ArchKit | null = null;
+
+  /**
+   * A city built before the modelled details arrived gets them: worked out in the plan worker
+   * (here only where there is none), then sent ahead with the rest of its detail if it is staged.
+   */
+  private fillDetails(c: Loaded): boolean {
+    if (!this.kit || !c.meshes.needsDetails) return false;
+    const d = this.plans.takeDetails(c.site.id) ?? (this.plans.askDetails(c.site) ? null : detailData(c.plan, this.kit));
+    if (!d) return false;
+    const me = c.meshes.setDetails(d.detail, d.tris);
+    if (me && c.staged) this.warm?.upload(me);
+    return true;
   }
 
   /** The nearest city to a point. */
@@ -402,7 +423,8 @@ export class Cities {
   }
 
   private load(site: CitySite, plan: CityPlan, prep: CityPrep | null): Loaded {
-    const meshes = buildCity(plan, this.u, prep?.data);
+    // (the geometry worked out in the plan worker, or here when it was planned here)
+    const meshes = buildCity(plan, this.u, prep?.data ?? cityData(plan));
     const holder = new THREE.Group();
     holder.position.set(site.cx, site.groundY, site.cz);
     holder.rotation.y = -site.rot;
@@ -494,10 +516,10 @@ export class Cities {
       this.load(site, plan, prep);
       built = true;
     }
-    // Then fill in their extras, nearest city first, one piece per scan.
+    // Then fill in their extras (and late details), nearest city first, one piece per scan.
     if (!built) {
       const order = [...this.loaded.values()].sort((p, q) => Math.hypot(p.site.cx - pos.x, p.site.cz - pos.z) - Math.hypot(q.site.cx - pos.x, q.site.cz - pos.z));
-      for (const c of order) if (this.buildExtra(c)) break;
+      for (const c of order) if (this.fillDetails(c) || this.buildExtra(c)) break;
     }
     // Every loaded city, wherever it is: drop the far ones, and choose skyline or full detail.
     for (const c of this.loaded.values()) {

@@ -58,7 +58,7 @@ import { almanacLines, festival, flood, market, migration, migrationBearing, mon
 import { CONSTELLATIONS, NAIL, bloodMoon, comet, dayOf, eclipse, moonPhase, nextLesson, nightOf, shower } from '../world/sky';
 import { CITY_CELL } from '../city/placement';
 import { bedGeometry, hearthGeometry, solidMaterial } from './equipment';
-import { lateProgramWatch, warmObjects, warmUp } from '../render/warm';
+import { lateProgramWatch, warmMaterial, warmObjects, warmUp } from '../render/warm';
 import { Uploader } from '../render/upload';
 
 /** Where a wreck lies, and the way her keel runs (a site's yaw). */
@@ -242,6 +242,15 @@ function start() {
   const clipmap = new Clipmap(u);
   const dust = new Dust(world, u);
   const discoveries = new Discoveries(world, u);
+  // A deep's shaders are compiled (in parallel where the GPU allows it) and its textures uploaded
+  // as soon as it is made, not on the frame it is first drawn.
+  discoveries.onDeep = (obj) => {
+    obj.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.ShaderMaterial | undefined;
+      if (m?.uniforms) for (const k in m.uniforms) if ((m.uniforms[k].value as THREE.Texture | null)?.isTexture) renderer.initTexture(m.uniforms[k].value);
+    });
+    return renderer.compileAsync(obj, camera, scene);
+  };
   // Caverns opened on an earlier visit are open still, and their relics stay taken.
   discoveries.restore(save.data.opened, save.data.taken, save.data.woken);
   discoveries.onOpened = (key) => save.open(key);
@@ -3188,6 +3197,13 @@ function start() {
   // Every shader the game can draw is compiled while the title card is up (see warm.ts): after the
   // first frame is on screen, and the card stays until it is done (or has taken too long).
   warmObjects(scene, postScene);
+  // (the rocks and plants are built as they come into range, so may not be in the scene yet)
+  // TODO: have props.ts register these itself; it was being reworked in parallel.
+  {
+    const pm = props as unknown as { mat?: THREE.Material; shadeMat?: THREE.Material };
+    if (pm.mat) warmMaterial(pm.mat, { normals: true });
+    if (pm.shadeMat) warmMaterial(pm.shadeMat, { normals: false });
+  }
   requestAnimationFrame(() =>
     setTimeout(() => {
       const done = warmUp(renderer, camera, scene, rt).then((r) => {

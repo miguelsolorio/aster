@@ -16,9 +16,8 @@
 // Up and down: level 0 hangs just under the lid; the others follow D apart; the shaft's floor
 // and the chapel are on the last.
 
-import type { Uniforms } from '../../game/contract';
 import type { DeepSpec } from './types';
-import { DeepBuilder, TEAL, mulberry32, type BuiltDeep } from './builder';
+import { DeepBuilder, TEAL, mulberry32, type DeepData } from './builder';
 import type { Pt } from './spans';
 
 function hash2(a: number, b: number): number {
@@ -125,7 +124,7 @@ interface Mouth {
   balcony: boolean;
 }
 
-export function buildLabyrinth(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
+export function buildLabyrinth(spec: DeepSpec): DeepData {
   const tier = spec.tier;
   const lid = spec.lid;
   const seed = spec.seed | 0;
@@ -155,7 +154,7 @@ export function buildLabyrinth(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   const yRoof = Y0 + 4.5; // the shaft's roof, just under the lid
   const HS = 2.7; // headroom on a stair
 
-  const b = new DeepBuilder(spec, uniforms, { cell: 1, yMin: Y3 - 3, maxSpans: 8, wallStep: [3, 4, 6][tier] });
+  const b = new DeepBuilder(spec, { cell: 1, yMin: Y3 - 3, maxSpans: 8, wallStep: [3, 4, 6][tier] });
   const g = b.grid;
   const cu = g.cu;
   const cv = g.cv;
@@ -1377,5 +1376,6 @@ export function buildLabyrinth(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     ],
   };
   const built = b.finish({ ledge: [uA + 4.5, Y0, vWall(s) - s * 2.5 * cv], centre: [uX - 2.5, Y3, vc], relic });
-  return Object.assign(built, { labyrinth: info });
+  built.extra.labyrinth = info;
+  return built;
 }

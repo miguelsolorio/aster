@@ -134,6 +134,14 @@ export class SpanGrid {
     }
   }
 
+  /**
+   * A grid that has crossed a postMessage, which keeps its fields (arrays and numbers, all of
+   * them plain) but not its class: the same grid again, sharing those arrays.
+   */
+  static revive(o: SpanGrid): SpanGrid {
+    return Object.assign(Object.create(SpanGrid.prototype) as SpanGrid, o);
+  }
+
   // ---------------------------------------------------------------- cells
 
   /** The cell over (u, v), or -1 outside the grid. */
