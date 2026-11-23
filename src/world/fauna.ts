@@ -11,8 +11,8 @@ import { STYLE_GLSL } from '../render/styleGlsl';
 import { detailTexture, loadModel, modelGeometry } from '../render/art';
 import { steer, steered, type SolidQuery } from './avoid';
 
-// Every instance runs the whole mesh (all species) through the vertex shader, so the cap is what
-// bounds the cost; the quality tier lowers the share of it in use (setDensity).
+// One draw per species in sight, each instance running only its own species' triangles; the cap
+// bounds the cost, and the quality tier lowers the share of it in use (setDensity).
 const CAP = 200;
 const BIG_CELL = 320; // one herd at most per cell
 const SMALL_CELL = 90; // one small animal (or a few, or a flock of birds) at most per cell
@@ -501,8 +501,8 @@ function vulture(b: GB): void {
   }
 }
 
-// The four legs of a hoofed animal: hips at (hx, hy, +-hz), knees at ky. Low sided, since every
-// instance runs every species' vertices and the legs are thin enough not to need more.
+// The four legs of a hoofed animal: hips at (hx, hy, +-hz), knees at ky. Low sided: the legs are
+// thin enough not to need more.
 function hooves(b: GB, sp: number, hx: number, hy: number, front: number, back: number, ky: number, r0: number, r1: number): void {
   for (const [fx, fz, ph] of [
     [hx, front, 0],
@@ -1014,7 +1014,7 @@ const MODEL_NAMES = ['oryx', 'fox', 'hare', 'lizard', 'vulture', 'gazelle', 'ass
  * (aMP.y) is the mesh's name. The instanced attributes are left as they are. Without the file, or
  * with any species missing from it, the built animals stay.
  */
-function modelledFauna(geos: THREE.InstancedBufferGeometry[]): void {
+function modelledFauna(sets: THREE.InstancedBufferGeometry[][]): void {
   loadModel('fauna.glb').then((gltf) => {
     if (!gltf) return;
     const parts: THREE.BufferGeometry[] = [];
@@ -1073,11 +1073,95 @@ function modelledFauna(geos: THREE.InstancedBufferGeometry[]): void {
       ['aMP', new THREE.BufferAttribute(mp, 2)],
     ];
     const index = new THREE.BufferAttribute(idx, 1);
-    for (const g of geos) {
-      for (const [name, a] of attrs) g.setAttribute(name, a);
-      g.setIndex(index);
-    }
+    for (const geos of sets) splitSpecies(geos, attrs, index);
   });
+}
+
+const FAUNA_ATTRS = ['position', 'normal', 'aRig', 'aPivot', 'aMP'];
+
+/**
+ * Points geos[sp] (one per species) at the animals' vertices with an index of only the triangles
+ * of that species: those with any vertex whose aMP.y is sp. Vertices no triangle of the index
+ * uses are never run, so an animal costs its own species' triangles rather than every species'.
+ * The shader still drops what isn't the instance's own, so what is drawn is the same as before.
+ * A geometry without an index is read as one triangle per three vertices.
+ */
+function splitSpecies(geos: THREE.InstancedBufferGeometry[], attrs: Array<[string, THREE.BufferAttribute | THREE.InterleavedBufferAttribute]>, index: THREE.BufferAttribute | null): void {
+  const mp = attrs.find((a) => a[0] === 'aMP')?.[1];
+  if (!mp) return;
+  const nv = mp.count;
+  const n = index ? index.count : nv;
+  const at = (k: number) => (index ? index.getX(k) : k);
+  const lists: number[][] = geos.map(() => []);
+  for (let k = 0; k + 2 < n; k += 3) {
+    const a = at(k);
+    const b = at(k + 1);
+    const c = at(k + 2);
+    const sa = Math.round(mp.getY(a));
+    const sb = Math.round(mp.getY(b));
+    const sc = Math.round(mp.getY(c));
+    lists[sa]?.push(a, b, c);
+    if (sb !== sa) lists[sb]?.push(a, b, c);
+    if (sc !== sa && sc !== sb) lists[sc]?.push(a, b, c);
+  }
+  const big = nv > 65535;
+  geos.forEach((g, sp) => {
+    for (const [name, a] of attrs) g.setAttribute(name, a);
+    g.setIndex(new THREE.BufferAttribute(big ? new Uint32Array(lists[sp]) : new Uint16Array(lists[sp]), 1));
+  });
+}
+
+/** One geometry per species: the built animals now, the modelled ones when they arrive. */
+function faunaTargets(): THREE.InstancedBufferGeometry[] {
+  const base = faunaGeometry();
+  const geos = Array.from({ length: SPECIES }, () => new THREE.InstancedBufferGeometry());
+  splitSpecies(
+    geos,
+    FAUNA_ATTRS.map((name) => [name, base.getAttribute(name)]),
+    base.getIndex(),
+  );
+  modelledFauna([geos]);
+  return geos;
+}
+
+/** One species' draw: its own instance buffers, filled in the order its animals are put. */
+class Batch {
+  readonly iPos: Inst;
+  readonly iUp: Inst;
+  readonly iMot: Inst;
+  readonly iCoat: Inst;
+  readonly mesh: THREE.Mesh;
+  n = 0;
+  constructor(
+    readonly geo: THREE.InstancedBufferGeometry,
+    mat: THREE.Material,
+    cap: number,
+  ) {
+    this.iPos = new Inst(cap);
+    this.iUp = new Inst(cap);
+    this.iMot = new Inst(cap);
+    this.iCoat = new Inst(cap);
+    geo.setAttribute('iPos', this.iPos.attr);
+    geo.setAttribute('iUp', this.iUp.attr);
+    geo.setAttribute('iMot', this.iMot.attr);
+    geo.setAttribute('iCoat', this.iCoat.attr);
+    geo.instanceCount = 0;
+    this.mesh = new THREE.Mesh(geo, mat);
+    this.mesh.frustumCulled = false;
+    this.mesh.visible = false;
+  }
+
+  /** Draw the first n instances (skipped altogether with none) and upload just those. */
+  commit(): void {
+    this.geo.instanceCount = this.n;
+    this.mesh.visible = this.n > 0;
+    if (this.n === 0) return;
+    for (const b of [this.iPos, this.iUp, this.iMot, this.iCoat]) {
+      b.attr.clearUpdateRanges();
+      b.attr.addUpdateRange(0, this.n * 4);
+      b.attr.needsUpdate = true;
+    }
+  }
 }
 
 // ------------------------------------------------------------------ shaders
@@ -1398,12 +1482,9 @@ export class Fauna {
   private readonly herderList: Herder[] = [];
 
   private readonly world: World;
-  private readonly geo: THREE.InstancedBufferGeometry;
   private readonly mat: THREE.ShaderMaterial;
-  private readonly iPos = new Inst(CAP);
-  private readonly iUp = new Inst(CAP);
-  private readonly iMot = new Inst(CAP);
-  private readonly iCoat = new Inst(CAP);
+  /** One draw per species (by sp); each can hold the whole cap. */
+  private readonly batches: Batch[];
   private n = 0;
   private readonly herds = new Map<number, Herd>();
   private readonly marks: Landmark[] = [];
@@ -1415,22 +1496,17 @@ export class Fauna {
   constructor(world: World, uniforms: Uniforms) {
     this.world = world;
     this.group.name = 'fauna';
-    this.geo = faunaGeometry();
-    this.geo.setAttribute('iPos', this.iPos.attr);
-    this.geo.setAttribute('iUp', this.iUp.attr);
-    this.geo.setAttribute('iMot', this.iMot.attr);
-    this.geo.setAttribute('iCoat', this.iCoat.attr);
-    this.geo.instanceCount = 0;
-    modelledFauna([this.geo]);
     this.mat = new THREE.ShaderMaterial({ uniforms: { ...uniforms, uDetail: { value: detailTexture() } }, vertexShader: vert, fragmentShader: frag, side: THREE.DoubleSide });
-    const mesh = new THREE.Mesh(this.geo, this.mat);
-    mesh.frustumCulled = false;
-    mesh.name = 'fauna-draw';
-    this.group.add(mesh);
+    this.batches = faunaTargets().map((g, sp) => {
+      const b = new Batch(g, this.mat, CAP);
+      b.mesh.name = `fauna-draw-${sp}`;
+      this.group.add(b.mesh);
+      return b;
+    });
   }
 
   dispose(): void {
-    this.geo.dispose();
+    for (const b of this.batches) b.geo.dispose();
     this.mat.dispose();
     this.group.clear();
   }
@@ -2008,6 +2084,7 @@ export class Fauna {
     }
     this.stepCall(dt, px, pz);
     this.n = 0;
+    for (const b of this.batches) b.n = 0;
     let nearestFox = Infinity;
     for (const h of this.herds.values()) {
       // who is out at this hour
@@ -2064,8 +2141,7 @@ export class Fauna {
       if (nearestFox < 220 && this.onCall) this.onCall(FOX, nearestFox);
     }
     this.putRidden(dt, f);
-    this.geo.instanceCount = this.n;
-    this.iPos.attr.needsUpdate = this.iUp.attr.needsUpdate = this.iMot.attr.needsUpdate = this.iCoat.attr.needsUpdate = true;
+    for (const b of this.batches) b.commit();
   }
 
   private stepHerd(h: Herd, f: FrameState, dt: number, px: number, pz: number): void {
@@ -2343,23 +2419,27 @@ export class Fauna {
 
   private put(a: Animal, x: number, y: number, z: number, ux: number, uy: number, uz: number, look: number, gait: number, pose: number, scale: number, yaw = a.yaw, ph = a.ph): void {
     if (scale < 0.01 || this.n >= this.cap) return;
-    const o = this.n * 4;
-    this.iPos.arr[o] = x;
-    this.iPos.arr[o + 1] = y;
-    this.iPos.arr[o + 2] = z;
-    this.iPos.arr[o + 3] = yaw;
-    this.iUp.arr[o] = ux;
-    this.iUp.arr[o + 1] = uy;
-    this.iUp.arr[o + 2] = uz;
-    this.iUp.arr[o + 3] = look;
-    this.iMot.arr[o] = ph;
-    this.iMot.arr[o + 1] = gait;
-    this.iMot.arr[o + 2] = pose;
-    this.iMot.arr[o + 3] = scale;
-    this.iCoat.arr[o] = a.coat[0];
-    this.iCoat.arr[o + 1] = a.coat[1];
-    this.iCoat.arr[o + 2] = a.coat[2];
-    this.iCoat.arr[o + 3] = a.sp + a.seed;
+    // into its own species' draw (seed < 0.999, so iCoat.w's whole part is a.sp, as the shader reads it)
+    const b = this.batches[a.sp];
+    if (!b) return;
+    const o = b.n * 4;
+    b.iPos.arr[o] = x;
+    b.iPos.arr[o + 1] = y;
+    b.iPos.arr[o + 2] = z;
+    b.iPos.arr[o + 3] = yaw;
+    b.iUp.arr[o] = ux;
+    b.iUp.arr[o + 1] = uy;
+    b.iUp.arr[o + 2] = uz;
+    b.iUp.arr[o + 3] = look;
+    b.iMot.arr[o] = ph;
+    b.iMot.arr[o + 1] = gait;
+    b.iMot.arr[o + 2] = pose;
+    b.iMot.arr[o + 3] = scale;
+    b.iCoat.arr[o] = a.coat[0];
+    b.iCoat.arr[o + 1] = a.coat[1];
+    b.iCoat.arr[o + 2] = a.coat[2];
+    b.iCoat.arr[o + 3] = a.sp + a.seed;
+    b.n++;
     this.n++;
   }
 }
@@ -2379,34 +2459,30 @@ export interface SheetAnimal {
 
 /** A still or animated row of animals for the dev review page (characters.html?animals). */
 export function faunaSheet(uniforms: Uniforms, list: SheetAnimal[]): { group: THREE.Group; update(dt: number): void } {
-  const geo = faunaGeometry();
-  const P = new Inst(list.length);
-  const U = new Inst(list.length);
-  const M = new Inst(list.length);
-  const C = new Inst(list.length);
-  geo.setAttribute('iPos', P.attr);
-  geo.setAttribute('iUp', U.attr);
-  geo.setAttribute('iMot', M.attr);
-  geo.setAttribute('iCoat', C.attr);
-  geo.instanceCount = list.length;
-  modelledFauna([geo]);
   const mat = new THREE.ShaderMaterial({ uniforms: { ...uniforms, uDetail: { value: detailTexture() } }, vertexShader: vert, fragmentShader: frag, side: THREE.DoubleSide });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.frustumCulled = false;
+  const counts = new Array<number>(SPECIES).fill(0);
+  // each animal's slot in its own species' draw
+  const slot = list.map((a) => counts[a.sp]++);
   const group = new THREE.Group();
-  group.add(mesh);
+  const batches = faunaTargets().map((g, sp) => {
+    const b = new Batch(g, mat, Math.max(1, counts[sp]));
+    b.n = counts[sp];
+    group.add(b.mesh);
+    return b;
+  });
   const ph = list.map((_, i) => i * 0.37);
   const write = () => {
     list.forEach((a, i) => {
-      const o = i * 4;
+      const b = batches[a.sp];
+      const o = slot[i] * 4;
       const fly = a.sp === VULTURE;
-      P.arr.set([a.x, fly ? 1.4 : 0, a.z, a.facing], o);
-      U.arr.set([0, 1, 0, 0], o);
-      M.arr.set([ph[i] % 1, fly ? 0.5 : a.gait, a.pose ?? 0, a.scale ?? 1], o);
+      b.iPos.arr.set([a.x, fly ? 1.4 : 0, a.z, a.facing], o);
+      b.iUp.arr.set([0, 1, 0, 0], o);
+      b.iMot.arr.set([ph[i] % 1, fly ? 0.5 : a.gait, a.pose ?? 0, a.scale ?? 1], o);
       const c = SPEC[a.sp].coat;
-      C.arr.set([c[0], c[1], c[2], a.sp + ((i * 0.137) % 0.9)], o);
+      b.iCoat.arr.set([c[0], c[1], c[2], a.sp + ((i * 0.137) % 0.9)], o);
     });
-    P.attr.needsUpdate = U.attr.needsUpdate = M.attr.needsUpdate = C.attr.needsUpdate = true;
+    for (const b of batches) b.commit();
   };
   write();
   return {
