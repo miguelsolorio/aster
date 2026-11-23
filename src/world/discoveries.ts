@@ -12,7 +12,8 @@ import { MAX_CAVERNS, TERRAIN, writeCaverns, type Cave, type Cavern, type Desert
 import { rockCapVert, terrainFrag } from '../render/terrainShaders';
 import { CITY_CELL } from '../city/placement';
 import { Solids, type SolidKind } from './solids';
-import { createDeep } from './deep/index';
+import { assembleDeep, createDeep, type DeepData } from './deep/index';
+import { DeepAhead } from './deep/deepAhead';
 import { frostLayout, frostRegion, frostCover, frostWayMarks, type FrostLayout, type FrostPoint, type FrostRegion } from './frost';
 import { footVillages, type FootVillage } from './foothills';
 import { footVillageFolk, hamletFolk, snowVillageFolk, towerFolk, type FolkMark, type FolkRole, type HamletHouse } from './villagers';
@@ -58,7 +59,8 @@ const NO_VILLAGES: FootVillage[] = [];
 const GROVE_REACH = 260; // metres from a river that counts as beside it
 const CAVERN_P = 1; // chance a cell hides a cavern where the ground suits one: measured, about one cell in two ends up with one (most of the rest are rock, salt or river)
 const CAVERN_BUILD_R = 900; // an open cavern's roof is built inside this
-const DEEP_BUILD_R = 500; // and the deep under it inside this of its hole
+const DEEP_PLAN_R = 900; // the deep under an open cavern is asked of the worker inside this of its hole
+const DEEP_BUILD_R = 500; // and must exist inside this (built here, at once, if the worker has not brought it)
 const DEEP_DROP_R = 900; // a deep is let go beyond this (never while the wanderer is in it)
 const DEEP_MAX = 2; // how many deeps exist at once
 const DEEP_MIN = 280; // the room a deep is given, each way (m)
@@ -75,6 +77,7 @@ const HOLLOW_R = 30; // a strike sounds hollow within this of a sealed cavern (m
 const DIG_R = 4.5; // and counts toward breaking through within this of the spot
 const DIG_HITS = 4; // strikes on the spot before the sand gives way
 const DRAIN = 4.5; // seconds the sand takes to run out
+const DEEP_NEED_OPEN = 0.3; // a draining cavern's deep is built here, at once, if the worker has not brought it by this much open
 const LAMP_KEY = -7; // the site keys of the miner's lost lamps count down from here (massif finds are far below)
 // The keys of the wrecks a storm uncovers count down from here, worked out from where each lies
 // (so a wreck keeps its key across visits): under every key the cells, caverns, frostland and
@@ -3514,6 +3517,14 @@ export class Discoveries {
   private readonly deeps: CavernSite[] = [];
   /** The one the wanderer is down in, if any. */
   private inside: CavernSite | null = null;
+  /** Deeps carved, meshed and baked off the main thread, asked for before they are needed. */
+  private readonly ahead = new DeepAhead();
+  /**
+   * A deep's meshes have just been made, before they are first drawn: for the renderer to
+   * compile its shaders and upload its textures ahead of that. When it returns a promise, a
+   * deep that was built ahead of need is kept hidden until it settles.
+   */
+  onDeep: ((obj: THREE.Object3D) => Promise<unknown> | void) | null = null;
   private readonly glowOut = [0, 0, 0, 0];
   /** How much detail a deep is built with: 0 high, 1 low, 2 mobile. One already built keeps what it had. */
   tier: 0 | 1 | 2 = 0;
@@ -3955,15 +3966,35 @@ export class Discoveries {
     };
   }
 
-  /** Build the deep under an open cavern (a hitch of a tenth of a second or so: once, never per frame). */
-  private buildDeep(cs: CavernSite): void {
+  /**
+   * Make the deep under an open cavern: from what the worker built (quick: its arrays are only
+   * wrapped into meshes), or, without that, all of it here (a hitch of a tenth of a second or
+   * so: once, never per frame).
+   */
+  private buildDeep(cs: CavernSite, data: DeepData | null = null): void {
     if (cs.deep) return;
-    const deep = createDeep(this.specOf(cs), this.u);
+    const deep = data ? assembleDeep(data, this.u) : createDeep(this.specOf(cs), this.u);
+    this.ahead.forget(cs.key);
     if (this.taken.has(cs.key)) deep.takeRelic();
     if (this.woken.has(cs.key)) deep.wake(true);
     cs.deep = deep;
     this.deeps.push(cs);
     this.group.add(deep.group);
+    // Its shaders compiled and its textures uploaded before it is first drawn. One built ahead
+    // of need is out of sight meanwhile; one needed now is drawn at once, as before.
+    const warm = this.onDeep?.(deep.group);
+    if (data && warm) {
+      deep.group.visible = false;
+      const show = () => {
+        deep.group.visible = true;
+      };
+      warm.then(show, show);
+    }
+  }
+
+  /** The worker's build of a cavern's deep, if it is done and from the spec the cavern has now. */
+  private aheadOf(cs: CavernSite): DeepData | null {
+    return this.ahead.take(cs.key, this.specOf(cs));
   }
 
   private dropDeep(cs: CavernSite): void {
@@ -3977,9 +4008,10 @@ export class Discoveries {
   }
 
   /**
-   * Lets go of deeps that are far off, and builds the one under the nearest open cavern in
-   * range, keeping to DEEP_MAX of them. The one the wanderer is in is never let go. Returns
-   * whether it built one.
+   * Lets go of deeps that are far off, asks the worker for those under the nearest open caverns
+   * in DEEP_PLAN_R, and makes the nearest one in range: once the worker has it, or inside
+   * DEEP_BUILD_R whether it has or not. Keeps to DEEP_MAX of them; the one the wanderer is in is
+   * never let go. Returns whether it made one.
    */
   private scanDeeps(px: number, pz: number, near: readonly CavernSite[]): boolean {
     const d = (c: CavernSite) => Math.hypot(c.hx - px, c.hz - pz);
@@ -3987,9 +4019,25 @@ export class Discoveries {
       const cs = this.deeps[i];
       if (cs !== this.inside && cs !== this.draining && d(cs) > DEEP_DROP_R) this.dropDeep(cs);
     }
-    // (near is sorted nearest first)
+    // (near is sorted nearest first) what to have the worker build: the nearest DEEP_MAX open
+    // caverns in reach, the one draining, and a sealed one being dug into; anything else asked
+    // for earlier is let go
+    const want = new Set<number>();
+    if (this.draining && !this.draining.deep) want.add(this.draining.key);
+    let open = 0;
     for (const cs of near) {
-      if (cs.deep || cs.cav.open <= 0 || d(cs) > DEEP_BUILD_R) continue;
+      if (d(cs) > DEEP_PLAN_R) continue;
+      if (cs.cav.open > 0) {
+        if (open++ >= DEEP_MAX || cs.deep) continue;
+        want.add(cs.key);
+        this.ahead.request(cs.key, this.specOf(cs));
+      } else if (cs.hits > 0 && this.ahead.asked(cs.key, this.specOf(cs))) want.add(cs.key);
+    }
+    this.ahead.keep(want);
+    for (const cs of near) {
+      if (cs.deep || cs.cav.open <= 0) continue;
+      // further out, only once the worker has it; inside DEEP_BUILD_R it must exist now
+      if (d(cs) > DEEP_BUILD_R && (d(cs) > DEEP_DROP_R || !this.ahead.has(cs.key, this.specOf(cs)))) continue;
       if (this.deeps.length >= DEEP_MAX) {
         // make room by letting the furthest go, if it is further than this one
         let far: CavernSite | null = null;
@@ -3997,7 +4045,7 @@ export class Discoveries {
         if (!far || d(far) <= d(cs)) return false;
         this.dropDeep(far);
       }
-      this.buildDeep(cs);
+      this.buildDeep(cs, this.aheadOf(cs));
       return true;
     }
     return false;
@@ -4096,7 +4144,11 @@ export class Discoveries {
     if (best.hits >= DIG_HITS) {
       out.broke = true;
       this.breakThrough(best);
-    } else out.level = best.hits;
+    } else {
+      out.level = best.hits;
+      // someone is digging: have the worker start on the deep now, so it is ready when the sand goes
+      this.ahead.request(best.key, this.specOf(best), true);
+    }
     this.pushCaverns();
     return out;
   }
@@ -4106,8 +4158,11 @@ export class Discoveries {
     best.cav.open = 1e-4;
     this.draining = best;
     if (!this.isBuilt(roofKey(best))) this.buildCavernSite(best);
-    // the deep is made now, while the sand runs out, so it is there when the hole opens
-    this.buildDeep(best);
+    // the deep is made while the sand runs out, so it is there when the hole opens: from the
+    // worker's build if it has one or brings it in time (see update), else here and now
+    const data = this.aheadOf(best);
+    if (data || !this.ahead.working) this.buildDeep(best, data);
+    else this.ahead.request(best.key, this.specOf(best), true);
   }
 
   /** The sealed cavern a strike at (x, z) would count toward breaking (within dig reach of its spot, none draining), or null. */
@@ -4933,6 +4988,11 @@ export class Discoveries {
     }
     // sand running out of a cavern that has just been broken into
     const dr = this.draining;
+    if (dr && !dr.deep) {
+      // its deep, as soon as the worker brings it; made here if it is late
+      const data = this.aheadOf(dr);
+      if (data || dr.cav.open >= DEEP_NEED_OPEN || !this.ahead.asked(dr.key, this.specOf(dr))) this.buildDeep(dr, data);
+    }
     if (dr && f.dt > 0) {
       dr.cav.open = Math.min(1, dr.cav.open + f.dt / DRAIN);
       this.pushCaverns();

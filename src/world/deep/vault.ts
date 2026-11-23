@@ -5,9 +5,8 @@
 // a broad stair along the terraces, a tunnel inside the rock, and a collapse worn into a rubble slope.
 // Side scenes (a shrine, a store, a pool, a collapsed seam) lie at the ends of short side routes.
 
-import type { Uniforms } from '../../game/contract';
 import type { DeepSpec } from './types';
-import { DeepBuilder, TEAL, mulberry32, type BuiltDeep } from './builder';
+import { DeepBuilder, TEAL, mulberry32, type DeepData } from './builder';
 import type { Pt } from './spans';
 
 /** What was built where, local [u, y, v]: for checks. */
@@ -36,9 +35,9 @@ export interface VaultLayout {
   stairs: Pt[];
 }
 
-const layouts = new WeakMap<object, VaultLayout>();
+/** A built deep's layout, for checks: left on it by the build (see DeepData.extra). */
 export function vaultLayout(d: object): VaultLayout | undefined {
-  return layouts.get(d);
+  return (d as { vault?: VaultLayout }).vault;
 }
 
 function hash2(a: number, b: number): number {
@@ -53,7 +52,7 @@ const smooth = (t: number): number => {
   return x * x * (3 - 2 * x);
 };
 
-export function buildVault(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
+export function buildVault(spec: DeepSpec): DeepData {
   const tier = spec.tier;
   const lid = spec.lid;
   const rnd = mulberry32(Math.imul(spec.seed | 0, 0x9e3779b1) ^ 0x51a7a);
@@ -108,7 +107,7 @@ export function buildVault(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   const hT = D / T;
   const lvl = (k: number): number => (k >= T ? Yf : yL - k * hT);
 
-  const b = new DeepBuilder(spec, uniforms, { cell: tier === 2 ? 2 : 1, yMin: Yf - 4, maxSpans: 7, wallStep: [6, 7, 8][tier] });
+  const b = new DeepBuilder(spec, { cell: tier === 2 ? 2 : 1, yMin: Yf - 4, maxSpans: 7, wallStep: [6, 7, 8][tier] });
   const g = b.grid;
 
   // ---- the outline: a wandering edge, different on each side
@@ -1113,7 +1112,6 @@ export function buildVault(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
     }
   }
 
-
   for (const f of props) f();
   b.stone(uF + 34, yD, vMid, 0);
   L.ledge = [wNr(vP) + 1, yL, vP];
@@ -1121,6 +1119,6 @@ export function buildVault(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   L.stone = [uF + 32.4, yD + 1.6, vMid];
   const built = b.finish({ ledge: [wNr(vP) + 1, yL, vP], centre: [uF + 1, yD, vMid], relic });
   L.relic = relic;
-  layouts.set(built, L);
+  built.extra.vault = L;
   return built;
 }

@@ -10,9 +10,8 @@
 // joined by the bridge; rooms open off them and off the floor; alleys run behind the walls and
 // come back; side scenes lie at the ends of short passages.
 
-import type { Uniforms } from '../../game/contract';
 import type { DeepSpec } from './types';
-import { DeepBuilder, TEAL, mulberry32, type BuiltDeep } from './builder';
+import { DeepBuilder, TEAL, mulberry32, type DeepData } from './builder';
 import type { Pt } from './spans';
 
 /** What was built where, local [u, y, v]: for checks. */
@@ -47,9 +46,9 @@ export interface StreetLayout {
   stairs: Pt[];
 }
 
-const layouts = new WeakMap<object, StreetLayout>();
+/** A built deep's layout, for checks: left on it by the build (see DeepData.extra). */
 export function streetLayout(d: object): StreetLayout | undefined {
-  return layouts.get(d);
+  return (d as { street?: StreetLayout }).street;
 }
 
 function hash2(a: number, b: number): number {
@@ -65,7 +64,7 @@ const smooth = (t: number): number => {
 };
 const plat = (u: number, a: number, z: number, ramp: number): number => smooth((u - a) / ramp) * (1 - smooth((u - z) / ramp));
 
-export function buildStreet(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
+export function buildStreet(spec: DeepSpec): DeepData {
   const tier = spec.tier;
   const lid = spec.lid;
   const rnd = mulberry32(Math.imul(spec.seed | 0, 0x9e3779b1) ^ 0x57ee7);
@@ -106,7 +105,7 @@ export function buildStreet(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   const H = Yc - Yf;
   const yM = yL - D / 2; // the galleries, the stair's landing, the bridge
 
-  const b = new DeepBuilder(spec, uniforms, { cell: tier === 2 ? 2 : 1, yMin: Yf - 4, maxSpans: 12, wallStep: [2.5, 5, 5][tier] });
+  const b = new DeepBuilder(spec, { cell: tier === 2 ? 2 : 1, yMin: Yf - 4, maxSpans: 12, wallStep: [2.5, 5, 5][tier] });
   const g = b.grid;
 
   // ---- along u: the ledge, the rubble slope below it, the basin it falls into
@@ -1758,6 +1757,6 @@ export function buildStreet(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   const ledge: Pt = [uH0 + 2, yL, vP];
   L.ledge = ledge;
   const built = b.finish({ ledge, centre: L.centre, relic: L.relic });
-  layouts.set(built, L);
+  built.extra.street = L;
   return built;
 }

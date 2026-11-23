@@ -1,9 +1,10 @@
 // The builder every kind of deep is written against.
 //
 // A kind makes a DeepBuilder, carves and fills its span grid (b.grid), stands props and lamps
-// in it, and calls finish(), which meshes the rock, bakes the light and hands back a Deep.
+// in it, and calls finish(), which meshes the rock, bakes the light and hands back what the deep
+// is made of as plain data (DeepData); assembleDeep (assemble.ts) makes that into a Deep.
 //
-//   const b = new DeepBuilder(spec, uniforms, { cell: 1, yMin: -90 });
+//   const b = new DeepBuilder(spec, { cell: 1, yMin: -90 });
 //   b.holeStair();                                     // the way down the hole, to [4, b.foot, 0]
 //   b.grid.roughNow = 0.35;                            // how craggy what is cut next will be
 //   b.grid.carveBox(20, -30, 120, 30, -80, -20);       // a hall
@@ -15,15 +16,16 @@
 //   return b.finish({ ledge: [20, -50, 0], centre: [118, -80, 0], relic: null });
 //
 // Everything is in the deep's own frame: u along, v across, y up from the antechamber floor.
-// A point is [u, y, v]. finish() places the result in the world.
+// A point is [u, y, v]. assembleDeep places the result in the world.
+//
+// Nothing here draws or touches the page (three is used for its maths only), so all of it can
+// run on a worker: see data.ts and deepWorker.ts.
 
 import * as THREE from 'three';
-import type { Uniforms } from '../../game/contract';
 import { DEEP_HOLE, type Deep, type DeepSpec } from './types';
 import { HEADROOM, OPEN, SpanGrid, type Pt } from './spans';
-import { Lights, lightByte, type Lamp } from './light';
+import { Lights, lightByte, type Lamp, type Shaft } from './light';
 import { VB, meshGrid, meshWater } from './mesher';
-import { deepMaterials, type DeepMaterials } from './material';
 
 export interface BuilderOpts {
   /** Nominal cell size, metres: about 2 for great halls, 1 for passages a person fills. */
@@ -84,9 +86,53 @@ export interface DeepStats {
   meshMs: number;
   bakeMs: number;
   totalMs: number;
+  /** Milliseconds making the data into meshes (on the main thread, wherever the rest was done). */
+  assembleMs: number;
   /** Cuts refused for being outside the room, and spans dropped from full cells: both should be 0. */
   refused: number;
   overflow: number;
+}
+
+/** A bounding sphere: centre x, y, z and radius, local to the deep's group. */
+export type Sphere4 = [number, number, number, number];
+
+/** Glows as their quads: four vertices each, two triangles. */
+export interface GlowData {
+  pos: Float32Array;
+  corner: Float32Array;
+  size: Float32Array;
+  col: Float32Array;
+  phase: Float32Array;
+  index: Uint16Array;
+  sphere: Sphere4;
+}
+
+/**
+ * Everything a built deep is made of, before anything is drawn: what finish() hands back. All of
+ * it is plain data (typed arrays, numbers, the span grid's arrays), worked out from the spec
+ * alone, so it comes out the same on a worker as on the page (see data.ts, deepWorker.ts), and
+ * assembleDeep wraps it into meshes and the Deep. Local frame throughout.
+ */
+export interface DeepData {
+  spec: DeepSpec;
+  /** The rock and air, with every solid prop filled in: what feet and eyes are tested against. */
+  grid: SpanGrid;
+  /** Every light, the relic's (unbaked) included, and the shafts of daylight. */
+  lamps: Lamp[];
+  shafts: Shaft[];
+  /** The rock and everything standing on it: one geometry. */
+  rock: { pos: Float32Array; tint: Uint8Array; light: Uint8Array; index: Uint32Array; sphere: Sphere4 };
+  water: { pos: Float32Array; light: Uint8Array; sphere: Sphere4 } | null;
+  beams: { pos: Float32Array; fade: Float32Array; sphere: Sphere4 } | null;
+  glows: GlowData | null;
+  /** The relic: its own geometry (unlit), its glow, and which of `lamps` is its light. */
+  relic: { pos: Float32Array; tint: Uint8Array; sphere: Sphere4; glow: GlowData; lamp: number } | null;
+  /** The waking stone's reach point, or null. */
+  stone: Pt | null;
+  marks: Marks;
+  stats: DeepStats;
+  /** What a kind leaves for its checks (its layout): plain data, carried onto the Deep as properties. */
+  extra: Record<string, unknown>;
 }
 
 /** A Deep with what built it left attached, for kinds and checks. */
@@ -150,7 +196,6 @@ export class DeepBuilder {
   /** Paint table: [r, g, b, kind]. Index 0 is bare rock. */
   readonly paints: number[][] = [[1, 1, 1, 0]];
 
-  private readonly uniforms: Uniforms | undefined;
   private readonly wallStep: number;
   private readonly props = new VB();
   private readonly blockers: Blocker[] = [];
@@ -163,9 +208,8 @@ export class DeepBuilder {
   /** The sky patch's paint. */
   private readonly skyPaint: number;
 
-  constructor(spec: DeepSpec, uniforms: Uniforms | undefined, opts: BuilderOpts) {
+  constructor(spec: DeepSpec, opts: BuilderOpts) {
     this.spec = spec;
-    this.uniforms = uniforms;
     this.tier = spec.tier;
     this.rng = mulberry32((spec.seed ^ 0x9e3779b9) + spec.kind * 7919);
     this.foot = spec.lid - 2.9;
@@ -488,8 +532,13 @@ export class DeepBuilder {
 
   // ---------------------------------------------------------------- finish
 
-  /** Mesh, bake, and hand over the built deep. Nothing may be carved after this. */
-  finish(marks: Marks): BuiltDeep {
+  /**
+   * Mesh and bake, and hand over what the built deep is made of. Nothing may be carved after
+   * this. What comes back is plain data (typed arrays, numbers, the grid), the same wherever it
+   * is worked out, so it can be made off the main thread; assembleDeep (assemble.ts) turns it
+   * into meshes and the Deep that answers in world space.
+   */
+  finish(marks: Marks): DeepData {
     const { spec, grid, lights } = this;
     const t1 = now();
     lights.index(grid);
@@ -540,36 +589,20 @@ export class DeepBuilder {
     const idx = new Uint32Array(vb.ni + pv.ni);
     idx.set(vb.idx.subarray(0, vb.ni));
     for (let i = 0; i < pv.ni; i++) idx[vb.ni + i] = pv.idx[i] + vb.n;
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-    geo.setAttribute('aTint', new THREE.BufferAttribute(tint, 4, true));
-    geo.setAttribute('aLight', new THREE.BufferAttribute(lgt, 4, true));
-    geo.setIndex(new THREE.BufferAttribute(idx, 1));
-    geo.computeBoundingSphere();
+    const rock = { pos, tint, light: lgt, index: idx, sphere: sphereOf(pos) };
 
-    const mats = deepMaterials(this.uniforms);
-    const group = new THREE.Group();
-    group.name = 'deep';
-    group.position.set(spec.x, spec.y, spec.z);
-    group.rotation.y = Math.atan2(-spec.dz, spec.dx);
-    const geos: THREE.BufferGeometry[] = [geo];
-    group.add(new THREE.Mesh(geo, mats.rock));
-
-    const water = meshWater(grid);
-    if (water) {
-      const wg = new THREE.BufferGeometry();
-      wg.setAttribute('position', new THREE.BufferAttribute(water, 3));
-      const wl = new Uint8Array((water.length / 3) * 4);
+    let water: DeepData['water'] = null;
+    const wpos = meshWater(grid);
+    if (wpos) {
+      const wl = new Uint8Array((wpos.length / 3) * 4);
       const o4 = new Float32Array(4);
-      for (let i = 0; i < water.length / 3; i++) {
-        lights.sample(water[i * 3], water[i * 3 + 1] + 0.2, water[i * 3 + 2], 0, 1, 0, o4);
+      for (let i = 0; i < wpos.length / 3; i++) {
+        lights.sample(wpos[i * 3], wpos[i * 3 + 1] + 0.2, wpos[i * 3 + 2], 0, 1, 0, o4);
         for (let q = 0; q < 4; q++) wl[i * 4 + q] = lightByte(o4[q]);
       }
-      wg.setAttribute('aLight', new THREE.BufferAttribute(wl, 4, true));
-      wg.computeBoundingSphere();
-      geos.push(wg);
-      group.add(new THREE.Mesh(wg, mats.water));
+      water = { pos: wpos, light: wl, sphere: sphereOf(wpos) };
     }
+    let beams: DeepData['beams'] = null;
     if (this.beams.length > 0) {
       const n = this.beams.length / 4;
       const bp = new Float32Array(n * 3);
@@ -580,30 +613,12 @@ export class DeepBuilder {
         bp[i * 3 + 2] = this.beams[i * 4 + 2];
         bf[i] = this.beams[i * 4 + 3];
       }
-      const bg = new THREE.BufferGeometry();
-      bg.setAttribute('position', new THREE.BufferAttribute(bp, 3));
-      bg.setAttribute('aFade', new THREE.BufferAttribute(bf, 1));
-      bg.computeBoundingSphere();
-      geos.push(bg);
-      const bm = new THREE.Mesh(bg, mats.beam);
-      bm.renderOrder = 9;
-      group.add(bm);
+      beams = { pos: bp, fade: bf, sphere: sphereOf(bp) };
     }
-    if (this.glows.length > 0) {
-      const gm = glowMesh(this.glows, mats.glow);
-      geos.push(gm.geometry);
-      group.add(gm);
-    }
-
-    // the waking stone: asleep (-1), or woken at a time on the same clock as the flames
-    const stoneAt = this.stoneAt;
-    if (stoneAt) mats.stone.value.set(stoneAt[0], stoneAt[1], stoneAt[2]);
-    let wokenAt = -1;
-    let instant = false;
+    const glows = this.glows.length > 0 ? glowData(this.glows) : null;
 
     // the relic is its own small thing, so it can be lifted off its stone
-    let relicObj: THREE.Group | null = null;
-    let relicLamp: Lamp | null = null;
+    let relic: DeepData['relic'] = null;
     if (marks.relic) {
       const [ru, ry, rv] = marks.relic;
       const rb = new VB();
@@ -618,231 +633,44 @@ export class DeepBuilder {
         }
         rb.tri(i0, i0 + 1, i0 + 2);
       }
-      const rg = new THREE.BufferGeometry();
-      rg.setAttribute('position', new THREE.BufferAttribute(rb.pos.slice(0, rb.n * 3), 3));
-      rg.setAttribute('aTint', new THREE.BufferAttribute(rb.tint.slice(0, rb.n * 4), 4, true));
-      rg.setAttribute('aLight', new THREE.BufferAttribute(new Uint8Array(rb.n * 4), 4, true));
-      rg.computeBoundingSphere();
-      const gl = glowMesh([ru, ry, rv, 0.9, 1, 0.72, 0.38, -1, ru, ry, rv, 3.2, 1, 0.72, 0.38, -1], mats.glow);
-      relicObj = new THREE.Group();
-      relicObj.add(new THREE.Mesh(rg, mats.rock), gl);
-      geos.push(rg, gl.geometry);
-      group.add(relicObj);
-      relicLamp = { u: ru, y: ry, v: rv, reach: 7, r: 1, g: 0.72, b: 0.38, strength: 0.8, baked: false, live: true };
-      lights.lamps.push(relicLamp);
-      lights.index(grid);
+      const rpos = rb.pos.slice(0, rb.n * 3);
+      lights.lamps.push({ u: ru, y: ry, v: rv, reach: 7, r: 1, g: 0.72, b: 0.38, strength: 0.8, baked: false, live: true });
+      relic = {
+        pos: rpos,
+        tint: rb.tint.slice(0, rb.n * 4),
+        sphere: sphereOf(rpos),
+        glow: glowData([ru, ry, rv, 0.9, 1, 0.72, 0.38, -1, ru, ry, rv, 3.2, 1, 0.72, 0.38, -1]),
+        lamp: lights.lamps.length - 1,
+      };
     }
 
     const t4 = now();
     const stats: DeepStats = {
-      triangles: idx.length / 3 + this.beams.length / 12 + (this.glows.length / 8) * 2 + (water ? water.length / 9 : 0),
+      triangles: idx.length / 3 + this.beams.length / 12 + (this.glows.length / 8) * 2 + (wpos ? wpos.length / 9 : 0),
       vertices: nv,
       cells: grid.nu * grid.nv,
       lamps: lights.lamps.length,
-      drawCalls: group.children.length + (relicObj ? 1 : 0),
+      // the rock, the water, the beams, the glows, and the relic with its glow
+      drawCalls: 1 + (water ? 1 : 0) + (beams ? 1 : 0) + (glows ? 1 : 0) + (relic ? 2 : 0),
       carveMs: t1 - this.t0,
       meshMs: t2 - t1,
       bakeMs: t3 - t2,
       totalMs: t4 - this.t0,
+      assembleMs: 0,
       refused: grid.refused,
       overflow: grid.overflow,
     };
-
-    // ---- the built deep: everything below answers in world space
-    const { x: ox, y: oy, z: oz, dx, dz, u1, v0, v1, lid } = spec;
-    const HU = DEEP_HOLE.halfU;
-    const HV = DEEP_HOLE.halfV;
-    const world = (p: Pt): [number, number, number] => [ox + p[0] * dx - p[2] * dz, oy + p[1], oz + p[0] * dz + p[2] * dx];
-    const step = Math.min(0.3, Math.min(grid.cu, grid.cv) * 0.4);
-    /** Whether the grid has a say at a local point; elsewhere a sight line passes. */
-    const ours = (u: number, y: number, v: number): boolean => (u >= -HU && u <= HU && v >= -HV && v <= HV) || y < lid;
-    /**
-     * Whether a sight line is stopped at a local point. Under the lid and down the hole the grid
-     * says; between the lid and the antechamber floor there is only rock, whatever the grid
-     * holds (it cuts nothing there), so an eye can never rise out through a passage's roof.
-     */
-    const stops = (u: number, y: number, v: number): boolean => (ours(u, y, v) ? !grid.isAir(u, y, v) : y < -0.2);
-
-    return {
-      spec,
-      group,
-      grid,
-      stats,
-      relic: marks.relic ? world(marks.relic) : null,
-      stone: stoneAt ? world(stoneAt) : null,
-      get woken() {
-        return instant || wokenAt >= 0;
-      },
-      wake(inst) {
-        if (inst) instant = true;
-        else if (wokenAt < 0) wokenAt = mats.time.value;
-      },
-      centre: world(marks.centre),
-      ledge: world(marks.ledge),
-
-      toLocal(x, y, z, out) {
-        const rx = x - ox;
-        const rz = z - oz;
-        out[0] = rx * dx + rz * dz;
-        out[1] = y - oy;
-        out[2] = rz * dx - rx * dz;
-        return out;
-      },
-
-      floorAt(x, z, y) {
-        const rx = x - ox;
-        const rz = z - oz;
-        const u = rx * dx + rz * dz;
-        const v = rz * dx - rx * dz;
-        const ly = y - oy;
-        if (!(u >= -HU && u <= HU && v >= -HV && v <= HV)) {
-          if (ly >= lid || u < 0 || u > u1 || v < v0 || v > v1) return null;
-        }
-        return grid.floorAt(u, v, ly) + oy;
-      },
-
-      ceilAt(x, z, y) {
-        const rx = x - ox;
-        const rz = z - oz;
-        const u = rx * dx + rz * dz;
-        const v = rz * dx - rx * dz;
-        const ly = y - oy;
-        if (!ours(u, ly, v)) return Infinity;
-        return grid.ceilAt(u, v, ly) + oy;
-      },
-
-      inside(x, y, z) {
-        const rx = x - ox;
-        const rz = z - oz;
-        const u = rx * dx + rz * dz;
-        const v = rz * dx - rx * dz;
-        const ly = y - oy;
-        // under the lid, or far enough down the hole to be off the antechamber's floor
-        if (ly >= lid && !(ly < -0.3 && u >= -HU && u <= HU && v >= -HV && v <= HV)) return false;
-        return grid.isAir(u, ly + 0.3, v) || grid.isAir(u, ly, v);
-      },
-
-      sight(from, to) {
-        const fx = from.x - ox;
-        const fz = from.z - oz;
-        const au = fx * dx + fz * dz;
-        const av = fz * dx - fx * dz;
-        const ay = from.y - oy;
-        const tx = to.x - ox;
-        const tz = to.z - oz;
-        const du = tx * dx + tz * dz - au;
-        const dv = tz * dx - tx * dz - av;
-        const dy = to.y - oy - ay;
-        const d = Math.sqrt(du * du + dy * dy + dv * dv);
-        if (d < 1e-4) return 1;
-        const n = Math.min(96, Math.max(1, Math.ceil(d / step)));
-        let hit = -1;
-        for (let i = 1; i <= n; i++) {
-          const t = i / n;
-          const u = au + du * t;
-          const y = ay + dy * t;
-          const v = av + dv * t;
-          if (stops(u, y, v)) {
-            hit = i;
-            break;
-          }
-        }
-        if (hit < 0) return 1;
-        // close in on where it meets the rock
-        let lo = (hit - 1) / n;
-        let hi = hit / n;
-        for (let q = 0; q < 5; q++) {
-          const t = (lo + hi) * 0.5;
-          const u = au + du * t;
-          const y = ay + dy * t;
-          const v = av + dv * t;
-          if (stops(u, y, v)) hi = t;
-          else lo = t;
-        }
-        return lo;
-      },
-
-      glowAt(x, y, z, out) {
-        const rx = x - ox;
-        const rz = z - oz;
-        const u = rx * dx + rz * dz;
-        const v = rz * dx - rx * dz;
-        const ly = y - oy;
-        const li = lights.best(u, ly, v);
-        if (li >= 0) {
-          const l = lights.lamps[li];
-          out[0] = ox + l.u * dx - l.v * dz;
-          out[1] = oy + l.y;
-          out[2] = oz + l.u * dz + l.v * dx;
-          out[3] = l.reach;
-          return true;
-        }
-        // in a shaft's beam by day: lit from the opening
-        if (mats.sky.value > 0.3) {
-          for (const s of lights.shafts) {
-            const R = s.r + 0.06 * (s.y - ly) + 1;
-            if ((s.u - u) * (s.u - u) + (s.v - v) * (s.v - v) < R * R && ly < s.y && (s.fade === undefined || s.y - ly < s.fade * 0.6)) {
-              out[0] = ox + s.u * dx - s.v * dz;
-              out[1] = oy + s.y;
-              out[2] = oz + s.u * dz + s.v * dx;
-              out[3] = (s.y - ly) * 2.5 + 20;
-              return true;
-            }
-          }
-        }
-        return false;
-      },
-
-      waterAt(x, z, y) {
-        if (!grid.water) return 0;
-        const rx = x - ox;
-        const rz = z - oz;
-        return grid.waterAt(rx * dx + rz * dz, rz * dx - rx * dz, y - oy);
-      },
-
-      wetness(x, y, z) {
-        const w = grid.water;
-        if (!w) return 0;
-        const rx = x - ox;
-        const rz = z - oz;
-        const u = rx * dx + rz * dz;
-        const v = rz * dx - rx * dz;
-        const ly = y - oy;
-        // open water within about ten metres, weighed by how near
-        let sum = 0;
-        let tot = 0;
-        for (let dj = -2; dj <= 2; dj++) {
-          for (let di = -2; di <= 2; di++) {
-            const wgt = 1 / (1 + di * di + dj * dj);
-            tot += wgt;
-            const ci = grid.cell(u + di * 4, v + dj * 4);
-            if (ci < 0) continue;
-            const lv = w[ci];
-            if (lv === lv && Math.abs(lv - ly) < 8 && grid.isAir(u + di * 4, lv + 0.2, v + dj * 4)) sum += wgt;
-          }
-        }
-        return Math.min(1, (sum / tot) * 1.6);
-      },
-
-      takeRelic() {
-        if (relicObj) relicObj.visible = false;
-        if (relicLamp) relicLamp.live = false;
-      },
-
-      update(time, day) {
-        mats.time.value = time;
-        mats.wake.value = instant ? 1e4 : wokenAt >= 0 ? time - wokenAt : -1;
-        const d = Math.min(1, Math.max(0, day));
-        mats.sky.value = 0.05 + 0.95 * d * d * (3 - 2 * d);
-      },
-
-      dispose() {
-        for (const g of geos) g.dispose();
-        mats.dispose();
-        group.removeFromParent();
-      },
-    };
+    return { spec, grid, lamps: lights.lamps, shafts: lights.shafts, rock, water, beams, glows, relic, stone: this.stoneAt, marks, stats, extra: {} };
   }
+}
+
+/** The bounding sphere three works out for these positions, as [x, y, z, radius]. */
+function sphereOf(pos: Float32Array): Sphere4 {
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.computeBoundingSphere();
+  const s = g.boundingSphere as THREE.Sphere;
+  return [s.center.x, s.center.y, s.center.z, s.radius];
 }
 
 /** Light for every vertex of vb, as bytes. Flames, minerals and sky are their own light. */
@@ -863,14 +691,15 @@ function bake(vb: VB, lights: Lights): Uint8Array {
   return out;
 }
 
-function glowMesh(g: number[], mat: THREE.Material): THREE.Mesh {
+/** The quads of a run of glows (u y v size r g b phase each), facing the eye in the shader. */
+function glowData(g: number[]): GlowData {
   const n = g.length / 8;
   const pos = new Float32Array(n * 12);
   const corner = new Float32Array(n * 8);
   const size = new Float32Array(n * 4);
   const col = new Float32Array(n * 12);
   const phase = new Float32Array(n * 4);
-  const idx = new Uint16Array(n * 6);
+  const index = new Uint16Array(n * 6);
   const C = [-1, -1, 1, -1, 1, 1, -1, 1];
   for (let i = 0; i < n; i++) {
     for (let q = 0; q < 4; q++) {
@@ -881,19 +710,9 @@ function glowMesh(g: number[], mat: THREE.Material): THREE.Mesh {
       col.set([g[i * 8 + 4], g[i * 8 + 5], g[i * 8 + 6]], v * 3);
       phase[v] = g[i * 8 + 7];
     }
-    idx.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3], i * 6);
+    index.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4, i * 4 + 2, i * 4 + 3], i * 6);
   }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setAttribute('aCorner', new THREE.BufferAttribute(corner, 2));
-  geo.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
-  geo.setAttribute('aCol', new THREE.BufferAttribute(col, 3));
-  geo.setAttribute('aPhase', new THREE.BufferAttribute(phase, 1));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1));
-  geo.computeBoundingSphere();
-  const m = new THREE.Mesh(geo, mat);
-  m.renderOrder = 10;
-  return m;
+  return { pos, corner, size, col, phase, index, sphere: sphereOf(pos) };
 }
 
 // ---------------------------------------------------------------- unit shapes
