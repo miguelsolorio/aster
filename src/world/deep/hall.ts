@@ -17,9 +17,8 @@
 // The lake is never a trap: its bed shelves down in steps a walker can climb, and stairs and
 // beaches run into the water from the quay, the podium and the shore.
 
-import type { Uniforms } from '../../game/contract';
 import type { DeepSpec } from './types';
-import { DeepBuilder, TEAL, mulberry32, type BuiltDeep } from './builder';
+import { DeepBuilder, TEAL, mulberry32, type DeepData } from './builder';
 import type { Pt } from './spans';
 
 /** What was built where, local [u, y, v]: for checks. */
@@ -61,13 +60,11 @@ export interface HallLayout {
   dropped: number;
 }
 
-const layouts = new WeakMap<object, HallLayout>();
-
 /**
  * Walk the finished place from the ledge (steps of half a metre, headroom, no deep water) and keep
  * in the layout only the doors, roofs, planks and landmarks that can be reached on foot.
  */
-function walkCheck(g: BuiltDeep['grid'], L: HallLayout): void {
+function walkCheck(g: DeepData['grid'], L: HallLayout): void {
   const K = g.K;
   const seen = new Uint8Array(g.nu * g.nv * K);
   const deepW = (k: number, ci: number): boolean => {
@@ -133,8 +130,10 @@ function walkCheck(g: BuiltDeep['grid'], L: HallLayout): void {
   }
   if (L.beacon && !ok(L.beacon)) L.beacon = null;
 }
+
+/** A built deep's layout, for checks: left on it by the build (see DeepData.extra). */
 export function hallLayout(d: object): HallLayout | undefined {
-  return layouts.get(d);
+  return (d as { hall?: HallLayout }).hall;
 }
 
 function hash2(a: number, b: number): number {
@@ -156,7 +155,7 @@ const outside = (u: number, v: number, u0: number, v0: number, u1: number, v1: n
   return Math.sqrt(du * du + dv * dv);
 };
 
-export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
+export function buildHall(spec: DeepSpec): DeepData {
   const tier = spec.tier;
   const lid = spec.lid;
   // the shape of the place comes from a generator of its own, so every tier builds the same hall
@@ -188,7 +187,7 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   const SHELF = 0.5; // and along its edges
   const LOW = Yw - BED - 2; // under everything
 
-  const b = new DeepBuilder(spec, uniforms, { cell: tier === 2 ? 2 : 1, yMin: LOW - 2, maxSpans: 7, wallStep: tier === 0 ? 3 : 6 });
+  const b = new DeepBuilder(spec, { cell: tier === 2 ? 2 : 1, yMin: LOW - 2, maxSpans: 7, wallStep: tier === 0 ? 3 : 6 });
   const g = b.grid;
   const STONE = b.paint(0.94, 0.92, 0.88, 0); // worked stone: quay, stairs, bridge
   const MOSS = b.paint(0.7, 0.84, 0.68, 0); // rock that stands in the water
@@ -1745,6 +1744,6 @@ export function buildHall(spec: DeepSpec, uniforms?: Uniforms): BuiltDeep {
   L.relic = relic;
   const built = b.finish({ ledge: L.ledge, centre: L.centre, relic });
   walkCheck(built.grid, L);
-  layouts.set(built, L);
+  built.extra.hall = L;
   return built;
 }
