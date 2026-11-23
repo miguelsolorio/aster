@@ -133,6 +133,9 @@ ${SURFACE_GLSL}
 uniform vec2 uLevelCenter; // snapped world xz of this level's centre
 uniform float uCell;       // metres per grid cell
 uniform float uLower;      // metres to sink this level (0 for the finest)
+uniform vec2 uInnerCenter; // centre of the next finer level
+uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
+uniform vec3 uRect;        // the heightmap bake: xz corner, size (0 = none)
 
 varying vec3 vW;
 varying vec3 vN;
@@ -140,13 +143,38 @@ varying vec4 vMask; // rock, salt, signed distance to the river (m), river prese
 varying float vCave; // 1 under a cave roof, rising to 2 deep in a cavern where no daylight reaches; below 0, a laid road (how trodden)
 
 void main() {
+  // A cell of the frame round a ring's hole (y = 1 + its corner, x + 2 z; see world/clipmap.ts):
+  // where the finer level covers it this frame, all four corners go to one point outside the
+  // view, so it draws nothing.
+  if (position.y > 0.5) {
+    float k = position.y - 1.0;
+    vec2 corner = vec2(mod(k, 2.0), floor(k * 0.5));
+    vec2 dd = abs(uLevelCenter + (position.xz - corner + 0.5) * uCell - uInnerCenter);
+    if (max(dd.x, dd.y) < uInnerHalf) {
+      vW = vec3(0.0);
+      vN = vec3(0.0, 1.0, 0.0);
+      vMask = vec4(0.0);
+      vCave = 0.0;
+      gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+      return;
+    }
+  }
   vec2 xz = uLevelCenter + position.xz * uCell;
   vec4 s = surface(xz);
   vec2 river = vec2(sfRiverD, sfRiverS); // read now: the next calls overwrite them
   vCave = sfCave;
-  float hx = surfaceH(xz + vec2(uCell, 0.0));
-  float hz = surfaceH(xz + vec2(0.0, uCell));
-  vN = normalize(vec3(s.x - hx, uCell, s.x - hz));
+  // Past 400 m, inside the heightmap bake, terrainFrag lights the ground from the heightmap
+  // alone and never reads vN. Where every triangle round this vertex lies there (a margin of
+  // 1.5 cells covers a cell's diagonal), the two extra surface() calls are skipped.
+  float m = 1.5 * uCell;
+  vec2 hc = abs(xz - (uRect.xy + 0.5 * uRect.z));
+  if (uRect.z >= 1.0 && max(hc.x, hc.y) < 0.4975 * uRect.z - m && length(xz - cameraPosition.xz) > 400.0 + m) {
+    vN = vec3(0.0, 1.0, 0.0);
+  } else {
+    float hx = surfaceH(xz + vec2(uCell, 0.0));
+    float hz = surfaceH(xz + vec2(0.0, uCell));
+    vN = normalize(vec3(s.x - hx, uCell, s.x - hz));
+  }
   vMask = vec4(s.yz, river);
   vec3 wp = vec3(xz.x, s.x - uLower, xz.y);
   vW = wp;
@@ -203,8 +231,6 @@ uniform vec4 uCavD[4];
 uniform vec4 uCavGlow;
 uniform vec3 uCavGlowCol;
 
-uniform vec2 uInnerCenter; // centre of the next finer level
-uniform float uInnerHalf;  // its half-size minus the overlap margin; < 0 = none
 uniform sampler2D uDetailMap;  // baked grain (render/art.ts): G limewash, read for snow
 uniform sampler2D uDetailMap2; // baked grain: R sand, G rock strata, B wood
 
@@ -371,12 +397,6 @@ void main() {
   vec3 dpY = dFdy(p);
   vec3 meshFace = cross(dpX, dpY); // Low Poly off the heightmap: the mesh's own triangles
 
-  // ---- clipmap overlap: the finer level draws here
-  if (uInnerHalf > 0.0) {
-    vec2 dd = abs(p.xz - uInnerCenter);
-    if (max(dd.x, dd.y) < uInnerHalf) discard;
-  }
-
   // ---- the hole in the floor of an open cavern: the way down to the deep. The floor is level
   // round it, so the ground is simply not drawn inside the rectangle. (Only the floor: the sand
   // roof over it is drawn with this shader too, and stays whole.)
@@ -500,10 +520,23 @@ void main() {
   // from the sun must not light up.
   float ndl = min(dot(n, uSunDir), ndlBase + 0.06 + 0.7 * smoothstep(-0.05, 0.2, ndlBase));
 
-  // ---- cast shadow: ray-march the heightmap toward the light
+  // ---- light, before the cast shadow
+  float l = mix(clamp(ndl * 1.25, 0.0, 1.0), smoothstep(-0.02, 0.12, ndl), uTermSharp);
+
+  // (wet ground and the river, which reflect the light whether or not the ground is lit)
+  float rd = abs(vMask.z);
+  float bank = clamp(vMask.w, 0.0, 1.0) * (1.0 - smoothstep(${TERRAIN.riverHalf}.0, ${TERRAIN.riverFloor + 12}.0, rd)) * (1.0 - pave);
+  vec2 rained = rainedOn(p.xz);
+  // on the night of the new moon the pans flood from below, rain or none
+  float flooded = uFlood * smoothstep(0.25, 0.7, salt) * (1.0 - rock);
+  rained.x = max(rained.x, flooded);
+
+  // ---- cast shadow: ray-march the heightmap toward the light. Ground the light does not reach
+  // (l == 0) is dark however much is in the way, so it is only marched for where it shows: in
+  // the glint on water.
   float shadow = 1.0;
   float sIn = step(1.0, uRect.z) * (1.0 - smoothstep(0.82, 0.97, he));
-  if (sIn > 0.0 && ndl > -0.05 && uSunDir.y > -0.1) {
+  if (sIn > 0.0 && ndl > -0.05 && uSunDir.y > -0.1 && (l > 0.0 || bank > 0.003 || rained.x > 0.002)) {
     float h0 = H(p.xz);
     vec3 o = vec3(p.x, max(p.y, h0) + 0.25 * uTexel, p.z) + n0 * (0.5 * uTexel);
     float res = 1.0;
@@ -529,7 +562,6 @@ void main() {
   float fs = figShadow(p);
 
   // ---- light
-  float l = mix(clamp(ndl * 1.25, 0.0, 1.0), smoothstep(-0.02, 0.12, ndl), uTermSharp);
   l *= mix(1.0, shadow, uShadowAmt);
   // under a cave roof no sun reaches the floor, whatever the heightmap says
   l *= 1.0 - 0.94 * clamp(vCave, 0.0, 1.0);
@@ -674,8 +706,6 @@ void main() {
   // ---- rivers: green, damp banks, and the water itself painted on the flat bed. The distance
   // to the river is signed, so it interpolates straight through the water even where the mesh
   // is far coarser than the river is wide.
-  float rd = abs(vMask.z);
-  float bank = clamp(vMask.w, 0.0, 1.0) * (1.0 - smoothstep(${TERRAIN.riverHalf}.0, ${TERRAIN.riverFloor + 12}.0, rd)) * (1.0 - pave);
   if (bank > 0.003) {
     // growth is thick at the water and breaks into patches further up the bank
     float grow = (1.0 - rock) * smoothstep(0.5, 0.74, fbm(p.xz * 0.11 + vec2(6.4, 1.9)) * (0.55 + 0.45 * bank) + 0.42 * bank * bank);
@@ -745,10 +775,6 @@ void main() {
   // finger deep and the pan is a mirror; and some hours on, the dunes it fell on are in flower.
   vec2 flc = p.xz * 3.0;
   float fwFl = max(fwidth(flc.x), fwidth(flc.y));
-  vec2 rained = rainedOn(p.xz);
-  // on the night of the new moon the pans flood from below, rain or none
-  float flooded = uFlood * smoothstep(0.25, 0.7, salt) * (1.0 - rock);
-  rained.x = max(rained.x, flooded);
   if (rained.x > 0.002) {
     float wet = rained.x;
     vec3 V = toCam / max(dist, 1e-4);
