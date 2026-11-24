@@ -6,6 +6,7 @@ import type { FrameState, SurfaceSample, Uniforms } from '../game/contract';
 import { CITY_CELL } from '../city/placement';
 import { massifFrag, massifVert } from '../render/terrainShaders';
 import type { DesertWorld } from './surface';
+import { frameBudget, type Job } from './budget';
 
 const RINGS = 28;
 const SEGS = 96;
@@ -22,6 +23,8 @@ export class Massifs {
   private readonly near = new THREE.Vector3();
   private readonly built = new Map<string, THREE.Mesh>();
   private scan = 0;
+  /** The massif being built a ring at a time on the frame budget (it is only ever seen from afar, so it can wait). */
+  private job: { key: string; it: Job<void> } | null = null;
 
   constructor(
     private readonly world: DesertWorld,
@@ -41,6 +44,8 @@ export class Massifs {
     const reach = CLIP_REACH / Math.pow(2, 8 - clipLevels);
     this.near.set(cam.x, cam.z, reach * 0.94);
 
+    if (this.job && frameBudget.run(this.job.it)) this.job = null;
+
     this.scan -= f.dt;
     if (this.scan > 0) return;
     this.scan = SCAN_EVERY;
@@ -52,7 +57,8 @@ export class Massifs {
       this.group.remove(mesh);
       this.built.delete(key);
     }
-    // Build the nearest missing one, one per scan.
+    // Build the nearest missing one, one at a time (a scan while one is still under way starts none).
+    if (this.job) return;
     const gi0 = Math.round(px / CITY_CELL);
     const gj0 = Math.round(pz / CITY_CELL);
     const span = Math.ceil(BUILD_R / CITY_CELL);
@@ -71,10 +77,14 @@ export class Massifs {
         }
       }
     }
-    if (best) this.build(best.key, best.x, best.z, best.r);
+    if (best) {
+      this.job = { key: best.key, it: this.build(best.key, best.x, best.z, best.r) };
+      if (frameBudget.run(this.job.it)) this.job = null;
+    }
   }
 
-  private build(key: string, cx: number, cz: number, r: number): void {
+  /** A massif's mesh, a step (a ring of the terrain sampled, then the mesh made) at a time. */
+  private *build(key: string, cx: number, cz: number, r: number): Generator<void, void> {
     const n = 1 + RINGS * SEGS;
     const pos = new Float32Array(n * 3);
     const rock = new Float32Array(n);
@@ -94,6 +104,7 @@ export class Massifs {
         const a = ((k + (i & 1) * 0.5) / SEGS) * Math.PI * 2;
         put(1 + (i - 1) * SEGS + k, Math.cos(a) * rr, Math.sin(a) * rr);
       }
+      yield;
     }
     const idx: number[] = [];
     for (let k = 0; k < SEGS; k++) idx.push(0, 1 + ((k + 1) % SEGS), 1 + k);
@@ -105,6 +116,7 @@ export class Massifs {
         idx.push(a0 + k, a0 + k1, b0 + k, a0 + k1, b0 + k1, b0 + k);
       }
     }
+    yield;
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     geo.setAttribute('aRock', new THREE.BufferAttribute(rock, 1));

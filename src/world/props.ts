@@ -6,6 +6,7 @@
 // 112 m chunks near the player, each chunk one merged mesh, one mesh of contact shadows and one
 // set of solids, and let go again once far behind.
 import * as THREE from 'three';
+import { finish, frameBudget, type Job } from './budget';
 import type { FrameState, SurfaceSample, Uniforms } from '../game/contract';
 import type { DesertWorld } from './surface';
 import { STYLE_GLSL } from '../render/styleGlsl';
@@ -26,6 +27,8 @@ const ROUTE_CLEAR = 45; // either side of the line between two neighbouring citi
 const RIVER_CLEAR = 90; // from a river's centre line: water, banks and groves
 const CAVE_CLEAR = 8; // around a massif's cave
 const SCAN_EVERY = 0.25;
+const MUST_R = 90; // a chunk this near (centre to wanderer) is built at once, whatever the budget: it may hold what is stood on
+const JUMP = 200; // the wanderer moving further than this in a frame has jumped (a teleport, a restore)
 const LEAD_S = 2.5; // chunks are also built around where the wanderer will be this many seconds on
 const LEAD_MAX = 180; // and never further ahead than this (m)
 const FADE = 80; // the far edge dissolves over this (m)
@@ -1404,6 +1407,13 @@ interface Chunk {
   groups: number;
 }
 
+/** A chunk being built: stepped through `it`, which leaves the chunk in `out` when it is done. */
+interface BuildJob {
+  k: number;
+  it: Job<void>;
+  out: Chunk | null;
+}
+
 const chunkKey = (ix: number, iz: number) => (ix + 32768) * 65536 + (iz + 32768);
 
 export class Props {
@@ -1424,6 +1434,10 @@ export class Props {
   private readonly pending: number[] = []; // chunk keys, nearest last
   /** Chunks built before the modelled rocks or cacti arrived, to be built again (a few a frame). */
   private readonly redo: number[] = [];
+  /** The chunk being built a step at a time on the frame budget (one at a time: groups share scratch state). */
+  private job: BuildJob | null = null;
+  private lastX = NaN;
+  private lastZ = NaN;
   private disposed = false;
   private readonly far = { value: FAR.high };
   private readonly sample: SurfaceSample = { h: 0, rock: 0, salt: 0 };
@@ -1467,6 +1481,9 @@ export class Props {
   private watchModels(): void {
     const again = (ok: boolean) => {
       if (!ok || this.disposed) return;
+      // a chunk part-built with the old models is not worth finishing
+      this.job = null;
+      this.dirty = true;
       this.redo.length = 0;
       for (const k of this.chunks.keys()) this.redo.push(k);
     };
@@ -1485,6 +1502,11 @@ export class Props {
   /** Keeps a disc clear of props from now on (the spawn point, the first fire), rebuilding what is already there. */
   keepClear(x: number, z: number, r: number): void {
     this.clearings.push(x, z, r);
+    if (this.job) {
+      const jx = (Math.floor(this.job.k / 65536) - 32768 + 0.5) * CHUNK;
+      const jz = ((this.job.k % 65536) - 32768 + 0.5) * CHUNK;
+      if (Math.hypot(jx - x, jz - z) < r + CHUNK) this.job = null; // part built without it: built again
+    }
     for (const [k, c] of this.chunks) {
       const cx = (c.ix + 0.5) * CHUNK;
       const cz = (c.iz + 0.5) * CHUNK;
@@ -1521,27 +1543,71 @@ export class Props {
       leadPoint(px, pz, f.player.vel.x, f.player.vel.z, LEAD_S, LEAD_MAX, this.lead);
       this.rescan(px, pz, this.lead.x, this.lead.z);
     }
-    // the first time round, what is in view is built at once; after that a little each frame
-    const budget = this.chunks.size === 0 ? 60 : 3;
+    const jumped = !(Math.hypot(px - this.lastX, pz - this.lastZ) < JUMP);
+    this.lastX = px;
+    this.lastZ = pz;
+    // What the wanderer could be on within moments is built at once, whatever the budget (a chunk
+    // has solids to stand on); so is everything the first time round and after a jump, for up to
+    // 60 ms. The rest, a step at a time on the frame budget.
+    const first = this.chunks.size === 0 || jumped;
     const t0 = performance.now();
-    let built = 0;
-    while (this.pending.length > 0 && (built === 0 || performance.now() - t0 < budget)) {
-      const k = this.pending.pop()!;
-      if (this.chunks.has(k)) continue;
+    for (let i = this.pending.length - 1; i >= 0; i--) {
+      const k = this.pending[i];
       const cix = Math.floor(k / 65536) - 32768;
       const ciz = (k % 65536) - 32768;
-      this.chunks.set(k, this.build(cix, ciz));
-      built++;
+      const near = Math.hypot((cix + 0.5) * CHUNK - px, (ciz + 0.5) * CHUNK - pz) < MUST_R;
+      if (!near && !(first && performance.now() - t0 < 60)) continue;
+      this.pending.splice(i, 1);
+      if (this.chunks.has(k)) continue;
+      const j = this.job?.k === k ? this.job : this.startJob(k);
+      finish(j.it);
+      this.land(j);
     }
-    // then, a chunk or so a frame, those built before the modelled rocks or cacti came, in place
-    while (this.redo.length > 0 && this.pending.length === 0 && (built === 0 || performance.now() - t0 < budget)) {
-      const k = this.redo.pop();
-      const old = k === undefined ? undefined : this.chunks.get(k);
-      if (k === undefined || !old) continue;
-      this.chunks.set(k, this.build(old.ix, old.iz));
-      this.drop(old);
-      built++;
+    // then, a step at a time as the budget lasts, the nearest wanted chunk first, and after them
+    // (a chunk or so a frame) those built before the modelled rocks or cacti came, in place
+    for (;;) {
+      if (!this.job) {
+        let k: number | undefined;
+        let redo = false;
+        while (k === undefined && this.pending.length > 0) {
+          const c = this.pending.pop();
+          if (c !== undefined && !this.chunks.has(c)) k = c;
+        }
+        // (a chunk is redone only once there are none left to build new)
+        while (k === undefined && this.pending.length === 0 && this.redo.length > 0) {
+          const c = this.redo.pop();
+          if (c !== undefined && this.chunks.has(c)) {
+            k = c;
+            redo = true;
+          }
+        }
+        if (k === undefined) return;
+        // (a frame already spent starts none: it is started, and stepped, on the next)
+        if (!frameBudget.open) {
+          if (redo) this.redo.push(k);
+          else this.pending.push(k);
+          return;
+        }
+        this.job = this.startJob(k);
+      }
+      if (!frameBudget.run(this.job.it)) return;
+      this.land(this.job);
     }
+  }
+
+  private startJob(k: number): BuildJob {
+    const j: BuildJob = { k, it: null as unknown as Job<void>, out: null };
+    j.it = this.buildSteps(Math.floor(k / 65536) - 32768, (k % 65536) - 32768, j);
+    return j;
+  }
+
+  /** Takes a finished job's chunk in, in place of any built before it (as the modelled rocks came). */
+  private land(j: BuildJob): void {
+    if (this.job === j) this.job = null;
+    if (!j.out) return;
+    const old = this.chunks.get(j.k);
+    this.chunks.set(j.k, j.out);
+    if (old) this.drop(old);
   }
 
   /**
@@ -1658,7 +1724,8 @@ export class Props {
     return out;
   }
 
-  private build(ix: number, iz: number): Chunk {
+  /** One chunk, built a step at a time (a step is a cell's group, or the making of a mesh); the result goes to job.out. */
+  private *buildSteps(ix: number, iz: number, job: BuildJob): Generator<void, void> {
     const w = this.world;
     const ox = (ix + 0.5) * CHUNK;
     const oz = (iz + 0.5) * CHUNK;
@@ -1669,6 +1736,7 @@ export class Props {
     const c = this.cand;
     for (let j = 0; j < PER; j++) {
       for (let i = 0; i < PER; i++) {
+        yield;
         const gi = ix * PER + i;
         const gj = iz * PER + j;
         if (!this.wins(gi, gj)) continue;
@@ -1722,11 +1790,14 @@ export class Props {
         b.groups++;
       }
     }
+    yield;
     const mesh = b.mesh(this.mat);
+    yield;
     const shade = b.shadeMesh(this.shadeMat);
+    // (added only now the chunk is whole: a job given up leaves nothing in the scene)
     if (mesh) this.group.add(mesh);
     if (shade) this.group.add(shade);
-    return { ix, iz, ox, oy, oz, mesh, shade, solids: b.solids.count > 0 ? b.solids : null, spots: b.spots, groups: b.groups };
+    job.out = { ix, iz, ox, oy, oz, mesh, shade, solids: b.solids.count > 0 ? b.solids : null, spots: b.spots, groups: b.groups };
   }
 
   // ---------------------------------------------------------------- what the wanderer meets
