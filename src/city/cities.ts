@@ -1,3 +1,4 @@
+import { perfMark } from '../game/perfMark';
 import * as THREE from 'three';
 import type { Uniforms } from '../game/contract';
 import type { DesertWorld } from '../world/surface';
@@ -490,7 +491,9 @@ export class Cities {
         near = c;
       }
     }
+    perfMark('cities');
     near?.relief.step(RELIEF_BUDGET);
+    perfMark('cities.relief');
     this.scanT -= dt;
     if (this.scanT > 0 && this.loaded.size > 0) {
       this.checkReach(pos);
@@ -511,15 +514,27 @@ export class Cities {
       const ahead = this.plans.take(site);
       const prep = ahead ? this.plans.prep(site.id) : null;
       const plan = ahead ?? (d < PLAN_NOW || !this.plans.working ? planCity(site) : null);
+      perfMark(ahead ? 'cities.take' : 'cities.planSYNC');
       if (!plan) continue;
       this.plans.forget(site.id);
       this.load(site, plan, prep);
+      perfMark('cities.load');
       built = true;
     }
     // Then fill in their extras (and late details), nearest city first, one piece per scan.
     if (!built) {
       const order = [...this.loaded.values()].sort((p, q) => Math.hypot(p.site.cx - pos.x, p.site.cz - pos.z) - Math.hypot(q.site.cx - pos.x, q.site.cz - pos.z));
-      for (const c of order) if (this.fillDetails(c) || this.buildExtra(c)) break;
+      perfMark('cities.scan');
+      for (const c of order) {
+        if (this.fillDetails(c)) {
+          perfMark('cities.details');
+          break;
+        }
+        if (this.buildExtra(c)) {
+          perfMark('cities.extra');
+          break;
+        }
+      }
     }
     // Every loaded city, wherever it is: drop the far ones, and choose skyline or full detail.
     for (const c of this.loaded.values()) {
@@ -537,7 +552,11 @@ export class Cities {
       }
       const near = c.meshes.near.visible ? d < NEAR_OUT : d < NEAR_IN;
       // close enough to be shown soon, with its outskirts all built (or about to be shown anyway)
-      if (!c.staged && d < STAGE_IN && (near || c.extras.length >= EXTRAS.length)) this.stage(c);
+      if (!c.staged && d < STAGE_IN && (near || c.extras.length >= EXTRAS.length)) {
+        perfMark('cities');
+        this.stage(c);
+        perfMark('cities.stage');
+      }
       c.meshes.near.visible = near;
       c.meshes.far.visible = !near;
     }
