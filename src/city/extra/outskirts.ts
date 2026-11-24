@@ -3,7 +3,8 @@ import { Writer, dome, polyCap, taper } from '../build';
 import { GLOW, MAT, createGlowMaterial, createMasonryMaterial, trackViewport } from '../cityShaders';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
 import type { CityKind } from '../types';
-import { reeds, shrub, tree } from './plants';
+import { reeds, shrub, tree, withPlantState } from './plants';
+import { finish as finishJob } from '../../world/budget';
 import type { PenBeastSpot, PenLocal } from '../pens';
 
 // The worked land around a city, in a ring from the paved edge out to a few hundred metres:
@@ -406,7 +407,17 @@ interface Mill {
   dir: number;
 }
 
-export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
+export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => finishJob(outskirtsJob(ctx));
+
+/**
+ * The outskirts as a job (see world/budget.ts): it yields every few tries at placing a thing. Its
+ * orchards draw plants, with the plants' state as it was when it began (see withPlantState).
+ */
+export function outskirtsJob(ctx: ExtraCtx): Generator<void, Extra> {
+  return withPlantState(outskirtsSteps(ctx));
+}
+
+function* outskirtsSteps(ctx: ExtraCtx): Generator<void, Extra> {
   const t0 = performance.now();
   const { site } = ctx;
   const T = TUNE[site.kind];
@@ -555,7 +566,8 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     const N = NI * 2 + 1;
     const gr = new Float32Array(N * N).fill(NaN);
     const tt = new Float32Array(N * N);
-    for (let j = 0; j < N; j++)
+    for (let j = 0; j < N; j++) {
+      yield;
       for (let i = 0; i < N; i++) {
         const x = (i - NI) * S, z = (j - NI) * S;
         const t = beyond(x, z);
@@ -563,8 +575,10 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
         gr[j * N + i] = ctx.groundAt(x, z);
         tt[j * N + i] = t;
       }
+    }
     const cand: Array<{ x: number; z: number; s: number }> = [];
-    for (let j = 2; j < N - 2; j++)
+    for (let j = 2; j < N - 2; j++) {
+      if ((j & 7) === 0) yield;
       for (let i = 2; i < N - 2; i++) {
         const g = gr[j * N + i];
         if (g !== g) continue;
@@ -592,9 +606,11 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
         // nearer and higher reads better from the town
         cand.push({ x, z, s: prom + 0.04 * g - 0.006 * tt[j * N + i] + rng() * 0.5 });
       }
+    }
     cand.sort((a, b) => b.s - a.s);
     const placed: number[] = [];
     for (const c of cand) {
+      yield;
       if (counts.towers >= T.towers) break;
       if (placed.some((_, k) => k % 2 === 0 && Math.hypot(placed[k] - c.x, placed[k + 1] - c.z) < 220)) continue;
       // climb to the top, then look about for the flattest spot near it
@@ -718,6 +734,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1]];
     const placed: number[] = [];
     for (let it = 0; it < want * 120 && counts.tombs < want; it++) {
+      yield;
       // near the ways in, where the cliffs stand either side of the gap
       let x: number, z: number;
       if (ways.length > 0 && rng() < 0.75) {
@@ -811,6 +828,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     const want = T.mills;
     let last: number[] | null = null;
     for (let it = 0; it < want * 80 && counts.mills < want; it++) {
+      yield;
       let x: number, z: number;
       if (last && rng() < 0.7) {
         // a row of mills along the same rise
@@ -1017,6 +1035,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       // the canyon: small camps in the gaps and out beyond the buttes, levelled where they must be
       for (let pass = 0; pass < 2 && counts.camps < want; pass++)
         for (let it = 0; it < 500 && counts.camps < want; it++) {
+          yield;
           rockSpot(rng, pass, pt);
           const x = pt[0], z = pt[1];
           const e = 7.5;
@@ -1028,6 +1047,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
           counts.camps++;
         }
     } else for (let it = 0; it < want * 80 && counts.camps < want; it++) {
+      yield;
       const pool = tracks.length > 0 && rng() < 0.7 ? tracks : ways;
       if (pool.length > 0) besideWay(rng, pool[Math.floor(rng() * pool.length)], 30, 170, 12, 30, pt);
       else ringPoint(rng, 30, 170, 1, pt);
@@ -1197,6 +1217,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     if (T.level) {
       for (let pass = 0; pass < 2 && counts.pens < want; pass++)
         for (let it = 0; it < 500 && counts.pens < want; it++) {
+          yield;
           if (campSpots.length > 0 && rng() < 0.5) {
             const k = Math.floor(rng() * (campSpots.length / 2)) * 2;
             const a = rng() * TAU;
@@ -1212,6 +1233,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
           counts.pens++;
         }
     } else for (let it = 0; it < want * 80 && counts.pens < want; it++) {
+      yield;
       // trade towns keep their pens by the camps; elsewhere they stand near the edge
       if (campSpots.length > 0 && rng() < 0.7) {
         const k = Math.floor(rng() * (campSpots.length / 2)) * 2;
@@ -1305,6 +1327,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     const want = site.kind === 'canyon' ? 2 : 1;
     const [ta, tb] = site.kind === 'canyon' ? [40, 320] : [140, 420];
     for (let it = 0; it < 300 && counts.burials < want; it++) {
+      yield;
       ringPoint(rng, ta, tb, 1, pt);
       const hw = 12 + Math.floor(rng() * 6), hd = 9 + Math.floor(rng() * 5);
       const x = pt[0], z = pt[1];
@@ -1393,6 +1416,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     const wallMat = T.mud ? MAT.plaster : MAT.stone;
     const wallTint = T.mud ? 150 : 120;
     for (let it = 0; it < want * 60 && counts.plots < want; it++) {
+      yield;
       const hw = 7 + Math.floor(rng() * 10), hd = 6 + Math.floor(rng() * 8);
       let x: number, z: number;
       if (plots.length > 0 && rng() < T.clusterP) {
@@ -1435,6 +1459,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     // low field walls running on from the plot corners, dividing the land
     const fw = Math.round(T.fieldWalls * (0.4 + 0.6 * dens));
     for (let it = 0; it < fw * 8 && counts.fieldWalls < fw && plots.length > 0; it++) {
+      yield;
       const k = Math.floor(rng() * (plots.length / 4)) * 4;
       const cx = rng() < 0.5 ? plots[k] : plots[k + 2], cz = rng() < 0.5 ? plots[k + 1] : plots[k + 3];
       const axis = rng() < 0.5 ? 0 : 1;
@@ -1580,12 +1605,14 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     // stepped ledge gardens against a slope: two or three narrow walled terraces, one above the other
     for (let pass = 0; pass < 2; pass++)
       for (let it = 0; it < 700 && (pass === 0 ? counts.ledges < wantL : gardens() < T.minGardens); it++) {
+        yield;
         rockSpot(rng, pass, pt);
         const d = dirs[Math.floor(rng() * 4)];
         if (ledge(pt[0], pt[1], d[0], d[1], pass, rng)) counts.ledges++;
       }
     // last resort: a small walled garden raised on a platform
     for (let it = 0; it < 600 && gardens() < T.minGardens; it++) {
+      yield;
       rockSpot(rng, 1, pt);
       const hw = 5 + Math.floor(rng() * 3), hd = 4 + Math.floor(rng() * 2);
       const x = Math.round(pt[0]), z = Math.round(pt[1]);
@@ -1600,6 +1627,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
 
     // lines of cairns marking the way out along the gaps
     for (let it = 0; it < T.cairnLines * 30 && counts.cairns < T.cairnLines * 8 && ways.length > 0; it++) {
+      yield;
       const wy = ways[Math.floor(rng() * ways.length)];
       besideWay(rng, wy, 10, 200, 2, 14, pt);
       const n = 6 + Math.floor(rng() * 5);
@@ -1623,6 +1651,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
 
     // a stone cistern or a well head by the camps or a way
     for (let it = 0; it < 300 && counts.wells < T.wells; it++) {
+      yield;
       if (campSpots.length > 0 && rng() < 0.6) {
         const k = Math.floor(rng() * (campSpots.length / 2)) * 2;
         const a = rng() * TAU;
@@ -1646,6 +1675,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     const near0 = [...campSpots];
     for (let i = 0; i < items.length; i++) if (items[i].kind === 'ledge') near0.push(items[i].x, items[i].z);
     for (let it = 0; it < 200 && counts.racks < T.racks; it++) {
+      yield;
       if (near0.length > 0 && rng() < 0.8) {
         const k = Math.floor(rng() * (near0.length / 2)) * 2;
         const a = rng() * TAU, d = 11 + rng() * 8;
@@ -1914,6 +1944,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
 
   // ---------------------------------------------------------------- meshes
 
+  yield;
   const near = new THREE.Group();
   near.name = 'city-outskirts';
   const geos: THREE.BufferGeometry[] = [];
@@ -1939,11 +1970,16 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     near.add(me);
     return me;
   };
-  for (const p of bigs) finish(p, hardMat, 'outskirts-tower', false);
+  for (const p of bigs) {
+    yield;
+    finish(p, hardMat, 'outskirts-tower', false);
+  }
+  yield;
 
   const cellMeshes: THREE.Mesh[] = [];
   const bounds: number[] = [];
   for (const p of cells.values()) {
+    yield;
     const me = finish(p, softMat, 'outskirts-cell', true);
     if (!me) continue;
     me.visible = false;
@@ -1996,6 +2032,7 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     }
   }
   const sailDir = new Float32Array(mills.map((m) => m.dir));
+  yield;
 
   const glowMesh = (gl: GlowList, isNear: boolean, name: string, into: THREE.Group): void => {
     const g = gl.geometry();
@@ -2030,11 +2067,13 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     glowMesh(farGlow, false, 'outskirts-far-glows', far);
   }
 
-  for (let i = 0; i < rects.length; i += 4)
+  for (let i = 0; i < rects.length; i += 4) {
+    if ((i & 31) === 0) yield;
     tiles(rects[i], rects[i + 1], rects[i + 2], rects[i + 3], (x, z, r) => {
       ctx.claim(x, z, r);
       return true;
     });
+  }
 
   near.userData.triangles = tris;
   near.userData.counts = counts;
@@ -2069,4 +2108,4 @@ export const outskirts: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       mats.length = 0;
     },
   };
-};
+}

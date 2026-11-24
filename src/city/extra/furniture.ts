@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Uniforms } from '../../game/contract';
 import { warmObject } from '../../render/warm';
+import { finish } from '../../world/budget';
 import { Glows, Writer, layoutOf } from '../build';
 import { CITY_SHADOW_GLSL, cityShadowQ } from '../cityGlsl';
 import { loadModel, modelGeometry } from '../../render/art';
@@ -1169,8 +1170,41 @@ interface Slot {
   lane: number;
 }
 
-export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
+export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => finish(furnitureJob(ctx));
+
+/**
+ * The furniture as a job (see world/budget.ts), yielding every few props. The module's shared
+ * state (the modelled props it began with, where props put their solids and their replay) is its
+ * own for each step, so models arriving mid-way or another city's furniture meanwhile change nothing.
+ */
+export function* furnitureJob(ctx: ExtraCtx): Generator<void, Extra> {
+  const job = furnitureSteps(ctx);
+  const m = FURN;
+  let sink: Solid[] | null = null;
+  let rep: Map<Writer, Op[]> | null = null;
+  for (;;) {
+    const was = { m: FURN, sink: solidSink, rep: replay };
+    FURN = m;
+    solidSink = sink;
+    replay = rep;
+    let res: IteratorResult<void, Extra>;
+    try {
+      res = job.next();
+    } finally {
+      sink = solidSink;
+      rep = replay;
+      FURN = was.m;
+      solidSink = was.sink;
+      replay = was.rep;
+    }
+    if (res.done) return res.value;
+    yield;
+  }
+}
+
+function* furnitureSteps(ctx: ExtraCtx): Generator<void, Extra> {
   const { plan, site } = ctx;
+  let steps = 0;
   const dens = ctx.density;
   const rng = ctx.rng(0xf0e1);
   const sq = plan.square;
@@ -1407,6 +1441,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
 
   for (const b of canopies) {
     if (b.role !== 'market') continue;
+    yield;
     const x0 = b.x - b.w / 2 + 0.45, x1 = b.x + b.w / 2 - 0.45;
     const z0 = b.z - b.d / 2 + 0.45, z1 = b.z + b.d / 2 - 0.45;
     const alongX = b.w >= b.d;
@@ -1417,15 +1452,18 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       const hl = 0.7 + rng() * 0.4, hw = 0.45 + rng() * 0.25;
       if (layRug(x0 + rng() * (x1 - x0), z0 + rng() * (z1 - z0), ux, uz, hl, hw)) k++;
     }
-    for (let gz = z0; gz <= z1; gz += 1.05)
+    for (let gz = z0; gz <= z1; gz += 1.05) {
+      yield;
       for (let gx = x0; gx <= x1; gx += 1.05) {
         if (rng() > 0.7 * dens) continue;
         goods(gx + (rng() - 0.5) * 0.4, gz + (rng() - 0.5) * 0.4, ux, uz);
       }
+    }
   }
   // goods beside every stall
   for (const b of rects) {
     if (b.role !== 'stall') continue;
+    if ((++steps & 3) === 0) yield;
     const n = Math.round((2 + rng() * 3) * dens);
     for (let k = 0; k < n; k++) {
       const side = Math.floor(rng() * 4);
@@ -1452,6 +1490,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     }
     const used = new Set<number>();
     for (let i = 0; i < tops.length; i++) {
+      if ((++steps & 3) === 0) yield;
       const a = tops[i];
       // a lantern hung out over the aisle from the pole top
       if (rng() < 0.35 * dens && ctx.streetGap(a.x, a.z) < 3 && !lamps.hit(a.x, a.z, 2.5)) {
@@ -1517,6 +1556,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     const n = Math.max(6, Math.round((TAU * sq.r) / 16));
     const a0 = rng() * TAU;
     for (let k = 0; k < n; k++) {
+      if ((++steps & 3) === 0) yield;
       const a = a0 + (k / n) * TAU;
       for (let t = 0; t < 4; t++) {
         const rr = sq.r + (rng() - 0.5) * 3;
@@ -1527,6 +1567,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     // benches, jars and goods round the edge, facing in
     const m = Math.round((TAU * sq.r) / 3);
     for (let k = 0; k < m; k++) {
+      if ((++steps & 3) === 0) yield;
       if (rng() > 0.55 * dens) continue;
       const a = rng() * TAU;
       const rr = sq.r + (rng() - 0.6) * 3.5;
@@ -1559,6 +1600,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   // a pair of banner poles where the avenues come in
   for (const s of plan.spots) {
     if (s.kind !== 'gate' || rng() > 0.8) continue;
+    if ((++steps & 3) === 0) yield;
     const fxv = Math.sin(s.facing), fzv = Math.cos(s.facing);
     for (const side of [-1, 1]) {
       for (let t = 0; t < 5; t++) {
@@ -1572,8 +1614,10 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   // ---------------------------------------------------------------- walls beside the streets
 
   const slots: Slot[] = [];
-  plan.buildings.forEach((b, i) => {
-    if (!b.solid || b.h < 2.2 || b.role === 'garden' || b.roof === 'canopy' || b.roof === 'none') return;
+  for (let i = 0; i < plan.buildings.length; i++) {
+    const b = plan.buildings[i];
+    if (!b.solid || b.h < 2.2 || b.role === 'garden' || b.roof === 'canopy' || b.roof === 'none') continue;
+    if ((++steps & 3) === 0) yield;
     const fs = facesOf(b);
     for (const f of fs) {
       if (f.len < 2) continue;
@@ -1586,7 +1630,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
         slots.push({ b, i, f, u, depth: g + 0.55, busy: busyAt(qx, qz, lane), lane });
       }
     }
-  });
+  }
   for (let k = slots.length - 1; k > 0; k--) {
     const j = Math.floor(rng() * (k + 1));
     const t = slots[k];
@@ -1599,6 +1643,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const over = new Points();
   const storeys = (h: number): number => Math.max(1, Math.floor((h + 0.4) / 3.2));
   for (const s of slots) {
+    if ((++steps & 3) === 0) yield;
     const { b, f, u } = s;
     const wx = fx(f, u, 0), wz = fz(f, u, 0);
     const ox = fx(f, u, 0.6), oz = fz(f, u, 0.6);
@@ -1702,6 +1747,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       l.push(s);
     }
     for (const s of busySlots) {
+      if ((++steps & 3) === 0) yield;
       if (rng() > 0.9 * s.busy * dens) continue;
       const ax = fx(s.f, s.u, 0.02), az = fz(s.f, s.u, 0.02);
       let best: Slot | null = null, bd = 0, bdot = 0.7;
@@ -1740,6 +1786,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
 
   // Beside the doors: a pair of jars flanking it, a bench to one side, or a lantern over it.
   for (const d of ctx.doors) {
+    if ((++steps & 3) === 0) yield;
     const qx = d.x + d.nx * 0.55, qz = d.z + d.nz * 0.55;
     if (ctx.streetGap(qx, qz) > 3.5) continue;
     const busy = busyAt(qx, qz, laneAt(qx, qz));
@@ -1934,6 +1981,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     for (let pass = 0; pass < 2 && total() < target; pass++) {
       for (const s of slots) {
         if (total() >= target) break;
+        if ((++steps & 3) === 0) yield;
         if (rng() < Math.min(0.9, (0.04 + s.busy) * scale)) groupAt(s);
       }
       scale *= 1.6;
@@ -1943,6 +1991,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
 
   // ---------------------------------------------------------------- meshes
 
+  yield;
   const near = new THREE.Group();
   near.name = 'city-furniture';
   const solidMat = createMasonryMaterial(ctx.uniforms, { shadow: true, twoSided: false, sway: false });
@@ -1956,11 +2005,11 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const hides: number[] = [];
   let tris = 0;
   replay = null;
-  const addCells = (m: Map<number, Writer>, mat: THREE.Material, name: string, hide: number, pad: number): void => {
-    for (const w of m.values()) {
+  const addCell = (w: Writer, mat: THREE.Material, name: string, hide: number, pad: number): void => {
+    {
       w.orient();
       const g = w.geometry();
-      if (!g) continue;
+      if (!g) return;
       tris += w.tris;
       g.boundingSphere!.radius += pad;
       geos.push(g);
@@ -1976,8 +2025,15 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       hides.push(hide * hide);
     }
   };
-  addCells(solidCells, solidMat, 'city-furniture-cell', HIDE, 0);
-  addCells(flexCells, flexMat, 'city-furniture-cloth', HIDE_HIGH, 0.5);
+  for (const w of solidCells.values()) {
+    yield;
+    addCell(w, solidMat, 'city-furniture-cell', HIDE, 0);
+  }
+  for (const w of flexCells.values()) {
+    yield;
+    addCell(w, flexMat, 'city-furniture-cloth', HIDE_HIGH, 0.5);
+  }
+  yield;
   const gg = G.geometry();
   if (gg) {
     const gm = createGlowMaterial(ctx.uniforms, true);
@@ -2051,7 +2107,7 @@ export const furniture: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       mats.length = 0;
     },
   };
-};
+}
 
 /** Samples of what this draws beyond the shared city materials, for the shader warm-up (see render/warm.ts). */
 export function warmFurniture(uniforms: Uniforms): THREE.Object3D[] {

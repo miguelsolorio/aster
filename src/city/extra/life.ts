@@ -4,6 +4,7 @@ import { warmObject } from '../../render/warm';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx } from '../extras';
 import { bodyFaces, insideBody, isRound } from '../shape';
 import type { Building } from '../types';
+import { finish } from '../../world/budget';
 
 // Signs of life over a city: small flocks of an invented desert bird, and thin chimney smoke.
 //
@@ -622,7 +623,10 @@ function buildSmoke(ctx: ExtraCtx, near: THREE.Group, owned: Array<{ dispose(): 
 
 // ------------------------------------------------------------------ extra
 
-export const life: ExtraBuilder = (ctx: ExtraCtx): Extra => {
+export const life: ExtraBuilder = (ctx: ExtraCtx): Extra => finish(lifeJob(ctx));
+
+/** Life as a job (see world/budget.ts): the birds, then the smoke. */
+export function* lifeJob(ctx: ExtraCtx): Generator<void, Extra> {
   const near = new THREE.Group();
   near.name = 'city-life';
   const emitters: Emitter[] = [];
@@ -631,6 +635,7 @@ export const life: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   let smoke: ((f: FrameState) => void) | null = null;
   if (ctx.density >= 0.5) {
     birds = buildBirds(ctx, near, emitters, owned);
+    yield;
     smoke = buildSmoke(ctx, near, owned);
   }
   const b = birds;
@@ -652,7 +657,7 @@ export const life: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       owned.length = 0;
     },
   };
-};
+}
 
 function birdMaterial(uniforms: Uniforms): THREE.ShaderMaterial {
   return new THREE.ShaderMaterial({
