@@ -56,4 +56,6 @@ function perfLog(): Plugin {
 export default defineConfig({
   base: './',
   plugins: [googleAnalytics(), perfLog()],
+  // other sessions' worktrees live under .claude/; editing them must not reload a page being played
+  server: { watch: { ignored: ['**/.claude/**', '**/tools/perf/out/**'] } },
 });
