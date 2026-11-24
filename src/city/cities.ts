@@ -9,7 +9,8 @@ import { PlanAhead, type CityPrep } from './planAhead';
 import type { CityKind, CityPlan, CitySite } from './types';
 import type { FrameState } from '../game/contract';
 import { EMITTER_KINDS, SolidIndex, createExtraCtx, type EmitterKind, type Extra, type ExtraCtx } from './extras';
-import { EXTRAS } from './extrasList';
+import { EXTRAS, EXTRA_JOBS } from './extrasList';
+import { Task, frameBudget } from '../world/budget';
 import { WORLD_SCALE } from '../world/scale';
 import { RouteNet } from './routes';
 import { Interiors } from './interiors';
@@ -35,6 +36,12 @@ const NEAR_IN = 1500; // full buildings appear
 const NEAR_OUT = 1800;
 const STAGE_IN = NEAR_IN + 2000; // its full detail is sent to the GPU ahead of being shown, from this far out
 const REACH = 40; // metres inside the edge that counts as arriving
+/**
+ * Metres from a city's centre, past its radius, inside which its extras are built at once rather
+ * than on the frame budget: the outskirts reach about 0.16 radius + 700 m beyond it, the aqueduct
+ * as far, and whatever stands there (and can be walked into) must exist before the wanderer does.
+ */
+const EXTRA_NOW = 1000;
 
 interface Loaded {
   site: CitySite;
@@ -63,6 +70,9 @@ interface Loaded {
   /** The drawn shape of its buildings over the height grid: domes, parapets, round towers. */
   relief: Relief;
 }
+
+/** Tree crowns shaded into a city's map in one step on the frame budget (see shadeAhead). */
+const CROWN_STEP = 24;
 
 /** Milliseconds a frame may spend working out the relief of a city coming into view. */
 const RELIEF_BUDGET = 3;
@@ -372,6 +382,8 @@ export class Cities {
   }
 
   private dropExtras(c: Loaded) {
+    // (one under way for it is let go: its ctx goes too, and nothing it did is kept)
+    if (this.extraJob?.c === c) this.extraJob = null;
     for (const e of c.extras) {
       c.meshes.near.remove(e.near);
       if (e.far) c.meshes.far.remove(e.far);
@@ -390,11 +402,50 @@ export class Cities {
     return out;
   }
 
-  /** Builds the next missing extra of a city. Returns true if it did some work. */
-  private buildExtra(c: Loaded): boolean {
+  /** The extra being built a step at a time on the frame budget (one at a time), and its city. */
+  private extraJob: { c: Loaded; task: Task<Extra> } | null = null;
+
+  /** Whether the wanderer is near enough a city that what its extras hold must exist now. */
+  private mustHave(c: Loaded, pos: THREE.Vector3): boolean {
+    return Math.hypot(c.site.cx - pos.x, c.site.cz - pos.z) < c.site.radius + EXTRA_NOW;
+  }
+
+  /**
+   * Starts the next missing extra of a city (built on the frame budget by pumpExtra), or builds it
+   * at once if the wanderer is near enough to walk into it. Returns true if there was work to do:
+   * a city waiting while another's extra is under way counts, so only one is begun at a time.
+   */
+  private buildExtra(c: Loaded, pos: THREE.Vector3): boolean {
     if (c.extras.length >= EXTRAS.length) return false;
-    c.ctx ??= createExtraCtx(c.plan, this.u, this.density, (x, z) => this.world.height(x, z), this.tracks(c.site), c.meshes.doors);
-    const e = EXTRAS[c.extras.length](c.ctx);
+    const now = this.mustHave(c, pos);
+    const j = this.extraJob;
+    if (j && j.c !== c) {
+      if (!now) return true;
+      // this one cannot wait: the one under way is finished first (the jobs share module state)
+      this.extraJob = null;
+      this.addExtra(j.c, j.task.finish());
+    }
+    if (!this.extraJob) {
+      c.ctx ??= createExtraCtx(c.plan, this.u, this.density, (x, z) => this.world.height(x, z), this.tracks(c.site), c.meshes.doors);
+      this.extraJob = { c, task: new Task(EXTRA_JOBS[c.extras.length](c.ctx)) };
+    }
+    if (now) this.pumpExtra(pos);
+    return true;
+  }
+
+  /** Steps the extra under way on the frame budget (or to its end, if its city is near); adds it once built. */
+  private pumpExtra(pos: THREE.Vector3) {
+    const j = this.extraJob;
+    if (!j) return;
+    if (this.mustHave(j.c, pos)) j.task.finish();
+    else if (!j.task.run(frameBudget)) return;
+    this.extraJob = null;
+    this.addExtra(j.c, j.task.finish());
+    // the next is begun at a scan next frame (not this one, which has had its share), without waiting its turn
+    this.scanT = Math.min(this.scanT, 1e-3);
+  }
+
+  private addExtra(c: Loaded, e: Extra) {
     c.extras.push(e);
     c.meshes.near.add(e.near);
     if (e.far) c.meshes.far.add(e.far);
@@ -420,7 +471,6 @@ export class Cities {
         });
       }
     }
-    return true;
   }
 
   private load(site: CitySite, plan: CityPlan, prep: CityPrep | null): Loaded {
@@ -467,6 +517,28 @@ export class Cities {
     return tex;
   }
 
+  /** The city whose crowns are being shaded into its map on the frame budget, to be staged once they are in. */
+  private staging: Loaded | null = null;
+
+  /**
+   * Shades the crowns not yet in a city's map a few at a time on the frame budget. Returns true
+   * once they are all in (or there is no map yet to shade into: roofMap makes it whole).
+   */
+  private shadeAhead(c: Loaded): boolean {
+    if (!c.shade || !c.roof) return true;
+    const { gridSize, gridHalf } = c.plan;
+    while (c.crownsIn < c.crowns.length) {
+      if (!frameBudget.open) return false;
+      const t0 = frameBudget.time();
+      const to = Math.min(c.crowns.length, c.crownsIn + CROWN_STEP * 3);
+      shadeCrowns(c.shade, gridSize, gridHalf, c.crowns, c.crownsIn, c.roof, to);
+      c.crownsIn = to;
+      if (c.map) c.map.needsUpdate = true;
+      frameBudget.spend(frameBudget.time() - t0);
+    }
+    return true;
+  }
+
   /** Sends a city's full detail ahead of its being shown: the map now, the meshes a frame each. */
   private stage(c: Loaded) {
     c.staged = true;
@@ -494,6 +566,14 @@ export class Cities {
     perfMark('cities');
     near?.relief.step(RELIEF_BUDGET);
     perfMark('cities.relief');
+    this.pumpExtra(pos);
+    perfMark('cities.extra');
+    const sc = this.staging;
+    if (sc && this.shadeAhead(sc)) {
+      this.staging = null;
+      if (!sc.staged) this.stage(sc);
+    }
+    perfMark('cities.stage');
     this.scanT -= dt;
     if (this.scanT > 0 && this.loaded.size > 0) {
       this.checkReach(pos);
@@ -530,7 +610,7 @@ export class Cities {
           perfMark('cities.details');
           break;
         }
-        if (this.buildExtra(c)) {
+        if (this.buildExtra(c, pos)) {
           perfMark('cities.extra');
           break;
         }
@@ -541,6 +621,7 @@ export class Cities {
       const site = c.site;
       const d = Math.hypot(site.cx - pos.x, site.cz - pos.z) - site.radius;
       if (d > FAR_OUT) {
+        if (this.staging === c) this.staging = null;
         this.group.remove(c.holder);
         this.dropExtras(c);
         this.dropInteriors(c);
@@ -553,9 +634,13 @@ export class Cities {
       const near = c.meshes.near.visible ? d < NEAR_OUT : d < NEAR_IN;
       // close enough to be shown soon, with its outskirts all built (or about to be shown anyway)
       if (!c.staged && d < STAGE_IN && (near || c.extras.length >= EXTRAS.length)) {
-        perfMark('cities');
-        this.stage(c);
-        perfMark('cities.stage');
+        // its crowns are shaded into its map on the frame budget first (see update), unless it is shown now
+        if (near) {
+          perfMark('cities');
+          if (this.staging === c) this.staging = null;
+          this.stage(c);
+          perfMark('cities.stage');
+        } else this.staging ??= c;
       }
       c.meshes.near.visible = near;
       c.meshes.far.visible = !near;

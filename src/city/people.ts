@@ -24,6 +24,7 @@ import { STYLE_GLSL } from '../render/styleGlsl';
 import type { CityKind, CityPlan, CitySite, Spot, SpotKind } from './types';
 import { CHOSEN, heapGeometry, lampGeometry, pickGeometry, solidMaterial } from '../game/equipment';
 import { CREATURE_STEP, type SolidQuery } from '../world/avoid';
+import { Task, finish, frameBudget } from '../world/budget';
 
 const MAXP = 320;
 const MINER_MAX = 4;
@@ -205,7 +206,7 @@ interface Tree {
   dist: Float32Array;
 }
 
-class CityData {
+export class CityData {
   readonly site: CitySite;
   readonly plan: CityPlan;
   readonly R: number;
@@ -233,53 +234,57 @@ class CityData {
   readonly eLat: Float32Array;
 
   // spots
-  readonly sN: number;
-  readonly sKind: Uint8Array;
-  readonly sX: Float32Array;
-  readonly sZ: Float32Array;
-  readonly sPx: Float32Array; // approach point on the attach edge
-  readonly sPz: Float32Array;
-  readonly sEdge: Int32Array; // -1: unusable
-  readonly sNode: Int32Array; // tree target
-  readonly sCent: Float32Array;
-  readonly sSlot0: Int32Array;
-  readonly sSlotN: Int32Array;
-  readonly sSpeaker: Int32Array;
-  readonly sSpeakT: Float32Array;
-  readonly slotX: Float32Array;
-  readonly slotZ: Float32Array;
-  readonly slotF: Float32Array;
-  readonly slotSpot: Int32Array;
-  readonly slotOwner: Int32Array;
-  readonly byKind: Int32Array[];
+  sN!: number;
+  sKind!: Uint8Array;
+  sX!: Float32Array;
+  sZ!: Float32Array;
+  sPx!: Float32Array; // approach point on the attach edge
+  sPz!: Float32Array;
+  sEdge!: Int32Array; // -1: unusable
+  sNode!: Int32Array; // tree target
+  sCent!: Float32Array;
+  sSlot0!: Int32Array;
+  sSlotN!: Int32Array;
+  sSpeaker!: Int32Array;
+  sSpeakT!: Float32Array;
+  slotX!: Float32Array;
+  slotZ!: Float32Array;
+  slotF!: Float32Array;
+  slotSpot!: Int32Array;
+  slotOwner!: Int32Array;
+  byKind!: Int32Array[];
 
   // doorways
-  readonly dN: number;
-  readonly dX: Float32Array;
-  readonly dZ: Float32Array;
-  readonly dF: Float32Array;
-  readonly dPx: Float32Array;
-  readonly dPz: Float32Array;
-  readonly dEdge: Int32Array;
-  readonly dW: Float32Array;
-  readonly dCdf: Float32Array;
-  readonly nodeDoor: Int32Array;
+  dN!: number;
+  dX!: Float32Array;
+  dZ!: Float32Array;
+  dF!: Float32Array;
+  dPx!: Float32Array;
+  dPz!: Float32Array;
+  dEdge!: Int32Array;
+  dW!: Float32Array;
+  dCdf!: Float32Array;
+  nodeDoor!: Int32Array;
 
-  readonly wp: Int32Array;
-  readonly maxCover: number;
+  wp!: Int32Array;
+  maxCover!: number;
 
   // node buckets for "nearest reachable node"
-  private readonly bS: number;
-  private readonly bN: number;
-  private readonly bStart: Int32Array;
-  private readonly bItems: Int32Array;
+  private bS!: number;
+  private bN!: number;
+  private bStart!: Int32Array;
+  private bItems!: Int32Array;
 
-  private readonly trees: Array<Tree | null>;
-  private readonly heapN: Int32Array;
-  private readonly heapK: Float32Array;
+  private trees!: Array<Tree | null>;
+  private heapN!: Int32Array;
+  private heapK!: Float32Array;
   budget = 0;
 
-  constructor(site: CitySite, plan: CityPlan) {
+  /**
+   * The streets of a city worked out for its people. `later`: only the graph now, the rest (the
+   * doorways, the spots, the waypoints) left in `rest` to be stepped through (see CityData.job).
+   */
+  constructor(site: CitySite, plan: CityPlan, later = false) {
     this.site = site;
     this.plan = plan;
     this.R = site.radius;
@@ -342,8 +347,31 @@ class CityData {
       this.adjN[k] = a;
       this.adjE[k] = e;
     }
+    this.rest = this.build(rnd);
+    if (!later) {
+      finish(this.rest);
+      this.rest = null;
+    }
+  }
+
+  /** What is left to work out after the graph (see the constructor). */
+  private rest: Generator<void, void> | null;
+
+  /** A city's streets worked out for its people as a job (see world/budget.ts), a few streets or spots a step. */
+  static *job(site: CitySite, plan: CityPlan): Generator<void, CityData> {
+    const d = new CityData(site, plan, true);
+    if (d.rest) yield* d.rest;
+    d.rest = null;
+    return d;
+  }
+
+  private *build(rnd: () => number): Generator<void, void> {
+    const plan = this.plan;
+    const nN = this.nN;
+    const nE = this.nE;
     // Safe lateral offset per edge: the widest offset at which both sides of the whole edge are clear.
     for (let e = 0; e < nE; e++) {
+      if ((e & 7) === 7) yield;
       const a = this.eA[e];
       const b = this.eB[e];
       const L = this.eLen[e];
@@ -377,6 +405,7 @@ class CityData {
     const dE: number[] = [];
     const dT: number[] = [];
     for (let e = 0; e < nE; e++) {
+      if ((e & 3) === 3) yield;
       const a = this.eA[e];
       const b = this.eB[e];
       const L = this.eLen[e];
@@ -484,6 +513,7 @@ class CityData {
     const edT = new Float64Array(nE);
     const kinds: number[][] = KINDS.map(() => []);
     for (let s = 0; s < sN; s++) {
+      if ((s & 1) === 1) yield;
       const sp = spotList[s];
       const kind = Math.max(0, KINDS.indexOf(sp.kind));
       this.sKind[s] = kind;
@@ -576,6 +606,7 @@ class CityData {
     this.slotOwner = new Int32Array(slX.length).fill(-1);
     this.byKind = kinds.map((k) => Int32Array.from(k));
 
+    yield;
     // ---- waypoints: spread over the town by farthest-point sampling
     const wps: number[] = [];
     const minD = new Float32Array(nN).fill(Infinity);
@@ -1806,10 +1837,30 @@ export class People {
   prepare(city: { site: CitySite; plan: CityPlan }) {
     const c = this.cache.get(city.site.id);
     if (c && c.plan === city.plan) return;
-    this.cache.set(city.site.id, new CityData(city.site, city.plan));
+    if (this.preparing.some((p) => p.id === city.site.id && p.plan === city.plan)) return;
+    // worked out a few streets at a time on the frame budget (see pumpPrepared)
+    this.preparing.push({ id: city.site.id, plan: city.plan, task: new Task(CityData.job(city.site, city.plan)) });
+  }
+
+  /** Cities whose streets are being worked out ahead of their being entered, oldest first. */
+  private readonly preparing: { id: number; plan: CityPlan; task: Task<CityData> }[] = [];
+
+  /** Works through the cities being prepared on what is left of the frame budget. */
+  private pumpPrepared() {
+    while (this.preparing.length > 0) {
+      const p = this.preparing[0];
+      if (!p.task.run(frameBudget)) return;
+      this.preparing.shift();
+      this.keep(p.id, p.task.finish());
+    }
+  }
+
+  /** Caches a city's streets, keeping at most three (never the one the wanderer is in). */
+  private keep(id: number, c: CityData) {
+    this.cache.set(id, c);
     if (this.cache.size > 3) {
       for (const k of this.cache.keys()) {
-        if (k !== city.site.id && k !== this.cityId) {
+        if (k !== id && k !== this.cityId) {
           this.cache.delete(k);
           break;
         }
@@ -1842,16 +1893,10 @@ export class People {
     }
     let c = this.cache.get(id);
     if (!c || c.plan !== city.plan) {
-      c = new CityData(city.site, city.plan);
-      this.cache.set(id, c);
-      if (this.cache.size > 3) {
-        for (const k of this.cache.keys()) {
-          if (k !== id) {
-            this.cache.delete(k);
-            break;
-          }
-        }
-      }
+      // one still being prepared is finished now; otherwise worked out here
+      const k = this.preparing.findIndex((p) => p.id === id && p.plan === city.plan);
+      c = k >= 0 ? this.preparing.splice(k, 1)[0].task.finish() : new CityData(city.site, city.plan);
+      this.keep(id, c);
     }
     c.slotOwner.fill(-1);
     c.sSpeaker.fill(-1);
@@ -2534,6 +2579,7 @@ export class People {
   // ---------------------------------------------------------------- frame
 
   update(f: FrameState) {
+    this.pumpPrepared();
     const dt = Math.min(f.dt, 0.05);
     this.time = f.time;
     const c = this.city;

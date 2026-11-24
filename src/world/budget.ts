@@ -102,6 +102,15 @@ export class Task<T> {
     if (!this.done && budget.run(this.it)) this.done = true;
     return this.done;
   }
+
+  /** Runs the job to its end now, whatever the budget (for what must exist this frame); returns its answer. */
+  finish(): T {
+    if (!this.done) {
+      finish(this.it);
+      this.done = true;
+    }
+    return this.value as T;
+  }
 }
 
 /** The game's one budget. */

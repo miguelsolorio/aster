@@ -9,11 +9,12 @@ node tools/perf/run.mjs [--throttle 8] [--seconds 20] [--scenarios still,run,boa
 
 - Playwright is not a dependency. It is resolved from `PLAYWRIGHT_PATH` (a `node_modules` directory), else normal resolution, else `/Users/solorio/dev/souvie/node_modules`.
 - Without `--url` it starts its own vite on a free port and stops it on exit.
-- Each scenario loads a fresh page with `?perf`, presses Start, settles about 7 s unmeasured, then measures `--seconds`.
+- Each scenario loads a fresh page with `?perf`, presses Start, settles about 7 s, then measures `--seconds`. The table's stats are of the measured window; `allMax` and `allOver50` are of the whole run, settle included (when the cities around the start build their extras).
+- The game's own spike log (`?perf` posts every slow frame, with where its time went, to the dev server, which appends it to `tools/perf/out/device.jsonl`) is read back for each run: the top 10 spike sections (in how many spikes' top each was, and its worst ms) are printed at the end, and kept per scenario in its json.
 - Output: a table on stdout, `<out>/<scenario>.json` (frame times, samples), `<out>/summary.json` (all rows, git SHA, date) and a final screenshot. `--trace` adds `<scenario>.trace.json` and prints the top self-time functions inside frames over 33 ms.
 - `baseline.json` is the committed summary to compare later phases against (same `--throttle`, same machine).
 
-Scenarios: `still` (`?day=0.45`), `run` (hold W), `board` (`?tools=board`, riding, hold W), `city` (`?miner`), `stepped` (`?settle=stepped-city`), `cavern` (`?cavern`, 1 km short of an open cavern, hold W), `night` (`?day=0.95&tools=chart`, hold W), `cityApproach` (`?approach=1700&day=0.45`: 1.7 km out from the nearest city's edge facing it, hold W; its full detail appears about 15 s into the window).
+Scenarios: `still` (`?day=0.45`), `run` (hold W), `board` (`?tools=board`, riding, hold W), `city` (`?miner`), `stepped` (`?settle=stepped-city`), `cavern` (`?cavern`, 1 km short of an open cavern, hold W), `night` (`?day=0.95&tools=chart`, hold W), `cityApproach` (`?approach=1700&day=0.45`: 1.7 km out from the nearest city's edge facing it, hold W; its full detail appears about 15 s into the window). `travel` (`?tools=board`, riding straight on for 40 s with the settle: across the load radii of several cities).
 `?cavern` and `?approach=<metres from the edge>` are dev-only, like `?deep`. Keyboard drives the player fine under touch emulation; only the board toggle needs the on-screen button.
 
 ## ?perf overlay

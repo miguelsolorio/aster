@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { Uniforms } from '../../game/contract';
 import { warmObject } from '../../render/warm';
+import { finish } from '../../world/budget';
 import { FOOT, Writer, cylinder, annulus, dome, finial, polyCap, taper } from '../build';
 import { MAT, createMasonryMaterial } from '../cityShaders';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
@@ -308,7 +309,10 @@ function chainAt(c: Chain, a: number, out: { x: number; z: number; tx: number; t
 
 // ------------------------------------------------------------------ builder
 
-export const water: ExtraBuilder = (ctx: ExtraCtx): Extra => {
+export const water: ExtraBuilder = (ctx: ExtraCtx): Extra => finish(waterJob(ctx));
+
+/** The water as a job (see world/budget.ts): it yields between its parts, a span or a run at a time. */
+export function* waterJob(ctx: ExtraCtx): Generator<void, Extra> {
   const { plan } = ctx;
   const w = new Writer(4096, 8192);
   const ww = new WaterWriter();
@@ -316,10 +320,14 @@ export const water: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const emitters: Emitter[] = [];
   const soft = new SoftIndex(plan.buildings);
   const chains = avenueChains(plan);
+  yield;
 
-  fountain(ctx, w, ww, solids, emitters);
-  const aq = aqueduct(ctx, chains, soft, ww, solids, emitters);
-  runnels(ctx, chains, soft, w, ww, emitters);
+  yield* fountain(ctx, w, ww, solids, emitters);
+  yield;
+  const aq = yield* aqueduct(ctx, chains, soft, ww, solids, emitters);
+  yield;
+  yield* runnels(ctx, chains, soft, w, ww, emitters);
+  yield;
 
   // ---------------------------------------------------------------- meshes
   const geos: THREE.BufferGeometry[] = [];
@@ -371,7 +379,7 @@ export const water: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       mats.length = 0;
     },
   };
-};
+}
 
 // ------------------------------------------------------------------ the fountain in the square
 
@@ -380,7 +388,7 @@ export const water: ExtraBuilder = (ctx: ExtraCtx): Extra => {
  * for the 'well' spot people gather round, so the fountain goes where the square is most open:
  * the point farthest from streets, spots, lamps, buildings and the pool, preferring the centre.
  */
-function fountain(ctx: ExtraCtx, w: Writer, ww: WaterWriter, solids: Solid[], emitters: Emitter[]): void {
+function* fountain(ctx: ExtraCtx, w: Writer, ww: WaterWriter, solids: Solid[], emitters: Emitter[]): Generator<void, void> {
   const { plan, site } = ctx;
   const sq = plan.square;
   const covered = site.kind === 'hill' || site.kind === 'canyon';
@@ -397,6 +405,7 @@ function fountain(ctx: ExtraCtx, w: Writer, ww: WaterWriter, solids: Solid[], em
   let fc = 0;
   const STEP = 1.25;
   for (let rho = 0; rho < sq.r - 1.5; rho += STEP) {
+    yield;
     const n = rho < 0.1 ? 1 : Math.ceil((TAU * rho) / STEP);
     for (let k = 0; k < n; k++) {
       const a = (k / n) * TAU + rho * 0.37;
@@ -519,7 +528,7 @@ const K_IN = 0.4; // half the channel
 const K_OUT = 0.55; // half the whole runnel
 const K_BOT = -0.08;
 
-function runnels(ctx: ExtraCtx, chains: Chain[], soft: SoftIndex, w: Writer, ww: WaterWriter, emitters: Emitter[]): void {
+function* runnels(ctx: ExtraCtx, chains: Chain[], soft: SoftIndex, w: Writer, ww: WaterWriter, emitters: Emitter[]): Generator<void, void> {
   const { plan, site } = ctx;
   const sq = plan.square;
   const rng = ctx.rng(0x7a7e);
@@ -548,6 +557,7 @@ function runnels(ctx: ExtraCtx, chains: Chain[], soft: SoftIndex, w: Writer, ww:
   const p = { x: 0, z: 0, tx: 0, tz: 0 };
 
   for (let rank = 0; rank < order.length; rank++) {
+    yield;
     const c = chains[order[rank]];
     if (rank >= full && ctx.density < 0.6) continue;
     const side = rng() < 0.5 ? 1 : -1;
@@ -575,6 +585,7 @@ function runnels(ctx: ExtraCtx, chains: Chain[], soft: SoftIndex, w: Writer, ww:
       return { x: p.x + nx * off, z: p.z + nz * off, tx: p.tx, tz: p.tz, nx, nz };
     };
     for (let i = 0; i < m; i++) {
+      if ((i & 15) === 15) yield;
       const a = a0 + ((a1 - a0) * i) / (m - 1);
       const q = at(a);
       X[i] = q.x;
@@ -628,6 +639,7 @@ function runnels(ctx: ExtraCtx, chains: Chain[], soft: SoftIndex, w: Writer, ww:
         }
     }
     slabs.sort((u, v) => u.a - v.a);
+    yield;
 
     // contiguous runs of free samples
     for (let i = 0; i < m; ) {
@@ -637,7 +649,10 @@ function runnels(ctx: ExtraCtx, chains: Chain[], soft: SoftIndex, w: Writer, ww:
       }
       let j = i;
       while (j + 1 < m && ok[j + 1]) j++;
-      if (j - i >= 2) buildRun(i, j, i === 0);
+      if (j - i >= 2) {
+        buildRun(i, j, i === 0);
+        yield;
+      }
       i = j + 1;
     }
 
@@ -777,9 +792,9 @@ function runAt(runs: Run[], slope: number, t: number): number {
   return r.k + slope * (t - r.t);
 }
 
-function aqueduct(
+function* aqueduct(
   ctx: ExtraCtx, chains: Chain[], soft: SoftIndex, ww: WaterWriter, solids: Solid[], emitters: Emitter[],
-): { w: Writer; far: Writer; base: number } | null {
+): Generator<void, { w: Writer; far: Writer; base: number } | null> {
   const { plan, site } = ctx;
   if (site.radius <= 450) return null;
   const rng = ctx.rng(0xa9ed);
@@ -796,6 +811,7 @@ function aqueduct(
   const dirs: Array<[number, number]> = [[1, 0], [0, 1], [-1, 0], [0, -1]];
   let best: Route | null = null;
   for (const [dx, dz] of dirs) {
+    yield;
     const px = -dz, pz = dx;
     const ang = Math.atan2(dz, dx);
     let gap = Math.PI;
@@ -805,11 +821,13 @@ function aqueduct(
     }
     // the rim: the last thing built along this bearing
     let last = 0;
-    for (let t = 0; t < R * 1.35; t += 2)
+    for (let t = 0; t < R * 1.35; t += 2) {
+      if ((t & 63) === 0) yield;
       for (let s = -10; s <= 10; s += 5) {
         const x = dx * t + px * s, z = dz * t + pz * s;
         if (ctx.roofAt(x, z) > 0 || soft.hit(x, z, 0.5)) last = t;
       }
+    }
     let tc = Math.max(last + 12, plan.pool ? Math.hypot(plan.pool.x, plan.pool.z) + plan.pool.r + 12 : 0);
     const lim = tc + 60;
     while (tc < lim && !(ctx.free(dx * tc, dz * tc, CH * 1.5) && !soft.hit(dx * tc, dz * tc, CH + 1))) tc += 3;
@@ -819,6 +837,7 @@ function aqueduct(
     const gHi = new Float32Array(NS);
     const gLo = new Float32Array(NS);
     for (let i = 0; i < NS; i++) {
+      if ((i & 31) === 31) yield;
       const t = tc + CH + i * STEP;
       let hi = -Infinity, lo = Infinity;
       for (const s of [-DW, 0, DW]) {
@@ -832,6 +851,7 @@ function aqueduct(
     // A hill town keeps the lowest deck that still clears a head under the first arches and steps
     // down its mound; elsewhere a level deck, stepped only if it would stand too tall.
     for (const h of hill ? [5.5] : [7.5, 10.5, 14]) {
+      yield;
       let r = walk(dx, dz, tc, gc, h, gHi, gLo, hill);
       if (!hill && r.maxH > 18) r = walk(dx, dz, tc, gc, h, gHi, gLo, true);
       r.score = gap * 1.2 + (Math.min(r.len, L) / L) * 2 - (h - 7.5) * 0.04 - Math.max(0, r.maxH - HMAX) * 0.15 + rng() * 0.15;
@@ -977,6 +997,7 @@ function aqueduct(
   sup.push({ t: shc, lo: r.te, hi: shc + SH, g: gs });
 
   for (let i = 0; i + 1 < sup.length; i++) {
+    yield;
     const L0 = sup[i], L1 = sup[i + 1];
     const a = L0.hi, b = L1.lo;
     const mid = (a + b) / 2, A = (b - a) / 2;

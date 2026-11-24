@@ -28,12 +28,14 @@ export function contactBase(grid: Float32Array, size: number): Float32Array {
 
 /**
  * Adds the pools under tree crowns from triple `from` on (an index into crowns), in order, so
- * crowns added a few at a time come out as if all were added at once. Where `map` is given (the
+ * crowns added a few at a time come out as if all were added at once (up to triple `to`, if given,
+ * so a long list can be worked through in slices). Where `map` is given (the
  * packed city map, see roofBytes) the cells touched are repacked into its G channel too.
  */
-export function shadeCrowns(a: Float32Array, size: number, half: number, crowns: ArrayLike<number>, from = 0, map?: Uint8Array): void {
+export function shadeCrowns(a: Float32Array, size: number, half: number, crowns: ArrayLike<number>, from = 0, map?: Uint8Array, to = crowns.length): void {
   const S = size | 0;
-  for (let i = from; i + 2 < crowns.length; i += 3) {
+  const end = Math.min(to, crowns.length);
+  for (let i = from; i + 2 < end; i += 3) {
     const cx = crowns[i] + half, cz = crowns[i + 1] + half, r = crowns[i + 2];
     const i0 = Math.max(0, Math.floor(cx - r)), i1 = Math.min(S - 1, Math.ceil(cx + r));
     const j0 = Math.max(0, Math.floor(cz - r)), j1 = Math.min(S - 1, Math.ceil(cz + r));

@@ -25,7 +25,7 @@ const GIVEN_URL = opt('url', '');
 const JS_FLAGS = opt('js-flags', '');
 const SETTLE_MS = 7000;
 
-// name -> { query, hold (key to hold), board (tap the board button first) }
+// name -> { query, hold (key to hold), board (tap the board button first), seconds (window, if not --seconds) }
 const SCENARIOS = {
   still: { query: '?day=0.45' },
   run: { query: '', hold: 'w' },
@@ -38,6 +38,8 @@ const SCENARIOS = {
   night: { query: '?day=0.95&tools=chart', hold: 'w' },
   // 1.7 km out from a city's edge, walking in: the full city appears about 12 s into the window
   cityApproach: { query: '?approach=1700&day=0.45', hold: 'w' },
+  // riding the board straight on for 40 s (settle included): across the load radii of several cities
+  travel: { query: '?tools=board', board: true, hold: 'w', seconds: 33 },
 };
 const names = opt('scenarios', Object.keys(SCENARIOS).join(',')).split(',').filter(Boolean);
 for (const n of names) if (!SCENARIOS[n]) fail(`unknown scenario "${n}" (have ${Object.keys(SCENARIOS).join(', ')})`);
@@ -87,6 +89,48 @@ async function startServer() {
 const stopServer = () => server?.kill();
 process.on('exit', stopServer);
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(130));
+
+// ---- the spike log the game posts under ?perf (vite.config.ts perfLog appends it here)
+const DEVICE_LOG = path.join(root, 'tools/perf/out/device.jsonl');
+const logSize = () => {
+  try {
+    return fs.statSync(DEVICE_LOG).size;
+  } catch {
+    return 0;
+  }
+};
+/** The spike records appended to the log between two sizes of it. */
+function readSpikes(from, to) {
+  if (to <= from) return [];
+  const fd = fs.openSync(DEVICE_LOG, 'r');
+  const buf = Buffer.alloc(to - from);
+  fs.readSync(fd, buf, 0, buf.length, from);
+  fs.closeSync(fd);
+  const out = [];
+  for (const line of buf.toString('utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      for (const it of JSON.parse(line).items ?? []) if (it.kind === 'spike') out.push(it);
+    } catch {}
+  }
+  return out;
+}
+/** Spike sections ("cities.extra 38.0") by label: how many spikes each was in the top of, and the worst. */
+function spikeSections(spikes) {
+  const by = new Map();
+  for (const sp of spikes) {
+    for (const t of sp.top ?? []) {
+      const i = t.lastIndexOf(' ');
+      const label = t.slice(0, i);
+      const ms = Number(t.slice(i + 1));
+      const e = by.get(label) ?? { label, count: 0, max: 0 };
+      e.count++;
+      e.max = Math.max(e.max, ms);
+      by.set(label, e);
+    }
+  }
+  return [...by.values()].sort((a, b) => b.max - a.max);
+}
 
 // ---- stats
 const q = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : 0);
@@ -180,14 +224,11 @@ async function runScenario(browser, base, name) {
   }
   await cdp.send('Emulation.setCPUThrottlingRate', { rate: THROTTLE });
   if (sc.hold) await page.keyboard.down(sc.hold);
-  await page.waitForTimeout(SETTLE_MS);
 
   const chunks = [];
-  if (TRACE) {
-    cdp.on('Tracing.dataCollected', (e) => chunks.push(...e.value));
-    await cdp.send('Tracing.start', { categories: 'devtools.timeline,v8,v8.gc,disabled-by-default-v8.cpu_profiler,blink.user_timing', transferMode: 'ReportEvents' });
-  }
   // __perf.frames is a ring of 600, so poll often and keep every frame that is new since the last poll.
+  // The settle is polled too: its frames are in the whole-run stats (that is when the cities around
+  // the start build their extras), not in the settled ones.
   const ft = [];
   const samples = [];
   let seen = null;
@@ -205,14 +246,28 @@ async function runScenario(browser, base, name) {
     return s;
   };
   await poll();
-  const end = Date.now() + SECONDS * 1000;
+  const settleEnd = Date.now() + SETTLE_MS;
+  while (Date.now() < settleEnd) {
+    await page.waitForTimeout(250);
+    await poll();
+  }
+  const settled = ft.length;
+  const longAtSettle = (await poll()).long;
+  if (TRACE) {
+    cdp.on('Tracing.dataCollected', (e) => chunks.push(...e.value));
+    await cdp.send('Tracing.start', { categories: 'devtools.timeline,v8,v8.gc,disabled-by-default-v8.cpu_profiler,blink.user_timing', transferMode: 'ReportEvents' });
+  }
+  const end = Date.now() + (sc.seconds ?? SECONDS) * 1000;
   let lastPoll;
   while (Date.now() < end) {
     await page.waitForTimeout(250);
     lastPoll = await poll();
   }
   if (sc.hold) await page.keyboard.up(sc.hold);
-  const raw = { ft, long: lastPoll.long - seen.long };
+  const raw = { ft: ft.slice(settled), all: ft, long: lastPoll.long - longAtSettle };
+  // send the spike log now rather than on its 4 s timer
+  await page.evaluate(() => dispatchEvent(new Event('pagehide'))).catch(() => {});
+  await page.waitForTimeout(600);
 
   let traceInfo = null;
   if (TRACE) {
@@ -236,10 +291,12 @@ const browser = await chromium.launch({
   args: ['--use-angle=metal', '--enable-precise-memory-info', ...(JS_FLAGS ? [`--js-flags=${JS_FLAGS}`] : [])],
 });
 const rows = [];
+const allSpikes = [];
 try {
   for (const name of names) {
     process.stderr.write(`running ${name} ...\n`);
     let res;
+    const log0 = logSize();
     try {
       res = await runScenario(browser, base, name);
     } catch (e) {
@@ -250,8 +307,15 @@ try {
     const ft = res.raw.ft;
     const row = { scenario: name, ...summarize(ft, res.raw.long, res.samples), tier: res.samples.at(-1)?.tier, scale: res.samples.at(-1)?.scale, pace: res.samples.at(-1)?.pace };
     row.longTasks = res.raw.long;
+    // the whole run, settle included
+    row.allMax = r1(Math.max(0, ...res.raw.all));
+    row.allOver50 = res.raw.all.filter((x) => x > 50).length;
+    const spikes = readSpikes(log0, logSize());
+    row.spikes = spikes.length;
+    row.sections = spikeSections(spikes).slice(0, 10);
+    allSpikes.push(...spikes);
     rows.push(row);
-    fs.writeFileSync(path.join(OUT, `${name}.json`), JSON.stringify({ row, frames: ft, samples: res.samples, trace: res.traceInfo, errors: res.errors }));
+    fs.writeFileSync(path.join(OUT, `${name}.json`), JSON.stringify({ row, frames: ft, all: res.raw.all, samples: res.samples, trace: res.traceInfo, errors: res.errors, spikes }));
     if (res.traceInfo) {
       console.log(`\n${name}: top self time inside frames >33 ms (${res.traceInfo.slow} frames)`);
       for (const t of res.traceInfo.top) console.log(`  ${String(t.pct).padStart(5)}%  ${t.fn}`);
@@ -268,7 +332,14 @@ try {
 } catch {}
 fs.writeFileSync(path.join(OUT, 'summary.json'), JSON.stringify({ sha, date: new Date().toISOString(), throttle: THROTTLE, seconds: SECONDS, rows }, null, 2));
 
-const cols = ['scenario', 'median', 'p95', 'p99', 'over33', 'over50', 'over100', 'max', 'longTasks', 'calls', 'triangles', 'tier', 'scale', 'pace'];
-console.log(`\nthrottle ${THROTTLE}x, ${SECONDS}s, ${sha}`);
+const cols = ['scenario', 'median', 'p95', 'p99', 'over33', 'over50', 'over100', 'max', 'allMax', 'allOver50', 'longTasks', 'calls', 'triangles', 'tier', 'scale', 'pace'];
+console.log(`\nthrottle ${THROTTLE}x, ${SECONDS}s, ${sha} (allMax, allOver50: the whole run, settle included)`);
 console.log(cols.join('\t'));
 for (const r of rows) console.log(r.skipped ? `${r.scenario}\tSKIPPED: ${r.skipped}` : cols.map((c) => r[c]).join('\t'));
+
+// where the slow frames went, from the game's own spike log (whole runs)
+const top = spikeSections(allSpikes).slice(0, 10);
+console.log(`\ntop spike sections (${allSpikes.length} spikes; in how many spikes' top, worst ms):`);
+if (top.length === 0) console.log('  (none logged: is the dev server this script started serving ?perf, and tools/perf/out writable?)');
+for (const t of top) console.log(`  ${t.label.padEnd(28)} ${String(t.count).padStart(4)}  ${t.max.toFixed(1).padStart(7)}`);
+for (const r of rows) if (r.sections?.length) console.log(`  ${r.scenario}: ${r.sections.slice(0, 3).map((t) => `${t.label} ${t.max.toFixed(1)}`).join(', ')}`);

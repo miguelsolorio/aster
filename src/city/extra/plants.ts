@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { loadModel, modelGeometry } from '../../render/art';
+import { finish } from '../../world/budget';
 import { BED_SOIL, POOL_LEVEL, Writer } from '../build';
 import { MAT, createMasonryMaterial } from '../cityShaders';
 import type { Emitter, Extra, ExtraBuilder, ExtraCtx, Solid } from '../extras';
@@ -854,8 +855,47 @@ export function marketAreas(plan: CityPlan): { rects: number[]; lines: number[] 
 
 const isBed = (b: Building): boolean => b.role === 'garden' && !b.solid && b.roof === 'none' && b.h >= 0.4;
 
-export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
+export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => finish(plantsJob(ctx));
+
+/**
+ * The plants as a job (see world/budget.ts), yielding every few trees, shrubs or walls. The module's
+ * shared state (the modelled plants it began with, where pots put their solids) is its own for each
+ * step, so a model arriving mid-way or another city's plants built meanwhile change nothing.
+ */
+export function plantsJob(ctx: ExtraCtx): Generator<void, Extra> {
+  return withPlantState(plantsSteps(ctx));
+}
+
+/**
+ * Steps a job that draws plants (tree, shrub, reeds) with this module's shared state as it was
+ * when the job began: the modelled plants then loaded, and its own sink for the pots' solids.
+ */
+export function* withPlantState<T>(job: Generator<void, T>): Generator<void, T> {
+  const m = MODELLED;
+  const r = REEDS;
+  let sink: Solid[] | null = null;
+  for (;;) {
+    const was = { m: MODELLED, r: REEDS, sink: potSink };
+    MODELLED = m;
+    REEDS = r;
+    potSink = sink;
+    let res: IteratorResult<void, T>;
+    try {
+      res = job.next();
+    } finally {
+      sink = potSink;
+      MODELLED = was.m;
+      REEDS = was.r;
+      potSink = was.sink;
+    }
+    if (res.done) return res.value;
+    yield;
+  }
+}
+
+function* plantsSteps(ctx: ExtraCtx): Generator<void, Extra> {
   const { plan, site } = ctx;
+  let ops = 0;
   const T = TUNE[site.kind];
   const dens = ctx.density;
   const rng = ctx.rng(0x91a7);
@@ -957,6 +997,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       const n = Math.ceil((TAU * sq.r) / (pool ? 3.5 : 5));
       const a0 = rng() * TAU;
       for (let k = 0; k < n && tx.length - start < quota; k++) {
+        if ((++ops & 7) === 0) yield;
         const a = a0 + (k / n) * TAU;
         const rr = r0 + Math.sqrt(rng()) * (r1 - r0); // more toward the edge
         tryTree(sq.x + Math.cos(a) * rr, sq.z + Math.sin(a) * rr, height(8, 13));
@@ -971,6 +1012,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     for (const b of beds) {
       if (tx.length - start >= quota) break;
       if (Math.min(b.w, b.d) < 2.5) continue;
+      yield;
       const n = Math.floor((b.w * b.d) / per + rng());
       for (let k = 0; k < n * 3 && k < 24; k++) {
         const x = b.x + (rng() - 0.5) * Math.max(0, b.w - 2);
@@ -990,6 +1032,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     for (const e of plan.edges) {
       if (tx.length - start >= quota) break;
       if (e.width < Math.max(9, wmax - 2)) continue;
+      yield;
       const a = plan.nodes[e.a], b = plan.nodes[e.b];
       const L = Math.hypot(b.x - a.x, b.z - a.z);
       if (L < 1) continue;
@@ -1023,6 +1066,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       !inSquare(x, z, 2) && ctx.streetGap(x, z) > 2.2 && !bedAt(x, z) && (!T.courtOnly || enclosed(x, z));
     const tries = (want - tx.length) * 30 + 200;
     for (let it = 0; it < tries && tx.length < want; it++) {
+      if ((++ops & 15) === 0) yield;
       const rr = R * 0.95 * Math.sqrt(rng());
       const a = rng() * TAU;
       const x = Math.cos(a) * rr, z = Math.sin(a) * rr;
@@ -1046,6 +1090,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const ty: number[] = [];
   const modelled = MODELLED;
   for (let i = 0; i < tx.length; i++) {
+    if ((i & 3) === 3) yield;
     const x = tx[i], z = tz[i];
     const y = bedAt(x, z) ? BED_SOIL : ctx.groundAt(x, z);
     // the procedural tree takes its draws from rng either way, so what follows is placed the same
@@ -1081,6 +1126,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const shrubWant = Math.round(T.shrubs * dens);
   // at the feet of trees
   for (let i = 0; i < tx.length && nShrubs < shrubWant * 0.4; i++) {
+    if ((++ops & 7) === 0) yield;
     const n = rng() < (site.kind === 'oasis' ? 0.6 : 0.3) ? 1 + Math.floor(rng() * 2) : 0;
     for (let k = 0; k < n; k++) {
       const a = rng() * TAU, d = 1.3 + rng() * 1.4;
@@ -1091,6 +1137,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   // in the beds
   for (const b of beds) {
     if (nShrubs >= shrubWant * 0.75) break;
+    yield;
     const n = Math.round(((b.w - 0.6) * (b.d - 0.6) * dens) / 6 + rng() * 0.6);
     for (let k = 0; k < n; k++) {
       const x = b.x + (rng() - 0.5) * Math.max(0, b.w - 1.2);
@@ -1100,6 +1147,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   }
   // scattered over the open ground and out into the sand
   for (let it = 0; it < shrubWant * 8 && nShrubs < shrubWant; it++) {
+    if ((++ops & 7) === 0) yield;
     const rr = R * 1.05 * Math.sqrt(rng());
     const a = rng() * TAU;
     const x = Math.cos(a) * rr, z = Math.sin(a) * rr;
@@ -1113,6 +1161,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
     const step = 0.8 / dens;
     const n = Math.floor((TAU * pool.r) / step);
     for (let k = 0; k < n; k++) {
+      if ((++ops & 7) === 0) yield;
       const a = (k / n) * TAU;
       if (Math.sin(a * 3 + ph1) + 0.6 * Math.sin(a * 7 + ph2) < -0.45) continue;
       for (let row = 0; row < 2; row++) {
@@ -1130,6 +1179,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   const vineWant = Math.round(T.vines * dens);
   for (const b of plan.buildings) {
     if (!b.solid || (b.role !== 'house' && b.role !== 'hall') || b.h < 3) continue;
+    if ((++ops & 3) === 0) yield;
     const fs = facesOf(b);
     if (fs.length === 0) continue; // round: nothing to hang a vine or stand a pot against
     const r = rng();
@@ -1186,6 +1236,7 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
 
   // ---------------------------------------------------------------- meshes
 
+  yield;
   const near = new THREE.Group();
   near.name = 'city-vegetation';
   const mat = createMasonryMaterial(ctx.uniforms, { shadow: true, twoSided: true, sway: true });
@@ -1220,7 +1271,9 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
   }
   const cellMeshes: THREE.Mesh[] = [];
   const bounds: number[] = [];
+  yield;
   for (const w of cells.values()) {
+    if ((++ops & 3) === 0) yield;
     w.orient();
     const g = w.geometry();
     if (!g) continue;
@@ -1284,4 +1337,4 @@ export const plants: ExtraBuilder = (ctx: ExtraCtx): Extra => {
       geos.length = 0;
     },
   };
-};
+}
