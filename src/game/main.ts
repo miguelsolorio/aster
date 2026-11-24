@@ -520,6 +520,7 @@ function start() {
   let stillDrawn = false; // the paused frame has been drawn; nothing more to render until something changes
   // Quality: a tier (mobile / low / high) plus a render scale the game lowers by itself if frames run slow.
   const auto = new AutoQuality(defaultTier(), (tier) => {
+    perf?.note(`quality -> ${tier} x${auto.renderScale} pace ${auto.pace}`);
     ui.setQuality(tier);
     applyTier();
   });
@@ -2161,11 +2162,13 @@ function start() {
   function update(dt: number) {
     const st = player.state;
     const playing = ui.state === 'playing';
+    perf?.mark('pre');
     frame.dt = dt;
     frame.time += dt;
     u.uTime.value = frame.time;
 
     day.update(dt);
+    perf?.mark('day');
     // The heavens: they turn, the moon keeps its phase, and now and then something happens up there.
     {
       if (skyAsk) {
@@ -2943,16 +2946,24 @@ function start() {
       }
     }
 
+    perf?.mark('player-cam');
     cities.update(dt, st.pos);
+    perf?.mark('cities');
     footpaths.focus(u, st.pos.x, st.pos.z);
     collisionDebug.update(dt, st.pos.x, st.pos.y, st.pos.z);
     bake.update(st.pos);
+    perf?.mark('bake');
     clipmap.update(camera.position, camera);
+    perf?.mark('clipmap');
     trail.update(dt, st.pos.x, st.pos.z);
+    perf?.mark('trail');
     dust.update(frame);
+    perf?.mark('dust');
     splash.update(frame);
     discoveries.update(frame);
+    perf?.mark('discoveries');
     props.update(frame);
+    perf?.mark('props');
     // Small things lying about are picked up by walking onto them.
     if (playing && st.grounded) {
       const rk = discoveries.relicNear(st.pos.x, st.pos.y, st.pos.z, 1.5);
@@ -3075,17 +3086,22 @@ function start() {
       }
     }
     massifs.update(frame, clipmap.levelCount);
+    perf?.mark('massifs');
     wildlife.update(frame);
+    perf?.mark('wildlife');
     fauna.update(frame);
+    perf?.mark('fauna');
     const ambience = cities.frame(frame);
     caravans.needy = !save.has('board');
     caravans.update(frame);
+    perf?.mark('caravans');
     // the camp fires out on the routes crackle like the city's own
     ambience.fire = Math.min(1, Math.hypot(ambience.fire, caravans.fireLevel(frame.player.pos.x, frame.player.pos.z)));
     audio.setAmbience(ambience);
     waymarks.update(frame);
     people.setCity(cities.active);
     people.update(frame);
+    perf?.mark('people');
     if (seekMiner && people.minerNear(1e9, minerP)) {
       seekMiner = false;
       player.place(minerP.x, minerP.z + 2.5);
@@ -3121,8 +3137,10 @@ function start() {
 
   function render() {
     // the storms, where the eye is now
+    perf?.mark('update-rest');
     camera.updateMatrixWorld();
     updateStorm(u, frame, (x, z) => world.height(x, z), guard.peaks);
+    perf?.mark('storm');
     let target = rt;
     if (postNeedsDepth()) {
       if (!rtDepth) {
@@ -3137,8 +3155,10 @@ function start() {
     }
     renderer.setRenderTarget(target);
     renderer.render(scene, camera);
+    perf?.mark('draw-scene');
     renderer.setRenderTarget(null);
     renderer.render(postScene, postCam);
+    perf?.mark('draw-post');
   }
 
   if (import.meta.env.DEV) {
@@ -3246,10 +3266,14 @@ function start() {
         if (rafGaps.length > 90) rafGaps.shift();
         if (rafGaps.length >= 30 && ++gapCount % 15 === 0) {
           const sorted = [...rafGaps].sort((a, b) => a - b);
-          const est = sorted[Math.floor(sorted.length * 0.15)];
+          // the median: Safari sometimes runs two callbacks close together, which made a low percentile read a
+          // 120 Hz (or rAF-capped 60 Hz) iPhone as 144 Hz
+          const est = sorted[sorted.length >> 1];
           const hz = 1000 / est;
           const snap = [30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 240].find((r) => Math.abs(hz - r) / r < 0.08);
+          const was = Math.round(1 / auto.refreshS);
           auto.setRefresh(1 / (snap ?? hz));
+          if (Math.round(1 / auto.refreshS) !== was || !refreshKnown) perf?.note(`refresh ${Math.round(1 / auto.refreshS)} Hz (gaps p15 ${sorted[Math.floor(sorted.length * 0.15)].toFixed(1)} p50 ${est.toFixed(1)} p85 ${sorted[Math.floor(sorted.length * 0.85)].toFixed(1)})`);
           refreshKnown = true;
         }
       }
@@ -3262,7 +3286,9 @@ function start() {
     const paced = touch.used || auto.tier === 'mobile';
     auto.setPaced(paced);
     if (paced) {
-      const gate = refreshKnown ? auto.targetIntervalS * 1000 - auto.refreshS * 500 : 1000 / 62;
+      // by time, not by counted vsyncs: the refresh estimate wanders (Safari's rAF timestamps are uneven),
+      // and 4 ms of slack lands every frame on the right vsync at 60, 90, 120 or 144 Hz
+      const gate = (auto.pace === 30 ? 1000 / 30 : 1000 / 60) - 4;
       if (now - last < gate) return;
     }
     const real = (now - last) / 1000;
@@ -3282,11 +3308,14 @@ function start() {
     // what this frame can give to building the world (see world/budget.ts)
     frameBudget.begin(budgetFor(auto.tier));
     const t0 = performance.now();
+    perf?.frameStart(now);
     update(still || ui.state === 'photo' ? 0 : dt);
     perf?.begin();
     uploader.before();
+    perf?.mark('uploader');
     render();
     uploader.after();
+    perf?.mark('uploader-after');
     prevWork = performance.now() - t0;
     perf?.end(now);
     lateWatch?.();

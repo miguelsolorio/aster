@@ -2,11 +2,18 @@
 // numbers on window.__perf for scripts (see tools/perf/). Nothing is created without ?perf.
 import type { WebGLRenderer } from 'three';
 import type { AutoQuality } from './quality';
+import { setPerfMark } from './perfMark';
 
 const RING = 600; // frame times kept
 const SHOW_EVERY = 250; // ms between box updates
 
 export interface PerfHud {
+  /** At the top of a rAF callback that will draw, with its timestamp. */
+  frameStart(rafNow: number): void;
+  /** Time since the previous mark is charged to this label (update sections, render passes). */
+  mark(label: string): void;
+  /** A one-off event worth seeing next to the spikes (tier or pace change, a city staged, ...). */
+  note(msg: string): void;
   /** Just before the frame's draw calls. */
   begin(): void;
   /** Just after them, with the rAF timestamp. */
@@ -82,7 +89,58 @@ export function createPerfHud(renderer: WebGLRenderer, auto: AutoQuality): PerfH
   let last = 0;
   let shown = 0;
 
+  // Spike log: every frame over 40 ms (or with over 25 ms of work) is recorded with where its time
+  // went, and sent to the dev server (vite.config.ts writes it to tools/perf/out/device.jsonl), so a
+  // phone session can be read on the Mac. Safari has no long-task API, so this is the only way to see.
+  const marks: Array<[string, number]> = [];
+  let markT = 0;
+  let startT = 0;
+  let lateMs = 0; // how long after its vsync timestamp the callback began: main-thread work outside rAF
+  const queue: unknown[] = [];
+  const notes: string[] = [];
+  const gaps: number[] = []; // raw rAF-to-rAF gaps of drawn frames, for the summary
+  const session = Math.random().toString(36).slice(2, 8);
+  const send = () => {
+    if (!queue.length) return;
+    const body = JSON.stringify({ session, ua: navigator.userAgent, dpr: devicePixelRatio, w: innerWidth, h: innerHeight, items: queue.splice(0) });
+    try {
+      fetch('/__perf', { method: 'POST', body, keepalive: true, headers: { 'content-type': 'application/json' } }).catch(() => {});
+    } catch {
+      /* not served by the dev server */
+    }
+  };
+  setInterval(() => {
+    if (gaps.length) {
+      const g = [...gaps].sort((a, b) => a - b);
+      const q = (f: number) => +g[Math.min(g.length - 1, Math.floor(g.length * f))].toFixed(1);
+      queue.push({ kind: 'summary', t: Math.round(performance.now()), fps: data.fps, median: data.median, worst: data.worst, over50: data.over50, over100: data.over100, p10: q(0.1), p50: q(0.5), p90: q(0.9), p99: q(0.99), tier: auto.tier, scale: auto.renderScale, pace: auto.pace, hz: Math.round(1 / auto.refreshS), calls: data.calls, tris: data.triangles, progs: data.programs });
+      gaps.length = 0;
+    }
+    send();
+  }, 4000);
+  addEventListener('pagehide', send);
+
+  setPerfMark((label) => {
+    const t = performance.now();
+    marks.push([label, t - markT]);
+    markT = t;
+  });
+
   return {
+    frameStart(rafNow) {
+      startT = markT = performance.now();
+      lateMs = startT - rafNow;
+      marks.length = 0;
+    },
+    mark(label) {
+      const t = performance.now();
+      marks.push([label, t - markT]);
+      markT = t;
+    },
+    note(msg) {
+      notes.push(msg);
+      queue.push({ kind: 'note', t: Math.round(performance.now()), msg });
+    },
     begin() {
       renderer.info.reset();
     },
@@ -99,6 +157,12 @@ export function createPerfHud(renderer: WebGLRenderer, auto: AutoQuality): PerfH
         times.push([now, ms]);
         if (ms > 50) data.over50++;
         if (ms > 100) data.over100++;
+        gaps.push(ms);
+        const work = performance.now() - startT;
+        if (ms > 40 || work > 25) {
+          const top = marks.filter((m) => m[1] > 1).sort((a, b) => b[1] - a[1]).slice(0, 6).map((m) => `${m[0]} ${m[1].toFixed(1)}`);
+          queue.push({ kind: 'spike', t: Math.round(now), gap: +ms.toFixed(1), work: +work.toFixed(1), late: +lateMs.toFixed(1), top, calls: info.render.calls, tier: auto.tier, scale: auto.renderScale, pace: auto.pace });
+        }
       }
       last = now;
       while (times.length && now - times[0][0] > 5000) times.shift();

@@ -29,8 +29,31 @@ gtag('config', '${GA_ID}');`,
   };
 }
 
+// Dev only: the ?perf overlay on a phone posts its spike log here; it is appended to
+// tools/perf/out/device.jsonl so a session on a real device can be read on the Mac.
+function perfLog(): Plugin {
+  return {
+    name: 'perf-log',
+    apply: 'serve',
+    configureServer(server) {
+      server.middlewares.use('/__perf', (req, res) => {
+        if (req.method !== 'POST') return void res.end();
+        let body = '';
+        req.on('data', (c) => (body += c));
+        req.on('end', async () => {
+          const { appendFile, mkdir } = await import('node:fs/promises');
+          await mkdir('tools/perf/out', { recursive: true });
+          await appendFile('tools/perf/out/device.jsonl', `${body}\n`);
+          res.statusCode = 204;
+          res.end();
+        });
+      });
+    },
+  };
+}
+
 // Relative base so the build works from a subpath (GitHub Pages serves it at /aster/).
 export default defineConfig({
   base: './',
-  plugins: [googleAnalytics()],
+  plugins: [googleAnalytics(), perfLog()],
 });
