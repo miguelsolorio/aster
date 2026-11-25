@@ -97,7 +97,7 @@ function keyControls(k: Known): ControlSection[] {
     { action: 'Steer', keys: wasd },
     { action: 'Drop', keys: ['Space', 'Space'], note: 'double-tap in the air' },
   ];
-  if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, and flies faster' });
+  if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, flies faster and climbs far higher' });
   const out: ControlSection[] = [
     {
       title: 'Move',
@@ -128,7 +128,7 @@ function touchControls(k: Known): ControlSection[] {
     { action: 'Steer', note: 'Left thumb stick' },
     { action: 'Drop', note: 'Small button in the air' },
   ];
-  if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, and flies faster' });
+  if (k.carpet) fly.push({ action: 'Carpet', note: 'unrolls when you fly, flies faster and climbs far higher' });
   const out: ControlSection[] = [
     {
       title: 'Move',

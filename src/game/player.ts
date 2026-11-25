@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import type { PlayerState, SurfaceSample, World } from './contract';
-import { BOARD, BOOTS, CARPET_LIFT, flightSpeed, RUN, RUN_SAND } from './speeds';
+import { BOARD, BOOTS, CARPET_CLIMB, CARPET_LIFT, flightSpeed, RUN, RUN_SAND } from './speeds';
 
 const GRAVITY = 20;
 const LIFT_TIME = 3.5; // seconds of climbing in the reserve; refilled on landing
@@ -98,7 +98,7 @@ export class Player {
   board = false;
   /** On the board and where it can be ridden (anywhere but underground), whether moving or not. */
   riding = false;
-  /** Has a carpet: flying is faster and the climb lasts longer. */
+  /** Has a carpet: flying is faster, and the climb lasts longer and rises faster. */
   carpet = false;
   /** Has a rope and hook: rock too steep to walk is climbed. */
   rope = false;
@@ -550,7 +550,7 @@ export class Player {
         // The climb weakens through its last second and tips over into the glide.
         const strength = Math.min(1, this.reserve);
         this.reserve = Math.max(0, this.reserve - dt);
-        const target = LIFT_SPEED * strength - GLIDE_SINK * (1 - strength);
+        const target = LIFT_SPEED * (this.carpet ? CARPET_CLIMB : 1) * strength - GLIDE_SINK * (1 - strength);
         if (vy > target) vy = Math.max(target, vy - GRAVITY * 0.5 * dt); // a hard launch coasts up
         else vy += (target - vy) * (1 - Math.exp(-dt * 5));
       } else if (this.gliding) {

@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { describe, expect, it } from 'vitest';
 import type { SurfaceSample, World } from '../contract';
 import { Player, type PlayerInput } from '../player';
-import { BOARD, flightSpeed, RUN } from '../speeds';
+import { BOARD, CARPET_LIFT, flightSpeed, RUN } from '../speeds';
 
 /** Bare rock rising along +z at a fixed pitch (rise over run). */
 const rock = (slope: number): World => ({
@@ -87,6 +87,36 @@ describe('speed over the pace', () => {
     expect(p.state.grounded).toBe(false);
     expect(p.state.speed).toBeGreaterThan(flightSpeed(false) + 15);
     expect(p.state.speed).toBeLessThan(55);
+  });
+});
+
+describe('a carpet', () => {
+  /** Climb from rest over level ground, holding until the reserve is spent: seconds climbing and height gained. */
+  const climb = (carpet: boolean) => {
+    const p = new Player(rock(0));
+    p.carpet = carpet;
+    p.place(0, 0);
+    p.update(1 / 60, input({ jump: true, lift: true }), Math.PI, ev);
+    let t = 0;
+    for (let i = 0; i < 60 * 30 && (p.lifting || t < 0.3); i++) {
+      p.update(1 / 60, input({ lift: true }), Math.PI, ev);
+      if (p.lifting) t += 1 / 60;
+    }
+    return { t, h: p.state.pos.y };
+  };
+
+  it('climbs for twice as long as flying without one', () => {
+    const plain = climb(false);
+    const rug = climb(true);
+    expect(plain.t).toBeGreaterThan(3);
+    expect(rug.t / plain.t).toBeCloseTo(CARPET_LIFT, 1);
+  });
+
+  it('rises far higher on one climb', () => {
+    const plain = climb(false);
+    const rug = climb(true);
+    expect(plain.h).toBeGreaterThan(15);
+    expect(rug.h).toBeGreaterThan(plain.h * 3.5);
   });
 });
 
