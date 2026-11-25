@@ -24,8 +24,10 @@ export const ORYX_GALLOP = 40;
 
 /** A carpet flies this many times faster than flying without one. */
 export const CARPET = 1.8;
-/** And climbs for this many times as long. */
+/** And climbs for this many times as long, */
 export const CARPET_LIFT = 2;
+/** this many times as fast, so a full climb on one rises about four times as high. */
+export const CARPET_CLIMB = 2;
 
 /** Forward speed in flight. */
 export function flightSpeed(carpet: boolean): number {

@@ -149,8 +149,8 @@ export const WEAVER = {
     'Now that is old. Let me see it in the light.',
     'Done. Take the carpet. It was my aunt\'s, and it never liked her either.',
     {
-      keys: 'Leap, then hold Space. It carries you faster, and climbs for twice as long.',
-      touch: 'Leap, then hold the button. It carries you faster, and climbs for twice as long.',
+      keys: 'Leap, then hold Space. It carries you faster, and climbs twice as long and far higher.',
+      touch: 'Leap, then hold the button. It carries you faster, and climbs twice as long and far higher.',
     },
   ] as Line[],
   /** To someone who came by a carpet under the sand instead. */
@@ -457,8 +457,8 @@ export const FOUND: Record<'chart' | 'flute' | 'bedroll' | 'rod' | 'rope' | 'car
   rod: 'A dowsing rod. Carry it on foot. The fork pulls down when there\'s a room under the sand.',
   rope: 'A rope and a hook. Rock too steep to walk can be climbed now.',
   carpet: {
-    keys: 'A carpet that won\'t lie flat. Leap, then hold Space. It flies faster, and climbs for twice as long.',
-    touch: 'A carpet that won\'t lie flat. Leap, then hold the button. It flies faster, and climbs for twice as long.',
+    keys: 'A carpet that won\'t lie flat. Leap, then hold Space. It flies faster, and climbs twice as long and far higher.',
+    touch: 'A carpet that won\'t lie flat. Leap, then hold the button. It flies faster, and climbs twice as long and far higher.',
   },
 };
 
